@@ -1,0 +1,118 @@
+# HomeClaim Paper Konfiguration (Beispiele)
+# Kopiere diese Datei nach config.yml und passe die Werte an.
+#
+# STORAGE:
+# - Nur JDBC verfügbar (SQLite, PostgreSQL, MySQL, MariaDB)
+# - SQLite ist Standard (keine externe Datenbank nötig)
+
+# =====================================================================
+# JDBC mit SQLite (empfohlen für einfache Setups)
+# =====================================================================
+homeclaim:
+  locale: "en"
+  storage:
+    type: JDBC
+    driver: "SQLITE"                                # oder: POSTGRES, MYSQL, MARIADB
+    sqliteFile: "plugins/HomeClaim/homeclaim.db"   # nur für SQLite
+    host: "localhost"                               # für PostgreSQL/MySQL/MariaDB
+    port: 5432                                       # für PostgreSQL/MySQL/MariaDB
+    database: "homeclaim"                           # für PostgreSQL/MySQL/MariaDB
+    username: "homeclaim"                           # für PostgreSQL/MySQL/MariaDB
+    password: "change-me"                           # für PostgreSQL/MySQL/MariaDB
+    encoding: "UTF-8"
+    maximumPoolSize: 10
+  rest:
+    enabled: false
+    port: 8080
+    token: "change-me"         # REQUIRED wenn enabled=true
+    tokenEnv: ""               # optional: ENV var name
+    tokenFile: ""              # optional: file path with token
+    rateLimitPerMinute: 120    # 0/leer = deaktiviert
+    allowLocalhost: false
+    allowedHosts: []           # optional allowlist, z.B. ["127.0.0.1"]
+
+# =====================================================================
+# POSTGRESQL
+# =====================================================================
+#homeclaim:
+#  storage:
+#    type: JDBC
+#    driver: "postgres"                     # org.postgresql.Driver
+#    host: "localhost"
+#    port: 5432
+#    database: "homeclaim"
+#    username: "homeclaim"
+#    password: "change-me"
+#    encoding: "UTF-8"
+#    maximumPoolSize: 10
+
+# =====================================================================
+# MARIADB
+# =====================================================================
+#homeclaim:
+#  storage:
+#    type: JDBC
+#    driver: "mariadb"                      # org.mariadb.jdbc.Driver
+#    host: "localhost"
+#    port: 3306
+#    database: "homeclaim"
+#    username: "homeclaim"
+#    password: "change-me"
+#    encoding: "UTF-8"
+#    maximumPoolSize: 10
+
+# =====================================================================
+# MYSQL
+# =====================================================================
+#homeclaim:
+#  storage:
+#    type: JDBC
+#    driver: "mysql"                        # com.mysql.cj.jdbc.Driver
+#    host: "localhost"
+#    port: 3306
+#    database: "homeclaim"
+#    username: "homeclaim"
+#    password: "change-me"
+#    encoding: "UTF-8"
+#    maximumPoolSize: 10
+
+# =====================================================================
+# SQLITE (nur fuer kleine/private Server / Tests)
+# =====================================================================
+#homeclaim:
+#  storage:
+#    type: JDBC
+#    driver: "sqlite"                       # org.sqlite.JDBC
+#    sqliteFile: "plugins/HomeClaim/homeclaim.db"
+#    # host/port/database werden ignoriert
+#    encoding: "UTF-8"
+#    maximumPoolSize: 5
+
+# =====================================================================
+# Flag Profiles (optional, fuer alle Modi nutzbar)
+# =====================================================================
+homeclaim:
+  flagProfiles:
+    - name: "deny-build"
+      flags:
+        BUILD: false
+    - name: "pvp-off"
+      flags:
+        PVP: false
+
+# =====================================================================
+# Plot Worlds (HomeClaim Plot Setup) - 1.21+ Schematiken
+# =====================================================================
+# Standard-Defaults: Gras (oben), Dunkles Prismarinblock (Straße), Diamantblock (Plotrand), Glatte Quarztreppe (Straßenrand)
+# P2 Templates (separate Dateien): copper, deepslate, modern
+#homeclaim:
+#  plotWorlds:
+#    plotworld:
+#      plotSize: 48
+#      roadWidth: 10
+#      plotHeight: 64
+#      plotBlock: GRASS_BLOCK             # Standard: Gras (oben)
+#      roadBlock: DARK_PRISMARINE         # Standard: Dunkles Prismarinblock (Straße)
+#      wallBlock: DIAMOND_BLOCK           # Standard: Diamantblock (Plotrand)
+#      schema: "default"                  # default | copper | deepslate | modern (P2)
+#      plotsPerSide: 5000                 # 0 = unbegrenzt

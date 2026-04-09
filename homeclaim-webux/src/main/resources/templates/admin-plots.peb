@@ -1,0 +1,60 @@
+{% extends "base.peb" %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 mb-0">Admin: Plots</h1>
+            <p class="text-muted">Verwalte alle Plots im System</p>
+        </div>
+        <div class="input-group" style="max-width: 320px;">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" placeholder="Plot suchen...">
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Plot</th>
+                        <th>Besitzer</th>
+                        <th>Alias</th>
+                        <th>Likes</th>
+                        <th>Besuche</th>
+                        <th>Status</th>
+                        <th class="text-end">Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Spawn Plaza</td>
+                        <td>Admin</td>
+                        <td>spawn</td>
+                        <td>120</td>
+                        <td>2.4k</td>
+                        <td><span class="badge bg-success">Aktiv</span></td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-primary">Details</button>
+                            <button class="btn btn-sm btn-outline-danger">Sperren</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Sky Garden</td>
+                        <td>BuilderMax</td>
+                        <td>garden</td>
+                        <td>58</td>
+                        <td>980</td>
+                        <td><span class="badge bg-warning">Review</span></td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-primary">Details</button>
+                            <button class="btn btn-sm btn-outline-success">Freigeben</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,728 @@
+openapi: "3.0.3"
+info:
+  title: "HomeClaim Plot API"
+  description: |
+    REST API for managing Minecraft plots, zones, and player permissions in HomeClaim.
+    
+    ## Authentication
+    All endpoints require the `X-Admin-Token` header with a valid authentication token.
+    
+    ## Rate Limiting
+    The API implements rate limiting per token. Default: 60 requests per minute.
+    
+    ## Base URL
+    Local: `http://localhost:8080/api/v1`
+  version: "1.0.0"
+  contact:
+    name: "HomeClaim Support"
+
+servers:
+  - url: "http://localhost:8080/api/v1"
+    description: "Local Development Server"
+
+security:
+  - ApiToken: []
+
+tags:
+  - name: Health
+    description: Server health and info endpoints
+  - name: Plots
+    description: Plot (Region) management
+  - name: Players
+    description: Player-related operations
+  - name: Zones
+    description: Zone management
+  - name: Profiles
+    description: Flag profile management
+  - name: Admin
+    description: Administrative operations
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns the server health status and version information.
+      tags: [Health]
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /info:
+    get:
+      summary: API information
+      description: Returns API version and available endpoints.
+      tags: [Health]
+      responses:
+        "200":
+          description: API information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiInfo"
+
+  /plots:
+    get:
+      summary: List plots
+      description: |
+        Returns a paginated list of plots with optional filtering.
+        At least one filter (world, owner, or available) should be provided.
+      tags: [Plots]
+      parameters:
+        - name: world
+          in: query
+          schema:
+            type: string
+          description: Filter plots by world name
+        - name: owner
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter plots by owner UUID
+        - name: available
+          in: query
+          schema:
+            type: boolean
+          description: If true, only show plots that are for sale (price > 0)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+          description: Maximum number of plots to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of plots to skip (for pagination)
+      responses:
+        "200":
+          description: List of plots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Plot"
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+  /plots/at:
+    get:
+      summary: Get plot at coordinates
+      description: Returns the plot at the specified world coordinates.
+      tags: [Plots]
+      parameters:
+        - name: world
+          in: query
+          required: true
+          schema:
+            type: string
+          description: World name
+        - name: x
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: X coordinate
+        - name: y
+          in: query
+          schema:
+            type: integer
+            default: 64
+          description: Y coordinate (optional, defaults to 64)
+        - name: z
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Z coordinate
+      responses:
+        "200":
+          description: Plot found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plot"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /plots/{id}:
+    get:
+      summary: Get plot by ID
+      description: Returns detailed information about a specific plot.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      responses:
+        "200":
+          description: Plot details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plot"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /plots/{id}/buy:
+    post:
+      summary: Buy a plot
+      description: Initiates a purchase for a plot that is for sale.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [buyerId]
+              properties:
+                buyerId:
+                  type: string
+                  format: uuid
+                  description: UUID of the player buying the plot
+      responses:
+        "200":
+          description: Purchase initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+        "400":
+          description: Plot is not for sale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /plots/{id}/sell:
+    post:
+      summary: Put plot up for sale
+      description: Lists a plot for sale at the specified price.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price]
+              properties:
+                price:
+                  type: number
+                  format: double
+                  minimum: 0
+                  description: Sale price (0 = remove from sale)
+      responses:
+        "200":
+          description: Plot listed for sale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+
+  /plots/{id}/flags:
+    post:
+      summary: Update plot flag
+      description: Sets or updates a flag on the plot.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, value]
+              properties:
+                key:
+                  type: string
+                  description: Flag key (e.g., "pvp", "mob-spawn")
+                value:
+                  description: Flag value (boolean, integer, or string)
+                  oneOf:
+                    - type: boolean
+                    - type: integer
+                    - type: string
+      responses:
+        "200":
+          description: Flag updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiSuccess"
+
+  /plots/{id}/limits:
+    post:
+      summary: Update plot limit
+      description: Sets or updates a limit on the plot.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, value]
+              properties:
+                key:
+                  type: string
+                  description: Limit key (e.g., "entity-cap", "hopper-limit")
+                value:
+                  description: Limit value
+                  oneOf:
+                    - type: boolean
+                    - type: integer
+                    - type: string
+      responses:
+        "200":
+          description: Limit updated
+
+  /plots/{id}/trust:
+    post:
+      summary: Trust a player
+      description: Adds a player to the plot's trusted list.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Player trusted
+
+  /plots/{id}/untrust:
+    post:
+      summary: Untrust a player
+      description: Removes a player from the plot's trusted list.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Player untrusted
+
+  /plots/{id}/components:
+    get:
+      summary: List plot components
+      description: Returns all components (redstone devices, containers, etc.) in the plot.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      responses:
+        "200":
+          description: List of components
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Component"
+
+  /plots/{id}/applyProfile:
+    post:
+      summary: Apply flag profile
+      description: Applies a predefined flag profile to the plot.
+      tags: [Plots]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profile]
+              properties:
+                profile:
+                  type: string
+                  description: Name of the profile to apply
+      responses:
+        "200":
+          description: Profile applied
+
+  /players/{uuid}/plots:
+    get:
+      summary: List player's plots
+      description: Returns all plots owned by the specified player.
+      tags: [Players]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Player UUID
+      responses:
+        "200":
+          description: List of player's plots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Plot"
+
+  /players/{uuid}/stats:
+    get:
+      summary: Get player statistics
+      description: Returns statistics about the player's plots.
+      tags: [Players]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Player UUID
+      responses:
+        "200":
+          description: Player statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerStats"
+
+  /zones:
+    get:
+      summary: List zones
+      description: Returns all zones in the specified world.
+      tags: [Zones]
+      parameters:
+        - name: world
+          in: query
+          required: true
+          schema:
+            type: string
+          description: World name
+      responses:
+        "200":
+          description: List of zones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Zone"
+
+  /profiles:
+    get:
+      summary: List flag profiles
+      description: Returns all available flag profiles.
+      tags: [Profiles]
+      responses:
+        "200":
+          description: List of profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FlagProfile"
+    post:
+      summary: Create/update profile
+      description: Creates a new profile or updates an existing one.
+      tags: [Profiles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                flags:
+                  type: object
+                  additionalProperties: true
+                limits:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: Profile created/updated
+
+  /admin/stats:
+    get:
+      summary: Server statistics
+      description: Returns server statistics and API information.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Server statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerStats"
+
+components:
+  securitySchemes:
+    ApiToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: Admin authentication token
+
+  parameters:
+    PlotId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Plot UUID
+
+  responses:
+    Unauthorized:
+      description: Invalid or missing authentication token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        version:
+          type: string
+          example: "1.0.0"
+        storage:
+          type: string
+          example: "jdbc"
+        timestamp:
+          type: integer
+          format: int64
+
+    ApiInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        endpoints:
+          type: array
+          items:
+            type: string
+
+    ApiSuccess:
+      type: object
+      properties:
+        status:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    Plot:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        world:
+          type: string
+        owner:
+          type: string
+          format: uuid
+        bounds:
+          $ref: "#/components/schemas/Bounds"
+        shape:
+          type: string
+          enum: [CUBOID, POLYGON]
+        price:
+          type: number
+          format: double
+        flags:
+          type: object
+          additionalProperties: true
+        limits:
+          type: object
+          additionalProperties: true
+        trusted:
+          type: array
+          items:
+            type: string
+            format: uuid
+        members:
+          type: array
+          items:
+            type: string
+            format: uuid
+        banned:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    Bounds:
+      type: object
+      properties:
+        minX:
+          type: integer
+        maxX:
+          type: integer
+        minY:
+          type: integer
+        maxY:
+          type: integer
+        minZ:
+          type: integer
+        maxZ:
+          type: integer
+
+    Component:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        regionId:
+          type: string
+          format: uuid
+        type:
+          type: string
+        position:
+          $ref: "#/components/schemas/Position"
+        state:
+          type: string
+
+    Position:
+      type: object
+      properties:
+        world:
+          type: string
+        x:
+          type: integer
+        y:
+          type: integer
+        z:
+          type: integer
+
+    Zone:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        world:
+          type: string
+        shape:
+          type: string
+        bounds:
+          $ref: "#/components/schemas/Bounds"
+        priority:
+          type: integer
+        tags:
+          type: array
+          items:
+            type: string
+
+    PlayerStats:
+      type: object
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        plotCount:
+          type: integer
+        totalArea:
+          type: integer
+          description: Total area in blocks (XZ plane)
+        plotsForSale:
+          type: integer
+
+    FlagProfile:
+      type: object
+      properties:
+        name:
+          type: string
+        flags:
+          type: object
+          additionalProperties: true
+        limits:
+          type: object
+          additionalProperties: true
+
+    ServerStats:
+      type: object
+      properties:
+        uptime:
+          type: integer
+          format: int64
+        apiVersion:
+          type: string
+        storageType:
+          type: string

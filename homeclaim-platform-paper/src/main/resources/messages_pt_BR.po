@@ -1,0 +1,90 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "HomeClaim Paper bridge registrado."
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper inicializado ({0})."
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC sem usuario/senha; conexao pode falhar."
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile definido mas driver nao e 'sqlite'; entrada sera ignorada."
+
+msgid "migrations.disabled"
+msgstr "Migracoes desabilitadas."
+
+msgid "migrations.nonpostgres"
+msgstr "Migracoes auto apenas para Postgres; use allowNonPostgres=true para outros."
+
+msgid "migrations.ok"
+msgstr "Migracoes executadas ({0})."
+
+msgid "migrations.fail"
+msgstr "Migracoes falharam: {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST ativado mas RegionAdminService ausente; REST nao iniciara."
+
+msgid "rest.started"
+msgstr "REST iniciado na porta {0}{1}{2}."
+
+msgid "storage.changed"
+msgstr "Config de storage mudou -> reconstruindo servicos."
+
+msgid "storage.rebuilt"
+msgstr "Servicos reinicializados. Sem migrar dados (InMemory -> JDBC vazio)."
+
+msgid "storage.reload.ok"
+msgstr "Config recarregada."
+
+msgid "storage.reload.none"
+msgstr "Nenhum servico carregado; reinicie o servidor."
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim: Sem permissao."
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim: Migracao so com storage JDBC."
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim: Migracao executada."
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim: Migracao falhou ({0})."
+
+msgid "cmd.usage"
+msgstr "HomeClaim: Comandos: /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWE NÃO ENCONTRADO!"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaim requer FastAsyncWorldEdit (FAWE) para funcionar."
+
+msgid "fawe.not_found.line2"
+msgstr "FAWE é necessário para operações rápidas de blocos ao criar"
+
+msgid "fawe.not_found.line3"
+msgstr "e converter mundos de lotes."
+
+msgid "fawe.not_found.download"
+msgstr "Download: https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "O servidor será desligado com segurança em 10 segundos..."
+
+msgid "fawe.shutdown"
+msgstr "Servidor desligando - FAWE é obrigatório!"
+
+msgid "fawe.detected"
+msgstr "FAWE detectado: {0}"
+

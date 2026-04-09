@@ -1,0 +1,23 @@
+[versions]
+kotlin = "2.2.0"
+junit = "5.10.2"
+slf4j = "2.0.13"
+toml = "0.7.0"
+bouncycastle = "1.77"
+ktor = "2.3.12"
+
+[libraries]
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlin-reflect = { module = "org.jetbrains.kotlin:kotlin-reflect", version.ref = "kotlin" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+toml4j = { module = "com.moandjiezana.toml:toml4j", version.ref = "toml" }
+
+# Crypto
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+
+# REST API Auth
+ktor-server-auth-jwt = { module = "io.ktor:ktor-server-auth-jwt", version.ref = "ktor" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

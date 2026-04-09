@@ -1,0 +1,30 @@
+# Gradle
+.gradle/
+build/
+**/build/
+**/bin/
+**/run/
+tmp/
+generate-world.py-data/
+*.log
+
+# IDEs
+.idea/
+.vscode/
+.kotlin/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Copilot/AI Analysis
+.copilot/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]

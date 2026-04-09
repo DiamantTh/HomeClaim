@@ -1,0 +1,90 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "HomeClaim Paper мост зарегистрирован."
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper инициализирован ({0})."
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC без логина/пароля; соединение может не установиться."
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile задан, но driver не 'sqlite'; запись игнорируется."
+
+msgid "migrations.disabled"
+msgstr "Миграции отключены."
+
+msgid "migrations.nonpostgres"
+msgstr "Авто-миграции только для Postgres; выставьте allowNonPostgres=true для других."
+
+msgid "migrations.ok"
+msgstr "Миграции выполнены ({0})."
+
+msgid "migrations.fail"
+msgstr "Миграции завершились ошибкой: {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST включен, но RegionAdminService отсутствует; REST не будет запущен."
+
+msgid "rest.started"
+msgstr "REST запущен на порту {0}{1}{2}."
+
+msgid "storage.changed"
+msgstr "Конфигурация storage изменена -> пересоздаём сервисы."
+
+msgid "storage.rebuilt"
+msgstr "Сервисы пересозданы. Без миграции данных (InMemory -> JDBC пустой)."
+
+msgid "storage.reload.ok"
+msgstr "Конфигурация перезагружена."
+
+msgid "storage.reload.none"
+msgstr "Сервисы не загружены; перезапустите сервер."
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim: Нет прав."
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim: Миграция возможна только с JDBC."
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim: Миграция выполнена."
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim: Ошибка миграции ({0})."
+
+msgid "cmd.usage"
+msgstr "HomeClaim: Команды: /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWE НЕ НАЙДЕН!"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaim требует FastAsyncWorldEdit (FAWE) для работы."
+
+msgid "fawe.not_found.line2"
+msgstr "FAWE необходим для быстрых операций с блоками при создании"
+
+msgid "fawe.not_found.line3"
+msgstr "и конвертации миров участков."
+
+msgid "fawe.not_found.download"
+msgstr "Скачать: https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "Сервер безопасно выключится через 10 секунд..."
+
+msgid "fawe.shutdown"
+msgstr "Сервер выключается - FAWE обязателен!"
+
+msgid "fawe.detected"
+msgstr "FAWE обнаружен: {0}"
+

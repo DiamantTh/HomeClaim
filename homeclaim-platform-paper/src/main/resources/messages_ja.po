@@ -1,0 +1,1281 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "HomeClaim Paper ブリッジを登録しました。"
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper を初期化しました ({0})。"
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC にユーザー/パスワードが設定されていません。接続に失敗する可能性があります。"
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile は設定されていますが driver が 'sqlite' ではありません。無視されます。"
+
+msgid "migrations.disabled"
+msgstr "マイグレーションは無効です。"
+
+msgid "migrations.nonpostgres"
+msgstr "マイグレーションは Postgres のみ自動実行。その他は allowNonPostgres=true を設定してください。"
+
+msgid "migrations.ok"
+msgstr "マイグレーションを実行しました ({0})。"
+
+msgid "migrations.fail"
+msgstr "マイグレーション失敗: {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST が有効ですが RegionAdminService がありません。REST は起動しません。"
+
+msgid "rest.started"
+msgstr "REST をポート {0}{1}{2} で開始しました。"
+
+msgid "storage.changed"
+msgstr "ストレージ設定が変更されました -> サービスを再構築します。"
+
+msgid "storage.rebuilt"
+msgstr "サービスを再初期化しました。データ移行はありません (InMemory -> JDBC 空)。"
+
+msgid "storage.reload.ok"
+msgstr "設定を再読み込みしました。"
+
+msgid "storage.reload.none"
+msgstr "サービスがロードされていません。サーバーを再起動してください。"
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim: 権限がありません。"
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim: JDBC ストレージでのみ移行可能です。"
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim: 移行を実行しました。"
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim: 移行に失敗しました ({0})。"
+
+msgid "cmd.usage"
+msgstr "HomeClaim: コマンド: /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWEが見つかりません！"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaimの実行にはFastAsyncWorldEdit (FAWE)が必要です。"
+
+msgid "fawe.not_found.line2"
+msgstr "FAWEはプロットワールドの作成と変換時の"
+
+msgid "fawe.not_found.line3"
+msgstr "高速ブロック操作に必要です。"
+
+msgid "fawe.not_found.download"
+msgstr "ダウンロード: https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "サーバーは10秒後に安全にシャットダウンします..."
+
+msgid "fawe.shutdown"
+msgstr "サーバーをシャットダウン中 - FAWEが必要です！"
+
+msgid "fawe.detected"
+msgstr "FAWEを検出: {0}"
+
+msgid "setup.header"
+msgstr "§6=== Plot World Setup ==="
+
+msgid "setup.fawe_detected"
+msgstr "§a✓ FAWE {0} detected"
+
+msgid "setup.mode_select"
+msgstr "§7Choose mode:"
+
+msgid "setup.mode_new_world"
+msgstr "§a  1 §7- §fCreate new world §7(default, like PlotSquared)"
+
+msgid "setup.mode_convert"
+msgstr "§a  2 §7- §fConvert existing world §7(overwrites terrain!)"
+
+msgid "setup.mode_answer"
+msgstr "§7Answer with §e1 §7or §e2"
+
+msgid "setup.mode_invalid"
+msgstr "§cPlease choose §e1 §cor §e2"
+
+msgid "setup.convert_world_name"
+msgstr "§7Enter name of §eexisting world§7:"
+
+msgid "setup.convert_available_worlds"
+msgstr "§7Available worlds: §f{0}"
+
+msgid "setup.convert_world_not_found"
+msgstr "§cWorld ''{0}'' does not exist!"
+
+msgid "setup.world_not_found"
+msgstr "§cWorld ''{0}'' not found!"
+
+msgid "setup.convert_teleport_safe"
+msgstr "§e⚠ Plot conversion started - you have been teleported to safety!"
+
+msgid "setup.convert_starting"
+msgstr "§6Starting conversion with FAWE..."
+
+msgid "setup.convert_fawe_version"
+msgstr "§7FAWE Version: §f{0}"
+
+msgid "setup.convert_area"
+msgstr "§7Area: §f{0} plots per side"
+
+msgid "setup.convert_progress"
+msgstr "§7Progress: §e{0}%"
+
+msgid "setup.convert_complete"
+msgstr "§a✓ Conversion complete!"
+
+msgid "setup.convert_blocks_set"
+msgstr "§7  Blocks set: §f{0}"
+
+msgid "setup.convert_duration"
+msgstr "§7  Duration: §f{0}s"
+
+msgid "setup.convert_failed"
+msgstr "§c✗ Conversion failed: {0}"
+
+msgid "setup.prompt.plot_size_default"
+msgstr "§7Plot size in blocks §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.road_width_default"
+msgstr "§7Road width in blocks §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.plot_height_default"
+msgstr "§7Plot height (Y-level) §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.plot_block_default"
+msgstr "§7Plot floor material §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.road_block_default"
+msgstr "§7Road material §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.wall_block_default"
+msgstr "§7Wall material §8[Default: §f{0}§8]:"
+
+msgid "setup.prompt.plots_per_side_default"
+msgstr "§7Plots per side §8[Default: §f{0}§8, Max: §f{1}§8]:"
+
+msgid "plot.only_players"
+msgstr "§cThis command can only be used by players."
+
+msgid "plot.ratelimit"
+msgstr "§cPlease wait {0} before using the next command."
+
+msgid "plot.not_on_plot"
+msgstr "§cYou are not standing on a plot."
+
+msgid "plot.not_found"
+msgstr "§cPlot not found."
+
+msgid "plot.already_claimed"
+msgstr "§cThis plot is already claimed."
+
+msgid "plot.claim_success"
+msgstr "§a✓ Plot successfully claimed!"
+
+msgid "plot.claim_failed"
+msgstr "§cPlot could not be claimed."
+
+msgid "plot.economy_unavailable"
+msgstr "§cEconomy not available."
+
+msgid "plot.auto_searching"
+msgstr "§eAuto-Claim: Searching for free plot..."
+
+msgid "plot.auto_not_implemented"
+msgstr "§c(Not yet implemented)"
+
+msgid "plot.no_plots_owned"
+msgstr "§cYou don't own any plots."
+
+msgid "plot.world_not_found"
+msgstr "§cWorld not found."
+
+msgid "plot.home_teleported"
+msgstr "§a✓ Teleported to your plot!"
+
+msgid "plot.info_header"
+msgstr "§6=== Plot Info ==="
+
+msgid "plot.info_id"
+msgstr "§7ID: §f{0}..."
+
+msgid "plot.info_owner"
+msgstr "§7Owner: §f{0}"
+
+msgid "plot.info_size"
+msgstr "§7Size: §f{0} x {1}"
+
+msgid "plot.info_price"
+msgstr "§7Price: §f{0}"
+
+msgid "plot.info_not_for_sale"
+msgstr "Not for sale"
+
+msgid "plot.visit_teleported"
+msgstr "§a✓ Teleported to {0}''s plot!"
+
+msgid "plot.visit_not_found"
+msgstr "§c{0} owns no plots."
+
+msgid "plot.help_header"
+msgstr "§6=== Plot Commands ==="
+
+msgid "plot.help_claim"
+msgstr "§a/plot claim §7- Claim current plot"
+
+msgid "plot.help_auto"
+msgstr "§a/plot auto §7- Claim next free plot"
+
+msgid "plot.help_home"
+msgstr "§a/plot home §7- Teleport to your plot"
+
+msgid "plot.help_info"
+msgstr "§a/plot info §7- Show plot info"
+
+msgid "plot.help_list"
+msgstr "§a/plot list §7- List your plots"
+
+msgid "plot.help_visit"
+msgstr "§a/plot visit <player> §7- Visit player's plot"
+
+msgid "plot.list_no_plots"
+msgstr "§cYou don't own any plots."
+
+msgid "plot.list_header"
+msgstr "§6§l=== Your Plots ({0}) ==="
+
+msgid "plot.list_unknown_world"
+msgstr "Unknown"
+
+msgid "plot.list_entry"
+msgstr "§7{0}. §f{1} §7({2}, {3}, {4})"
+
+msgid "plot.list_footer"
+msgstr "§7Use §e/plot home §7to teleport to your first plot."
+
+msgid "plot.visit_usage"
+msgstr "§cUsage: /plot visit <player>"
+
+msgid "plot.visit_invalid_name"
+msgstr "§cInvalid player name."
+
+msgid "plot.visit_player_not_found"
+msgstr "§cPlayer not found."
+
+msgid "plot.visit_no_plots"
+msgstr "§c{0} owns no plots."
+
+msgid "plot.visit_world_not_found"
+msgstr "§cWorld not found."
+
+msgid "plot.visit_success"
+msgstr "§a✓ Teleported to {0}''s plot!"
+
+msgid "plot.auto_searching"
+msgstr "§eAuto-Claim: Searching for free plot..."
+
+msgid "plot.auto_not_implemented"
+msgstr "§c(Not yet implemented)"
+
+msgid "zone.player_only"
+msgstr "§cOnly players can execute this command!"
+
+msgid "zone.usage"
+msgstr "§cUsage: /zone info"
+
+msgid "zone.not_in_region"
+msgstr "§cYou are not standing in any region!"
+
+msgid "zone.no_zones_found"
+msgstr "§cNo zone found at this position!"
+
+msgid "zone.separator"
+msgstr "§8§m────────────────────────────────"
+
+msgid "zone.info_id"
+msgstr "§6Zone: §e{0}"
+
+msgid "zone.info_priority"
+msgstr "§6Priority: §e{0}"
+
+msgid "zone.info_default_flags"
+msgstr "§6Default Flags:"
+
+msgid "zone.no_flags_set"
+msgstr "  §7No flags set"
+
+msgid "zone.flag_entry"
+msgstr "  §e{0}: §a{1}"
+
+msgid "zone.info_locked_flags"
+msgstr "§6Locked Flags:"
+
+msgid "zone.no_flags_locked"
+msgstr "  §7No flags locked"
+
+msgid "zone.locked_flag_entry"
+msgstr "  §c{0}"
+
+msgid "zone.flags_more"
+msgstr "  §7... and {0} more"
+
+msgid "import.no.permission"
+msgstr "§cNo permission!"
+
+msgid "import.worldguard.starting"
+msgstr "§6Starting WorldGuard import..."
+
+msgid "import.worldguard.none.found"
+msgstr "§cNo WorldGuard regions found!"
+
+msgid "import.plotsquared.starting"
+msgstr "§6Starting PlotSquared import..."
+
+msgid "import.plotsquared.none.found"
+msgstr "§cNo PlotSquared plots found!"
+
+msgid "import.completed"
+msgstr "§aImport completed!"
+
+msgid "import.successful"
+msgstr "Successful"
+
+msgid "import.errors"
+msgstr "Errors"
+
+msgid "import.started"
+msgstr "§aImport started (ID: {0})"
+
+msgid "import.use.status"
+msgstr "§7Use: /homeclaim import status {0}"
+
+msgid "import.status.syntax"
+msgstr "§cSyntax: /homeclaim import status <importId>"
+
+msgid "import.not.found"
+msgstr "§cImport not found: {0}"
+
+msgid "import.status.title"
+msgstr "§6Import Status: {0}"
+
+msgid "import.status.label"
+msgstr "§7Status"
+
+msgid "import.status.successful"
+msgstr "§7Successful: §a{0}§7/{1}"
+
+msgid "import.status.errors"
+msgstr "§7Errors: §c{0}"
+
+msgid "import.status.elapsed"
+msgstr "§7Elapsed: {0}s"
+
+msgid "import.status.errors.label"
+msgstr "§cErrors:"
+
+msgid "import.status.error.item"
+msgstr "§7  - {0}"
+
+msgid "import.status.more.errors"
+msgstr "§7  ... and {0} more"
+
+msgid "import.none.active"
+msgstr "§7No active imports"
+
+msgid "import.active.list"
+msgstr "§6Active Imports:"
+
+msgid "import.list.item"
+msgstr "§7  {0} - §a{1}%§7 ({2}/{3})"
+
+msgid "import.cancel.syntax"
+msgstr "§cSyntax: /homeclaim import cancel <importId>"
+
+msgid "import.cancelled"
+msgstr "§aImport cancelled: {0}"
+
+msgid "import.cancel.failed"
+msgstr "§cCould not cancel import: {0}"
+
+msgid "import.help.title"
+msgstr "§6Import Help:"
+
+msgid "import.help.worldguard"
+msgstr "§7/homeclaim import worldguard [world]  §8- Import WorldGuard regions"
+
+msgid "import.help.plotsquared"
+msgstr "§7/homeclaim import plotsquared         §8- Import PlotSquared plots"
+
+msgid "import.help.status"
+msgstr "§7/homeclaim import status <id>         §8- Show import status"
+
+msgid "import.help.list"
+msgstr "§7/homeclaim import list                §8- List active imports"
+
+msgid "import.help.cancel"
+msgstr "§7/homeclaim import cancel <id>         §8- Cancel an import"
+
+msgid "audit.service.not.configured"
+msgstr "§cAudit service not configured"
+
+msgid "audit.console.need.plotid"
+msgstr "§cConsole must provide PlotID"
+
+msgid "audit.player.not.found"
+msgstr "§cPlayer not found"
+
+msgid "audit.not.in.plot"
+msgstr "§cYou are not standing in a plot"
+
+msgid "audit.invalid.plotid"
+msgstr "§cInvalid PlotID format: {0}"
+
+msgid "audit.no.logs.found"
+msgstr "§eNo logs found for plot §b{0}"
+
+msgid "audit.separator"
+msgstr "§6════════════════════════════════════════════"
+
+msgid "audit.title"
+msgstr "§6Plot Audit Logs - Last {0} hours"
+
+msgid "audit.plot.id"
+msgstr "§6Plot ID: §b{0}"
+
+msgid "audit.owner"
+msgstr "§6Owner: §b{0}"
+
+msgid "audit.status.denied"
+msgstr "§c[DENIED]§r"
+
+msgid "audit.status.ok"
+msgstr "§a[OK]§r"
+
+msgid "audit.status.info"
+msgstr "§7[INFO]§r"
+
+msgid "audit.showed"
+msgstr "§eShowed §b{0} of {1} entries"
+
+msgid "liftlink.target.world.not.exists"
+msgstr "§cTarget world ''{0}'' does not exist!"
+
+msgid "liftlink.no.world.access"
+msgstr "§cNo access to world ''{0}''!"
+
+msgid "liftlink.teleport.arrow"
+msgstr "§a→"
+
+msgid "liftlink.elevator.no.target"
+msgstr "§eNo target found."
+
+msgid "liftlink.elevator.no.crossworld.perm"
+msgstr "§cNo permission for cross-world elevators!"
+
+msgid "liftlink.teleported"
+msgstr "§aTeleported"
+
+msgid "liftlink.teleport.combat.blocked"
+msgstr "§cCannot teleport in combat! Wait {0}s more."
+
+msgid "liftlink.teleport.unavailable"
+msgstr "§cThis teleport is currently unavailable."
+
+msgid "liftlink.teleport.no.target"
+msgstr "§eNo teleport target found."
+
+msgid "liftlink.teleport.no.crossworld.perm"
+msgstr "§cNo permission for cross-world teleporters!"
+
+msgid "plot.no_plots"
+msgstr "§cプロットを所有していません。"
+
+msgid "plot.teleported"
+msgstr "§a✓ プロットにテレポートしました！"
+
+msgid "gui.role.removed"
+msgstr "§aプレイヤーを削除しました！"
+
+msgid "gui.flag.toggled"
+msgstr "§e{name} {state}!"
+
+msgid "gui.price.saved"
+msgstr "§a✓ 価格を§f{price}€§aに設定しました！"
+
+msgid "gui.component.mode"
+msgstr "§bモード: §f{mode}"
+
+msgid "gui.component.linkid"
+msgstr "§b新しいLink-ID: §f{id}"
+
+msgid "gui.component.floor"
+msgstr "§bFloor-Name: §f{name}"
+
+msgid "gui.component.updated"
+msgstr "§a✓ Padを更新しました！"
+
+msgid "gui.component.error"
+msgstr "§c✗ エラー: {error}"
+
+msgid "gui.component.deleted"
+msgstr "§a✓ Padを削除しました！"
+
+msgid "gui.component.confirm_delete"
+msgstr "§c削除を確認するには、もう一度クリックしてください。"
+
+msgid "gui.component.cancelled"
+msgstr "§cコンポーネント作成がキャンセルされました"
+
+msgid "gui.component.configured"
+msgstr "§aコンポーネントが設定されました！ ブロックを右クリックして配置します。"
+
+msgid "gui.role.player_removed"
+msgstr "§aプレイヤーを削除しました!"
+
+msgid "gui.flag.toggle"
+msgstr "§e{flag} {state}!"
+
+msgid "gui.flag.enabled"
+msgstr "§a有効"
+
+msgid "gui.flag.disabled"
+msgstr "§c無効"
+
+msgid "gui.component.link_id"
+msgstr "§b新しいLink-ID: §f{id}"
+
+msgid "gui.component.floor_name"
+msgstr "§bFloor-Name: §f{floor}"
+
+msgid "gui.component.delete_confirm"
+msgstr "§cもう一度右クリックして確認してください。"
+
+msgid "gui.component_creation.cancelled"
+msgstr "§cコンポーネント作成がキャンセルされました"
+
+msgid "gui.role.player_removed"
+msgstr "§aSpieler entfernt!"
+
+msgid "gui.flag.toggle"
+msgstr "§e{flag} {state}!"
+
+msgid "gui.price.saved"
+msgstr "§a✓ Preis gespeichert!"
+
+msgid "gui.component.mode"
+msgstr "§bMode: §f{mode}"
+
+msgid "gui.component.link_id"
+msgstr "§bNeue Link-ID: §f{id}"
+
+msgid "gui.component.floor_name"
+msgstr "§bFloor-Name: §f{floor}"
+
+msgid "gui.component.updated"
+msgstr "§a✓ Pad aktualisiert!"
+
+msgid "gui.component.error"
+msgstr "§c✗ Fehler: {error}"
+
+msgid "gui.component.deleted"
+msgstr "§a✓ Pad gelöscht!"
+
+msgid "gui.component.delete_confirm"
+msgstr "§cNochmals rechtsklick zum Löschen bestätigen."
+
+msgid "gui.component.configured"
+msgstr "§aComponent konfiguriert!"
+
+msgid "gui.component.cancelled"
+msgstr "§cAbgebrochen"
+
+msgid "gui.component_creation.cancelled"
+msgstr "§cComponent-Erstellung abgebrochen"
+
+msgid "policy.denied"
+msgstr "§cHomeClaim: {0}"
+
+msgid "policy.denied.detail"
+msgstr "§cHomeClaim: {0} (§7{1}§c)"
+
+msgid "policy.reason.no_region"
+msgstr "ここにはリージョンがありません。"
+
+msgid "policy.reason.no_permission"
+msgstr "権限がありません。"
+
+msgid "policy.reason.flag_deny"
+msgstr "フラグによりブロックされました。"
+
+msgid "policy.reason.role_banned"
+msgstr "このリージョンでBANされています。"
+
+msgid "policy.reason.cooldown_active"
+msgstr "クールダウン中です。"
+
+msgid "policy.reason.role_required"
+msgstr "より高いロールが必要です。"
+
+msgid "policy.reason.redstone_deny"
+msgstr "ここではレッドストーンが無効です。"
+
+msgid "policy.reason.unknown"
+msgstr "アクションが拒否されました。"
+
+msgid "gui.role.title"
+msgstr "§8Role Editor"
+
+msgid "gui.role.trusted"
+msgstr "§aTrusted ({0})"
+
+msgid "gui.role.members"
+msgstr "§bMembers ({0})"
+
+msgid "gui.role.banned"
+msgstr "§cBanned ({0})"
+
+msgid "gui.role.role_header"
+msgstr "§e{0} ({1})"
+
+msgid "gui.player.name"
+msgstr "§f{0}"
+
+msgid "gui.role.remove_hint"
+msgstr "§cClick to remove"
+
+msgid "gui.back"
+msgstr "§cBack"
+
+msgid "gui.flag.title"
+msgstr "§8Flag Editor"
+
+msgid "gui.flag.header"
+msgstr "§6Flag Configuration"
+
+msgid "gui.flag.item"
+msgstr "§e{0}"
+
+msgid "gui.flag.toggle_hint"
+msgstr "§eClick to toggle"
+
+msgid "gui.flag.changed"
+msgstr "§e{0} {1}!"
+
+msgid "gui.price.title"
+msgstr "§8Region: Price {0}€"
+
+msgid "gui.price.header"
+msgstr "§eSale Price"
+
+msgid "gui.price.current"
+msgstr "§7Current: §f{0}€"
+
+msgid "gui.price.region_id"
+msgstr "§7Region-ID: {0}"
+
+msgid "gui.price.add_100"
+msgstr "§a+100€"
+
+msgid "gui.price.add_hint"
+msgstr "§7Click to add"
+
+msgid "gui.price.sub_100"
+msgstr "§c-100€"
+
+msgid "gui.price.sub_hint"
+msgstr "§7Click to subtract"
+
+msgid "gui.price.zero"
+msgstr "§c€0 (Not for sale)"
+
+msgid "gui.price.disable_hint"
+msgstr "§7Click to disable"
+
+msgid "gui.save"
+msgstr "§a✓ Save"
+
+msgid "gui.price.value"
+msgstr "§7Price: {0}€"
+
+msgid "gui.components.title"
+msgstr "§8Components"
+
+msgid "gui.components.no_permission.title"
+msgstr "§cNo permission"
+
+msgid "gui.components.no_permission.l1"
+msgstr "§7You may not manage components here."
+
+msgid "gui.components.no_permission.l2"
+msgstr "§7Only Owner/Trusted may do this."
+
+msgid "gui.components.no_permission.back_hint"
+msgstr "§eClick: §7Back"
+
+msgid "gui.components.none.title"
+msgstr "§cNo components"
+
+msgid "gui.components.none.l1"
+msgstr "§7This region has no pads yet."
+
+msgid "gui.components.none.l2"
+msgstr "§eClick: §7Create new pad"
+
+msgid "gui.components.new_pad"
+msgstr "§a+ New pad"
+
+msgid "gui.components.delete_confirm_hint"
+msgstr "§cRight-click again to delete"
+
+msgid "gui.components.delete_hint"
+msgstr "§cRight-click: §7Delete"
+
+msgid "gui.components.type"
+msgstr "§7Type: {0}"
+
+msgid "gui.components.pos"
+msgstr "§7Pos: {0}, {1}, {2}"
+
+msgid "gui.components.state"
+msgstr "§7State: {0} {1}"
+
+msgid "gui.components.edit_hint"
+msgstr "§eLeft-click: §7Edit"
+
+msgid "gui.components.id"
+msgstr "§b{0}"
+
+msgid "gui.prev"
+msgstr "§aPrevious"
+
+msgid "gui.next"
+msgstr "§aNext"
+
+msgid "gui.components.deleted"
+msgstr "§a✓ Pad deleted!"
+
+msgid "gui.components.delete_confirm_msg"
+msgstr "§cRight-click again to confirm deletion."
+
+msgid "gui.state.enabled"
+msgstr "§a✓"
+
+msgid "gui.state.disabled"
+msgstr "§c✗"
+
+msgid "gui.component.editor.title"
+msgstr "§8Pad Editor: {0}"
+
+msgid "gui.component.config_header"
+msgstr "§eConfiguration"
+
+msgid "gui.component.info.id"
+msgstr "§7ID: {0}"
+
+msgid "gui.component.info.type"
+msgstr "§7Type: {0}"
+
+msgid "gui.component.info.block"
+msgstr "§7Block: {0}, {1}, {2}"
+
+msgid "gui.component.info.state"
+msgstr "§7State: {0}"
+
+msgid "gui.component.state.enabled_text"
+msgstr "§a✓ ENABLED"
+
+msgid "gui.component.state.disabled_text"
+msgstr "§c✗ DISABLED"
+
+msgid "gui.component.state_item"
+msgstr "§bState: {0}"
+
+msgid "gui.toggle_hint"
+msgstr "§7Click to toggle"
+
+msgid "gui.component.mode.nearest"
+msgstr "§7NEAREST_PAD: Nearest pad"
+
+msgid "gui.component.mode.named"
+msgstr "§7NAMED_FLOOR: Search by name"
+
+msgid "gui.component.floor_desc"
+msgstr "§7Name of this pad for search"
+
+msgid "gui.component.floor_current"
+msgstr "§7(current: {0})"
+
+msgid "gui.component.link_desc"
+msgstr "§7Link pads with same ID"
+
+msgid "gui.component.link_new"
+msgstr "§7Click to regenerate"
+
+msgid "gui.save_hint"
+msgstr "§7Save changes"
+
+msgid "gui.state.activated"
+msgstr "§a✓ Activated"
+
+msgid "gui.state.deactivated"
+msgstr "§c✗ Deactivated"
+
+msgid "gui.component.link_new_id"
+msgstr "§bNew Link-ID: §f{0}"
+
+msgid "gui.component.config.title"
+msgstr "§8Configure Component"
+
+msgid "gui.component.config.confirm"
+msgstr "§aConfirm"
+
+msgid "gui.component.config.confirm_lore"
+msgstr "§7Create component with current settings"
+
+msgid "gui.component.config.cancel"
+msgstr "§cCancel"
+
+msgid "gui.component.type.title"
+msgstr "§8Select Component Type"
+
+msgid "gui.component.type.elevator"
+msgstr "§6Elevator"
+
+msgid "gui.component.type.elevator_lore"
+msgstr "§7Vertical teleportation between pads"
+
+msgid "gui.component.type.teleport"
+msgstr "§bTeleport Link"
+
+msgid "gui.component.type.teleport_lore"
+msgstr "§7Directional teleportation between pads"
+
+msgid "gui.component.type.cancel"
+msgstr "§cCancel"
+
+msgid "gui.creation.select_block"
+msgstr "§eSelect a block for the component (right-click)"
+
+msgid "gui.creation.created"
+msgstr "§a✓ Component created!"
+
+msgid "gui.zone.title"
+msgstr "§8Zone Info"
+
+msgid "gui.zone.none.title"
+msgstr "§cNo zones"
+
+msgid "gui.zone.none.l1"
+msgstr "§7This region is not inside any zone."
+
+msgid "gui.zone.none_short"
+msgstr "None"
+
+msgid "gui.zone.item.title"
+msgstr "§eZone {0}"
+
+msgid "gui.zone.item.priority"
+msgstr "§7Priority: {0}"
+
+msgid "gui.zone.item.locked_flags"
+msgstr "§7Locked Flags: §f{0}"
+
+msgid "gui.zone.item.shape"
+msgstr "§7Shape: {0}"
+
+msgid "gui.zone.item.tags"
+msgstr "§7Tags: {0}"
+
+msgid "gui.pad.block_saved"
+msgstr "§a✓ Block saved: {0}, {1}, {2}"
+
+msgid "gui.pad.configure_prompt"
+msgstr "§eConfigure your pad now..."
+
+msgid "gui.pad.title"
+msgstr "§8Pad Creator"
+
+msgid "gui.pad.select_type.elevator.title"
+msgstr "§aElevator Pad"
+
+msgid "gui.pad.select_type.elevator.l1"
+msgstr "§7Players can jump to other pads"
+
+msgid "gui.pad.select_type.elevator.l2"
+msgstr "§7(up/down)"
+
+msgid "gui.pad.select_type.teleport.title"
+msgstr "§aTeleport Pad"
+
+msgid "gui.pad.select_type.teleport.l1"
+msgstr "§7Players teleport to linked pad"
+
+msgid "gui.pad.select_type.teleport.l2"
+msgstr "§7(instant)"
+
+msgid "gui.pad.select_block.title"
+msgstr "§eClick a block"
+
+msgid "gui.pad.select_block.l1"
+msgstr "§7Click a block in-game"
+
+msgid "gui.pad.select_block.l2"
+msgstr "§7to use it as a sensor."
+
+msgid "gui.pad.select_block.type"
+msgstr "§7Pad-Type: {0}"
+
+msgid "gui.pad.select_block.back"
+msgstr "§cBack (Cancel)"
+
+msgid "gui.pad.config.title"
+msgstr "§eConfiguration"
+
+msgid "gui.pad.config.type"
+msgstr "§7Pad-Type: {0}"
+
+msgid "gui.pad.config.block"
+msgstr "§7Block: {0}, {1}, {2}"
+
+msgid "gui.pad.config.mode"
+msgstr "§7Mode: {0}"
+
+msgid "gui.pad.config.floor"
+msgstr "§7Floor: {0}"
+
+msgid "gui.pad.save_hint"
+msgstr "§7Create and save pad"
+
+msgid "gui.pad.select_block.prompt"
+msgstr "§aChoose a block for the sensor!"
+
+msgid "gui.pad.created"
+msgstr "§a✓ Pad created!"
+
+msgid "gui.pad.error"
+msgstr "§c✗ Error: {0}"
+
+msgid "gui.region.list.title"
+msgstr "My Regions"
+
+msgid "gui.region.list.none.title"
+msgstr "§cNo regions"
+
+msgid "gui.region.list.none.l1"
+msgstr "§7You don't own any regions yet."
+
+msgid "gui.region.list.item.title"
+msgstr "§a{0}"
+
+msgid "gui.region.list.item.world"
+msgstr "§7World: {0}"
+
+msgid "gui.region.list.item.shape"
+msgstr "§7Shape: {0}"
+
+msgid "gui.region.list.item.manage_hint"
+msgstr "§eLeft-click: §7Manage region"
+
+msgid "gui.close"
+msgstr "§cClose"
+
+msgid "gui.region.manage.title"
+msgstr "§8Region: {0}"
+
+msgid "gui.region.manage.info.title"
+msgstr "§6Region Info"
+
+msgid "gui.region.manage.info.id"
+msgstr "§7ID: {0}"
+
+msgid "gui.region.manage.info.world"
+msgstr "§7World: {0}"
+
+msgid "gui.region.manage.info.trusted"
+msgstr "§7Trusted: {0}"
+
+msgid "gui.region.manage.info.members"
+msgstr "§7Members: {0}"
+
+msgid "gui.region.manage.roles"
+msgstr "§eManage roles"
+
+msgid "gui.region.manage.price"
+msgstr "§eSale price"
+
+msgid "gui.region.manage.price.value"
+msgstr "§7Price: §f{0}€"
+
+msgid "gui.region.manage.flags"
+msgstr "§eManage flags"
+
+msgid "gui.region.manage.components"
+msgstr "§eManage components"
+
+msgid "gui.region.manage.zones"
+msgstr "§eZone info"
+
+msgid "gui.creation.cancelled"
+msgstr "§cComponent creation cancelled."
+
+msgid "plot.info_owner_unclaimed"
+msgstr "§7(Unclaimed)"
+
+msgid "audit.time.seconds"
+msgstr "§b{0}s ago§r"
+
+msgid "audit.time.minutes"
+msgstr "§b{0}m ago§r"
+
+msgid "audit.time.hours"
+msgstr "§b{0}h ago§r"
+
+msgid "audit.time.days"
+msgstr "§b{0}d ago§r"
+
+msgid "import.successful.details"
+msgstr "§7  Successful: {0}/{1}"
+
+msgid "import.errors.details"
+msgstr "§7  Errors: {0}"
+
+msgid "import.status.details"
+msgstr "§7Status: {0}"
+
+msgid "teleport.actionbar"
+msgstr "§aTeleported"
+
+msgid "permission.denied"
+msgstr "§cNo permission."
+
+msgid "config.errors.header.line1"
+msgstr "§c╔════════════════════════════════════════╗"
+
+msgid "config.errors.header.line2"
+msgstr "§c║      Configuration Errors Found        ║"
+
+msgid "config.errors.header.line3"
+msgstr "§c╚════════════════════════════════════════╝"
+
+msgid "config.errors.entry"
+msgstr "§c  [{0}] {1}"
+
+msgid "config.errors.suggestion"
+msgstr "§c    → {0}"
+
+msgid "config.warnings.header"
+msgstr "§eConfiguration warnings:"
+
+msgid "config.warnings.entry"
+msgstr "§e  [{0}] {1}"
+
+msgid "db.resilience.enabled"
+msgstr "§a✓ Database resilience enabled"
+
+msgid "db.circuit.closed"
+msgstr "§aDatabase circuit breaker: CLOSED (connection restored)"
+
+msgid "db.circuit.open"
+msgstr "§cDatabase circuit breaker: OPEN after {0} failures"
+
+msgid "db.circuit.error"
+msgstr "§cLast error: {0}"
+
+msgid "shutdown.header.line1"
+msgstr "╔════════════════════════════════════════╗"
+
+msgid "shutdown.header.line2"
+msgstr "║      HomeClaim Graceful Shutdown       ║"
+
+msgid "shutdown.header.line3"
+msgstr "╚════════════════════════════════════════╝"
+
+msgid "shutdown.phase1"
+msgstr "§e[1/3] Waiting for pending operations..."
+
+msgid "shutdown.ops.completed"
+msgstr "  §a✓ All operations completed"
+
+msgid "shutdown.ops.none"
+msgstr "  §a✓ No pending operations"
+
+msgid "shutdown.phase2"
+msgstr "§e[2/3] Executing shutdown hooks..."
+
+msgid "shutdown.hook.success"
+msgstr "    §a✓ {0} ({1}ms)"
+
+msgid "shutdown.phase3"
+msgstr "§e[3/3] Final cleanup..."
+
+msgid "shutdown.complete.success.line1"
+msgstr "§a═══════════════════════════════════════════"
+
+msgid "shutdown.complete.success.line2"
+msgstr "§a  Shutdown complete in {0}ms"
+
+msgid "shutdown.complete.warning.line1"
+msgstr "§e═══════════════════════════════════════════"
+
+msgid "shutdown.complete.warning.line2"
+msgstr "§e  Shutdown complete with {0} warning(s)"
+
+msgid "shutdown.complete.warning.line3"
+msgstr "§e  Time: {0}ms"
+
+msgid "health.header.line1"
+msgstr "╔══════════════════════════════════════╗"
+
+msgid "health.header.line2"
+msgstr "║     HomeClaim Health Check          ║"
+
+msgid "health.header.line3"
+msgstr "╚══════════════════════════════════════╝"
+
+msgid "health.java.ok"
+msgstr "Java version: {0}"
+
+msgid "health.memory.low"
+msgstr "Low memory: {0}MB allocated"
+
+msgid "health.memory.ok"
+msgstr "Memory: {0}MB allocated"
+
+msgid "health.db.ok"
+msgstr "Database: {0} v{1}"
+
+msgid "health.db.inmemory"
+msgstr "Database: In-Memory (no persistence)"
+
+msgid "health.fawe.ok"
+msgstr "FastAsyncWorldEdit: v{0}"
+
+msgid "health.vault.ok"
+msgstr "Economy: Vault v{0}"
+
+msgid "health.vault.none"
+msgstr "Economy: Mock (Vault not found)"
+
+msgid "health.disk.low"
+msgstr "Low disk space: {0}MB available"
+
+msgid "health.disk.ok"
+msgstr "Disk space: {0}MB available"
+
+msgid "health.summary.ok.line1"
+msgstr "§a────────────────────────────────────────"
+
+msgid "health.summary.ok.line2"
+msgstr "§a  All checks passed!"
+
+msgid "health.summary.failed.line1"
+msgstr "════════════════════════════════════"
+
+msgid "health.summary.failed.line2"
+msgstr "  Validation Failures:"
+
+msgid "health.summary.failed.entry"
+msgstr "  • [{0}] {1}"
+
+msgid "health.summary.warnings"
+msgstr "§e  Warnings: {0}"
+
+msgid "health.summary.warning.entry"
+msgstr "§e  • {0}"
+
+msgid "plugin.economy.vault"
+msgstr "§a✓ Economy: Vault detected"
+
+msgid "plugin.economy.essentials"
+msgstr "§a✓ Economy: EssentialsX detected (Vault not found)"
+
+msgid "plugin.economy.mock"
+msgstr "Economy: Using mock economy (Vault not found)"
+
+msgid "plugin.script.extracted"
+msgstr "§a✓ Extracted: {0}"
+
+msgid "plugin.script.failed"
+msgstr "Failed to extract scripts."
+
+msgid "plugin.config.errors"
+msgstr "§cConfiguration errors prevent startup. Please fix config.yml"
+
+msgid "plugin.startup.warnings"
+msgstr "Startup warnings present (see above)"
+
+msgid "sensors.loaded"
+msgstr "§aLoaded {0} sensor configurations"
+
+msgid "sensors.failed"
+msgstr "§cFailed to load sensor config: {0}"
+
+msgid "sensor.config.loaded"
+msgstr "Sensor configurations loaded."
+
+msgid "sensor.config.failed"
+msgstr "Failed to parse sensor-config.toml, using defaults: {0}"
+
+msgid "config.save.failed"
+msgstr "Failed to save config: {0}"
+
+msgid "config.load.failed"
+msgstr "Failed to load config: {0}"
+
+msgid "fawe.warning.line1"
+msgstr "║                                                                  ║"
+
+msgid "fawe.warning.line2"
+msgstr "║  FastAsyncWorldEdit integration is OPTIONAL but RECOMMENDED  ║"
+
+msgid "fawe.warning.line3"
+msgstr "║                                                                  ║"
+
+msgid "fawe.warning.line4"
+msgstr "║  Without FAWE, large block operations will be slower.           ║"
+
+msgid "fawe.warning.line5"
+msgstr "║  Install FAWE for optimal performance.                          ║"
+
+msgid "fawe.warning.line7"
+msgstr "║  https://www.spigotmc.org/resources/fast-async-worldedit.      ║"
+
+msgid "fawe.warning.line8"
+msgstr "║                                                                  ║"
+
+msgid "fawe.warning.line9"
+msgstr "║                                                                  ║"
+
+msgid "fawe.operation.failed"
+msgstr "FAWE block operation failed: {0}"
+
+msgid "schema.load.failed"
+msgstr "Failed to load schema from {0}: {1}"
+
+msgid "shutdown.warnings"
+msgstr "Shutdown completed with warnings: {0}"
+
+msgid "command.no_permission"
+msgstr "§cYou don't have permission for this command."
+
+msgid "command.usage"
+msgstr "§cUsage: /{0} {1}"
+
+msgid "command.player_only"
+msgstr "§cThis command can only be used by players."
+

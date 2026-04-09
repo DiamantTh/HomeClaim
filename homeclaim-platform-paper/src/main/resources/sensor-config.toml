@@ -1,0 +1,14 @@
+# HomeClaim Block Sensor Configuration
+# Definiert welche Blöcke als Sensoren für Teleport-Pads verwendet werden können
+
+[sensors]
+# Erlaubte Block-Typen (Bukkit Material names)
+allowed_blocks = [
+    "DAYLIGHT_DETECTOR"
+]
+
+# Erfordert Redstone-Signal für öffentliche Spieler
+require_redstone_signal = true
+
+# Power-Level der als "aktiv" gilt (0-15)
+min_power_level = 1

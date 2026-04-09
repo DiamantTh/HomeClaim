@@ -1,0 +1,27 @@
+# Default config with SQLite (persistent storage)
+# See config.example.yml for PostgreSQL/MySQL variants
+homeclaim:
+  locale: "en"
+  storage:
+    type: JDBC
+    driver: SQLITE
+    sqliteFile: "plugins/HomeClaim/homeclaim.db"
+    # For PostgreSQL/MySQL, uncomment and configure:
+    # driver: POSTGRES  # or MYSQL, MARIADB
+    # host: "localhost"
+    # port: 5432
+    # database: "homeclaim"
+    # username: "homeclaim"
+    # password: "change-me"
+    encoding: "UTF-8"
+    maximumPoolSize: 10
+  rest:
+    enabled: false
+    port: 8080
+    token: ""
+    tokenEnv: ""
+    tokenFile: ""
+    rateLimitPerMinute: 0
+    allowLocalhost: false
+    allowedHosts: []
+  plotWorlds: {}

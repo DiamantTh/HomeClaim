@@ -1,0 +1,90 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "HomeClaim Paper 브리지가 등록되었습니다."
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper 부트스트랩 완료 ({0})."
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC에 사용자/비밀번호가 없습니다. 연결이 실패할 수 있습니다."
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile 설정됨, driver가 'sqlite' 아님; 무시됩니다."
+
+msgid "migrations.disabled"
+msgstr "마이그레이션이 비활성화되었습니다."
+
+msgid "migrations.nonpostgres"
+msgstr "마이그레이션 자동 실행은 Postgres 전용입니다. 다른 DB는 allowNonPostgres=true 설정."
+
+msgid "migrations.ok"
+msgstr "마이그레이션 실행됨 ({0})."
+
+msgid "migrations.fail"
+msgstr "마이그레이션 실패: {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST가 활성화됐지만 RegionAdminService가 없습니다. REST를 시작하지 않습니다."
+
+msgid "rest.started"
+msgstr "REST 서버가 포트 {0}{1}{2}에서 시작되었습니다."
+
+msgid "storage.changed"
+msgstr "스토리지 설정 변경 -> 서비스 재구성 중."
+
+msgid "storage.rebuilt"
+msgstr "서비스 재초기화. 데이터 마이그레이션 없음 (InMemory -> JDBC 비어있음)."
+
+msgid "storage.reload.ok"
+msgstr "설정이 다시 로드되었습니다."
+
+msgid "storage.reload.none"
+msgstr "로드된 서비스 없음; 서버를 재시작하세요."
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim: 권한이 없습니다."
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim: JDBC 스토리지에서만 마이그레이션 가능."
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim: 마이그레이션 완료."
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim: 마이그레이션 실패 ({0})."
+
+msgid "cmd.usage"
+msgstr "HomeClaim: 명령어: /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWE를 찾을 수 없습니다!"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaim을 실행하려면 FastAsyncWorldEdit (FAWE)가 필요합니다."
+
+msgid "fawe.not_found.line2"
+msgstr "FAWE는 플롯 월드 생성 및 변환 시 빠른 블록 작업에"
+
+msgid "fawe.not_found.line3"
+msgstr "필요합니다."
+
+msgid "fawe.not_found.download"
+msgstr "다운로드: https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "서버가 10초 후 안전하게 종료됩니다..."
+
+msgid "fawe.shutdown"
+msgstr "서버 종료 중 - FAWE가 필요합니다!"
+
+msgid "fawe.detected"
+msgstr "FAWE 감지됨: {0}"
+

@@ -1,0 +1,49 @@
+{% extends "base.peb" %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 mb-0">Admin: Benachrichtigungen</h1>
+            <p class="text-muted">Änderungen von Plot-Besitzern</p>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary">
+                <i class="bi bi-funnel"></i> Filter
+            </button>
+            <button class="btn btn-outline-danger">
+                <i class="bi bi-trash"></i> Alle löschen
+            </button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="list-group list-group-flush">
+            <div class="list-group-item d-flex align-items-center">
+                <i class="bi bi-pencil-square text-primary me-3"></i>
+                <div class="flex-grow-1">
+                    <div><strong>BuilderMax</strong> hat die Beschreibung von <strong>Sky Garden</strong> geändert</div>
+                    <small class="text-muted">vor 10 Min.</small>
+                </div>
+                <button class="btn btn-sm btn-outline-primary">Details</button>
+            </div>
+            <div class="list-group-item d-flex align-items-center">
+                <i class="bi bi-person-plus text-success me-3"></i>
+                <div class="flex-grow-1">
+                    <div><strong>Admin</strong> hat <strong>Player123</strong> zu <strong>Spawn Plaza</strong> hinzugefügt</div>
+                    <small class="text-muted">vor 1 Std.</small>
+                </div>
+                <button class="btn btn-sm btn-outline-primary">Details</button>
+            </div>
+            <div class="list-group-item d-flex align-items-center">
+                <i class="bi bi-shield-exclamation text-danger me-3"></i>
+                <div class="flex-grow-1">
+                    <div><strong>TradeKing</strong> hat <strong>SpamUser</strong> von <strong>Market Town</strong> ausgeschlossen</div>
+                    <small class="text-muted">vor 3 Std.</small>
+                </div>
+                <button class="btn btn-sm btn-outline-primary">Details</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

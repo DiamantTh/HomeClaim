@@ -1,0 +1,90 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "HomeClaim Paper ब्रिज पंजीकृत।"
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper प्रारंभ हुआ ({0})."
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC में उपयोगकर्ता/पासवर्ड नहीं है; कनेक्शन असफल हो सकता है।"
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile सेट है पर driver 'sqlite' नहीं है; इसे अनदेखा किया जाएगा।"
+
+msgid "migrations.disabled"
+msgstr "माइग्रेशन अक्षम हैं।"
+
+msgid "migrations.nonpostgres"
+msgstr "ऑटो माइग्रेशन केवल Postgres के लिए; अन्य के लिए allowNonPostgres=true सेट करें।"
+
+msgid "migrations.ok"
+msgstr "माइग्रेशन निष्पादित ({0})."
+
+msgid "migrations.fail"
+msgstr "माइग्रेशन असफल: {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST सक्रिय है लेकिन RegionAdminService अनुपस्थित; REST प्रारंभ नहीं होगा।"
+
+msgid "rest.started"
+msgstr "REST पोर्ट {0}{1}{2} पर प्रारंभ।"
+
+msgid "storage.changed"
+msgstr "स्टोरेज कॉन्फ़िग बदला -> सेवाएँ पुनर्निर्मित की जा रही हैं।"
+
+msgid "storage.rebuilt"
+msgstr "सेवाएँ पुनःआरंभ की गईं। डेटा माइग्रेशन नहीं (InMemory -> JDBC खाली)।"
+
+msgid "storage.reload.ok"
+msgstr "कॉन्फ़िग पुनः लोड।"
+
+msgid "storage.reload.none"
+msgstr "कोई सेवा लोड नहीं; सर्वर पुनः प्रारंभ करें।"
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim: अनुमति नहीं।"
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim: माइग्रेशन केवल JDBC स्टोरेज के साथ।"
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim: माइग्रेशन पूरा।"
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim: माइग्रेशन असफल ({0})."
+
+msgid "cmd.usage"
+msgstr "HomeClaim: कमांड: /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWE नहीं मिला!"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaim को चलाने के लिए FastAsyncWorldEdit (FAWE) आवश्यक है।"
+
+msgid "fawe.not_found.line2"
+msgstr "प्लॉट वर्ल्ड बनाते और कन्वर्ट करते समय तेज़ ब्लॉक"
+
+msgid "fawe.not_found.line3"
+msgstr "ऑपरेशन के लिए FAWE आवश्यक है।"
+
+msgid "fawe.not_found.download"
+msgstr "डाउनलोड: https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "सर्वर 10 सेकंड में सुरक्षित रूप से बंद हो जाएगा..."
+
+msgid "fawe.shutdown"
+msgstr "सर्वर बंद हो रहा है - FAWE आवश्यक है!"
+
+msgid "fawe.detected"
+msgstr "FAWE पाया गया: {0}"
+

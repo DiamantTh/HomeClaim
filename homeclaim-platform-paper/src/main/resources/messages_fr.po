@@ -1,0 +1,90 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+
+msgid "bridge.registered"
+msgstr "Bridge HomeClaim Paper enregistré."
+
+msgid "bootstrap.initialized"
+msgstr "HomeClaim Paper démarré ({0})."
+
+msgid "jdbc.warn.no.creds"
+msgstr "JDBC sans utilisateur/mot de passe ; la connexion peut échouer."
+
+msgid "sqlite.warn.mismatch"
+msgstr "homeclaim.storage.sqliteFile défini mais driver ≠ 'sqlite' ; entrée ignorée."
+
+msgid "migrations.disabled"
+msgstr "Migrations désactivées."
+
+msgid "migrations.nonpostgres"
+msgstr "Migrations auto seulement pour Postgres ; mettre allowNonPostgres=true pour les autres."
+
+msgid "migrations.ok"
+msgstr "Migrations exécutées ({0})."
+
+msgid "migrations.fail"
+msgstr "Échec des migrations : {0}"
+
+msgid "rest.missing.admin"
+msgstr "REST activé mais RegionAdminService manquant ; REST ne démarre pas."
+
+msgid "rest.started"
+msgstr "REST démarré sur le port {0}{1}{2}."
+
+msgid "storage.changed"
+msgstr "Config storage modifiée -> reconstruction des services."
+
+msgid "storage.rebuilt"
+msgstr "Services réinitialisés. Pas de migration de données (InMemory -> JDBC vide)."
+
+msgid "storage.reload.ok"
+msgstr "Config rechargée."
+
+msgid "storage.reload.none"
+msgstr "Aucun service chargé ; redémarre le serveur."
+
+msgid "cmd.no.perm"
+msgstr "HomeClaim : Pas de permission."
+
+msgid "cmd.migrate.only.jdbc"
+msgstr "HomeClaim : Migration possible uniquement avec stockage JDBC."
+
+msgid "cmd.migrate.ok"
+msgstr "HomeClaim : Migration exécutée."
+
+msgid "cmd.migrate.fail"
+msgstr "HomeClaim : Échec de migration ({0})."
+
+msgid "cmd.usage"
+msgstr "HomeClaim : Commandes : /homeclaim reload | /homeclaim migrate"
+
+msgid "fawe.not_found.title"
+msgstr "FAWE NON TROUVÉ !"
+
+msgid "fawe.not_found.line1"
+msgstr "HomeClaim nécessite FastAsyncWorldEdit (FAWE) pour fonctionner."
+
+msgid "fawe.not_found.line2"
+msgstr "FAWE est nécessaire pour les opérations rapides de blocs lors de la création"
+
+msgid "fawe.not_found.line3"
+msgstr "et de la conversion des mondes de parcelles."
+
+msgid "fawe.not_found.download"
+msgstr "Téléchargement : https://hangar.papermc.io/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.download2"
+msgstr "GitHub : https://github.com/IntellectualSites/FastAsyncWorldEdit"
+
+msgid "fawe.not_found.shutdown"
+msgstr "Le serveur s'arrêtera en toute sécurité dans 10 secondes..."
+
+msgid "fawe.shutdown"
+msgstr "Arrêt du serveur - FAWE est requis !"
+
+msgid "fawe.detected"
+msgstr "FAWE détecté : {0}"
+

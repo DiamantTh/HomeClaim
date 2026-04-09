@@ -1,0 +1,51 @@
+name: HomeClaim
+version: 0.1.0-SNAPSHOT
+main: systems.diath.homeclaim.platform.paper.HomeClaimPaperPlugin
+api-version: "1.21"
+folia-supported: true
+load: STARTUP
+description: Paper/Folia adapter for HomeClaim
+author: HomeClaim
+
+# Optional dependencies  
+softdepend:
+  - FastAsyncWorldEdit
+  - Vault
+  - Essentials
+
+commands:
+  homeclaim:
+    description: HomeClaim Admin-Kommandos
+    usage: /homeclaim setup
+    aliases: [hc]
+    permission: homeclaim.admin
+  plot:
+    description: Plot Verwaltung (P2-Style)
+    usage: /plot [claim|auto|home|info|list|visit]
+    aliases: [p]
+  zone:
+    description: Zone Informationen
+    usage: /zone info
+    aliases: [z]
+permissions:
+  homeclaim.admin:
+    description: Zugriff auf Admin-Commands
+    default: op
+  homeclaim.admin.setup:
+    description: Allows running the HomeClaim plot setup wizard
+    default: op
+  homeclaim.admin.components:
+    description: Allows managing components in any region (Owner/Trusted bypass this)
+    default: false
+  homeclaim.audit.view:
+    description: Allows viewing audit logs of player actions in regions (requires LuckPerms/permission plugin)
+    default: false
+  homeclaim.plot.claim:
+    description: Allows claiming plots
+    default: true
+  homeclaim.plot.home:
+    description: Allows teleporting to own plot
+    default: true
+  homeclaim.plot.visit:
+    description: Allows visiting other players' plots
+    default: true

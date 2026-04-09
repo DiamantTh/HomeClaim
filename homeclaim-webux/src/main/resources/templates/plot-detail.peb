@@ -1,0 +1,161 @@
+{% extends "base.peb" %}
+
+{% block content %}
+<div class="container-fluid" x-data="plotDetail('{{ plotId }}')">
+    {# Loading State #}
+    <div x-show="loading" class="text-center py-5" x-cloak>
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Lädt...</span>
+        </div>
+    </div>
+
+    {# Content #}
+    <div x-show="!loading" x-cloak>
+        {# Header #}
+        <div class="d-flex justify-content-between align-items-start mb-4">
+            <div>
+                <h1 class="h2 mb-1" x-text="plot?.title"></h1>
+                <p class="text-muted mb-0">
+                    von <strong x-text="plot?.ownerName"></strong>
+                    <span class="ms-2 badge" :class="plot?.featured ? 'badge-featured' : 'bg-secondary'" x-text="plot?.featured ? 'Featured' : 'Normal'"></span>
+                </p>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-danger" @click="toggleLike">
+                    <i class="bi" :class="plot?.liked ? 'bi-heart-fill' : 'bi-heart'"></i>
+                    <span x-text="plot?.likes"></span>
+                </button>
+                <a :href="`/sw/${plot?.alias || plot?.ownerName}`" class="btn btn-primary">
+                    <i class="bi bi-geo-alt-fill"></i> Warp
+                </a>
+            </div>
+        </div>
+
+        {# Main Layout #}
+        <div class="row g-4">
+            {# Left Column #}
+            <div class="col-12 col-lg-8">
+                {# Screenshot #}
+                <div class="card mb-4">
+                    <img :src="plot?.screenshotUrl || '/static/img/plot-placeholder.svg'" 
+                         class="card-img-top" 
+                         style="height: 400px; object-fit: cover;">
+                </div>
+
+                {# Description #}
+                <div class="card mb-4">
+                    <div class="card-header bg-transparent">
+                        <h5 class="mb-0">Beschreibung</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-0" x-text="plot?.description || 'Keine Beschreibung vorhanden.'"></p>
+                    </div>
+                </div>
+
+                {# Stats Timeline #}
+                <div class="card">
+                    <div class="card-header bg-transparent">
+                        <h5 class="mb-0">Statistiken</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-6 col-md-3">
+                                <div class="text-center">
+                                    <i class="bi bi-eye-fill text-info fs-3"></i>
+                                    <div class="mt-2">
+                                        <div class="h4 mb-0" x-text="plot?.visits"></div>
+                                        <small class="text-muted">Besuche</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-center">
+                                    <i class="bi bi-heart-fill text-danger fs-3"></i>
+                                    <div class="mt-2">
+                                        <div class="h4 mb-0" x-text="plot?.likes"></div>
+                                        <small class="text-muted">Likes</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-center">
+                                    <i class="bi bi-bookmark-fill text-success fs-3"></i>
+                                    <div class="mt-2">
+                                        <div class="h4 mb-0" x-text="plot?.bookmarks"></div>
+                                        <small class="text-muted">Bookmarks</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-center">
+                                    <i class="bi bi-people-fill text-primary fs-3"></i>
+                                    <div class="mt-2">
+                                        <div class="h4 mb-0" x-text="plot?.members"></div>
+                                        <small class="text-muted">Member</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {# Right Column #}
+            <div class="col-12 col-lg-4">
+                {# Owner Card #}
+                <div class="card mb-4">
+                    <div class="card-header bg-transparent">
+                        <h5 class="mb-0">Besitzer</h5>
+                    </div>
+                    <div class="card-body d-flex align-items-center">
+                        <img :src="plot?.ownerAvatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Owner'" 
+                             class="rounded-circle me-3" width="48" height="48">
+                        <div>
+                            <div class="fw-bold" x-text="plot?.ownerName"></div>
+                            <small class="text-muted" x-text="plot?.ownerOnline ? 'Online' : 'Offline'"></small>
+                        </div>
+                    </div>
+                </div>
+
+                {# Meta Info #}
+                <div class="card mb-4">
+                    <div class="card-header bg-transparent">
+                        <h5 class="mb-0">Details</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">Kategorie</span>
+                            <span x-text="plot?.category || 'Unbekannt'"></span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">Alias</span>
+                            <span x-text="plot?.alias || '-'" class="text-monospace"></span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">Größe</span>
+                            <span x-text="plot?.size || '32x32'"></span>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <span class="text-muted">Erstellt</span>
+                            <span x-text="homeClaimUtils.formatDate(plot?.createdAt)"></span>
+                        </div>
+                    </div>
+                </div>
+
+                {# Tags #}
+                <div class="card">
+                    <div class="card-header bg-transparent">
+                        <h5 class="mb-0">Tags</h5>
+                    </div>
+                    <div class="card-body">
+                        <template x-for="tag in (plot?.tags || [])" :key="tag">
+                            <span class="badge bg-secondary me-1" x-text="tag"></span>
+                        </template>
+                        <div x-show="!plot?.tags?.length" class="text-muted">Keine Tags</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

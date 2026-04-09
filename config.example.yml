@@ -1,0 +1,117 @@
+# HomeClaim - Beispiel Konfiguration
+# Dieser Datei wird EINMALIG beim Setup gelesen
+# Danach sind alle Settings in der Datenbank (crypto_settings Tabelle)
+
+# ============================================================================
+# SERVER-KONFIGURATION
+# ============================================================================
+server:
+  port: 8080
+  bind: "0.0.0.0"
+
+# ============================================================================
+# DATABASE
+# ============================================================================
+database:
+  type: postgresql  # oder: mysql, sqlite
+  host: localhost
+  port: 5432
+  database: homeclaim
+  username: homeclaim
+  password: change_me  # oder: env:DB_PASSWORD
+  
+  # Connection Pool
+  pool:
+    min_size: 5
+    max_size: 20
+    connection_timeout_sec: 30
+    idle_timeout_sec: 600
+
+# ============================================================================
+# STORAGE TYPE
+# ============================================================================
+storage:
+  type: jdbc  # oder: memory (nur für Dev)
+
+# ============================================================================
+# REST API
+# ============================================================================
+rest:
+  enabled: true
+  port: 8080
+  auth:
+    token: change_me  # oder: env:HOMECLAIM_API_TOKEN
+    # token_file: /etc/homeclaim/api-token.txt
+  rate_limit: 60  # requests/minute
+  cors:
+    enabled: false  # true = externe Browser-Clients
+
+# ============================================================================
+# CRYPTO / SECURITY (Setup-time only!)
+# ============================================================================
+crypto:
+  # WÄHLE PROFIL: einzige Einstellung!
+  profile: standard    # Options:
+                       #   minimal     (32 MiB,  4 iter, 2 par, ~850ms)
+                       #   standard    (64 MiB,  3 iter, 2 par, ~900ms) ← default
+                       #   hardened    (96 MiB,  3 iter, 2 par, ~1000ms)
+                       #   maximum     (128 MiB, 3 iter, 4 par, ~1100ms)
+  
+  # OPTIONAL: Einzelne Overrides (selten nötig!)
+  # (mit Validierung - unzulässige Werte werden abgelehnt)
+  # override:
+  #   password_memory: 65536  # Argon2id memory (KiB), Range: 32768-131072
+  #   password_iterations: 3  # Argon2id iterations, Range: 2-5
+  #   password_parallelism: 2 # Argon2id parallelism, Range: 1-4
+  #   # BLAKE2b hat keine Parameter (immer gleich schnell)
+  
+  # Encryption Key für sensitive Daten (TOTP secrets, OAuth tokens)
+  # MUSS vor Startup gesetzt sein!
+  encryption_key: env:HOMECLAIM_CRYPTO_KEY  # oder: "base64:xxxxx" (nicht empfohlen)
+  
+  # Optional: Notes für Audit Log
+  # notes: "Initiales Setup - 4-Core Server"
+
+# ============================================================================
+# MINECRAFT INTEGRATION
+# ============================================================================
+minecraft:
+  # Plot-Welt
+  plot_world: "plots"
+  
+  # Economies (für Verkauf/Kauf)
+  economy:
+    enabled: false
+    provider: vault  # oder: essentials
+  
+  # Permissions (für Admin-Checks)
+  permissions:
+    enabled: true
+    provider: luckperms  # oder: pex, vault
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+logging:
+  level: INFO  # DEBUG, INFO, WARN, ERROR
+  format: json  # oder: text
+  audit:
+    enabled: true
+    retention_days: 90
+
+# ============================================================================
+# PERFORMANCE TUNING
+# ============================================================================
+performance:
+  # Cache-Größen
+  region_cache_size: 1000
+  zone_cache_size: 100
+  
+  # Async Tasks
+  async_executor_threads: 4
+
+# ============================================================================
+# FARBEN/LOCALISATION
+# ============================================================================
+i18n:
+  locale: de  # de, en, fr, es, ...

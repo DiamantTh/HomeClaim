@@ -1,0 +1,208 @@
+/**
+ * HomeClaim Custom Styles
+ * 
+ * Bootstrap Variables Override (before including Bootstrap):
+ * https://getbootstrap.com/docs/5.3/customize/sass/#variable-defaults
+ */
+
+/* ========================================
+   Custom Variables & Theme Overrides
+   ======================================== */
+
+:root {
+    /* HomeClaim Brand Colors */
+    --hc-primary: #4f46e5; /* Indigo */
+    --hc-secondary: #06b6d4; /* Cyan */
+    --hc-success: #10b981; /* Green */
+    --hc-danger: #ef4444; /* Red */
+    --hc-warning: #f59e0b; /* Amber */
+    --hc-info: #3b82f6; /* Blue */
+    
+    /* Dark Theme */
+    --hc-dark-bg: #0f172a; /* Slate 900 */
+    --hc-dark-surface: #1e293b; /* Slate 800 */
+    --hc-dark-border: #334155; /* Slate 700 */
+    
+    /* Spacing */
+    --hc-nav-height: 60px;
+    --hc-sidebar-width: 280px;
+}
+
+/* ========================================
+   Layout Components
+   ======================================== */
+
+.hc-navbar {
+    height: var(--hc-nav-height);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.hc-sidebar {
+    width: var(--hc-sidebar-width);
+    min-height: calc(100vh - var(--hc-nav-height));
+    background: var(--bs-light);
+    border-right: 1px solid var(--bs-border-color);
+}
+
+.hc-main-content {
+    margin-left: var(--hc-sidebar-width);
+    min-height: calc(100vh - var(--hc-nav-height));
+    padding: 2rem;
+}
+
+/* ========================================
+   Plot Cards
+   ======================================== */
+
+.plot-card {
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.plot-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.plot-card-image {
+    height: 200px;
+    object-fit: cover;
+    background: linear-gradient(135deg, var(--hc-primary) 0%, var(--hc-secondary) 100%);
+}
+
+.plot-stats {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.875rem;
+    color: var(--bs-secondary-color);
+}
+
+.plot-stat-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+/* ========================================
+   Status Badges
+   ======================================== */
+
+.badge-online {
+    background: var(--hc-success);
+}
+
+.badge-offline {
+    background: var(--bs-secondary);
+}
+
+.badge-featured {
+    background: linear-gradient(135deg, var(--hc-primary), var(--hc-secondary));
+}
+
+/* ========================================
+   Alpine.js Transitions
+   ======================================== */
+
+[x-cloak] {
+    display: none !important;
+}
+
+.fade-enter {
+    opacity: 0;
+}
+
+.fade-enter-active {
+    transition: opacity 0.2s ease-in;
+}
+
+.fade-exit {
+    opacity: 1;
+}
+
+.fade-exit-active {
+    opacity: 0;
+    transition: opacity 0.2s ease-out;
+}
+
+/* ========================================
+   WebSocket Connection Indicator
+   ======================================== */
+
+.ws-indicator {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    padding: 0.5rem 1rem;
+    border-radius: 2rem;
+    font-size: 0.875rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    z-index: 1050;
+}
+
+.ws-indicator.connected {
+    background: var(--hc-success);
+    color: white;
+}
+
+.ws-indicator.disconnected {
+    background: var(--hc-danger);
+    color: white;
+}
+
+.ws-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* ========================================
+   Dark Mode Support
+   ======================================== */
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bs-body-bg: var(--hc-dark-bg);
+        --bs-body-color: #e2e8f0;
+        --bs-border-color: var(--hc-dark-border);
+    }
+    
+    .hc-sidebar {
+        background: var(--hc-dark-surface);
+        border-color: var(--hc-dark-border);
+    }
+    
+    .card {
+        background: var(--hc-dark-surface);
+        border-color: var(--hc-dark-border);
+    }
+}
+
+/* ========================================
+   Responsive Layout
+   ======================================== */
+
+@media (max-width: 992px) {
+    .hc-sidebar {
+        position: fixed;
+        left: -100%;
+        transition: left 0.3s ease;
+        z-index: 1040;
+    }
+    
+    .hc-sidebar.show {
+        left: 0;
+    }
+    
+    .hc-main-content {
+        margin-left: 0;
+    }
+}

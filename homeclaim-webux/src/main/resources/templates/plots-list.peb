@@ -1,0 +1,122 @@
+{% extends "base.peb" %}
+
+{% block content %}
+<div class="container-fluid" x-data="plotList">
+    {# Header #}
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h2 mb-0">Alle Plots</h1>
+            <p class="text-muted">Entdecke die besten Plots unserer Community</p>
+        </div>
+        <div class="d-flex gap-2">
+            {# Filter Buttons #}
+            <div class="btn-group" role="group">
+                <button type="button" 
+                        class="btn btn-outline-primary" 
+                        :class="{ 'active': filter === 'all' }"
+                        @click="filter = 'all'">
+                    Alle
+                </button>
+                <button type="button" 
+                        class="btn btn-outline-primary" 
+                        :class="{ 'active': filter === 'featured' }"
+                        @click="filter = 'featured'">
+                    <i class="bi bi-star-fill"></i> Featured
+                </button>
+                <button type="button" 
+                        class="btn btn-outline-primary" 
+                        :class="{ 'active': filter === 'owned' }"
+                        @click="filter = 'owned'">
+                    <i class="bi bi-house-fill"></i> Meine
+                </button>
+            </div>
+
+            {# Sort Dropdown #}
+            <div class="dropdown">
+                <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                    <i class="bi bi-sort-down"></i> Sortieren
+                </button>
+                <ul class="dropdown-menu">
+                    <li><a class="dropdown-item" href="#" @click.prevent="sortBy = 'recent'">Neueste</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="sortBy = 'popular'">Beliebteste</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="sortBy = 'likes'">Meiste Likes</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    {# Loading State #}
+    <div x-show="loading" class="text-center py-5" x-cloak>
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Lädt...</span>
+        </div>
+    </div>
+
+    {# Plot Grid #}
+    <div x-show="!loading" class="row g-4" x-cloak>
+        <template x-for="plot in filteredPlots" :key="plot.id">
+            <div class="col-md-6 col-lg-4 col-xl-3">
+                <div class="card plot-card h-100">
+                    {# Screenshot/Image #}
+                    <img :src="plot.screenshotUrl || '/static/img/plot-placeholder.svg'" 
+                         class="card-img-top plot-card-image" 
+                         :alt="plot.title">
+                    
+                    {# Featured Badge #}
+                    <div x-show="plot.featured" class="position-absolute top-0 start-0 m-2">
+                        <span class="badge badge-featured">
+                            <i class="bi bi-star-fill"></i> Featured
+                        </span>
+                    </div>
+
+                    <div class="card-body">
+                        {# Title #}
+                        <h5 class="card-title mb-2" x-text="plot.title"></h5>
+                        
+                        {# Owner #}
+                        <p class="text-muted small mb-3">
+                            von <strong x-text="plot.ownerName"></strong>
+                        </p>
+
+                        {# Description #}
+                        <p class="card-text small text-truncate" x-text="plot.description" style="max-height: 3rem;"></p>
+
+                        {# Stats #}
+                        <div class="plot-stats mt-3">
+                            <div class="plot-stat-item">
+                                <i class="bi bi-heart-fill text-danger"></i>
+                                <span x-text="plot.likes"></span>
+                            </div>
+                            <div class="plot-stat-item">
+                                <i class="bi bi-eye-fill"></i>
+                                <span x-text="plot.visits"></span>
+                            </div>
+                            <div class="plot-stat-item">
+                                <i class="bi bi-bookmark-fill"></i>
+                                <span x-text="plot.bookmarks"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer bg-transparent border-top-0">
+                        <div class="d-flex gap-2">
+                            <a :href="`/plot/${plot.id}`" class="btn btn-sm btn-primary flex-grow-1">
+                                <i class="bi bi-eye"></i> Details
+                            </a>
+                            <a :href="`/sw/${plot.alias || plot.ownerName}`" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-geo-alt-fill"></i> Warp
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    {# Empty State #}
+    <div x-show="!loading && filteredPlots.length === 0" class="text-center py-5" x-cloak>
+        <i class="bi bi-inbox fs-1 text-muted"></i>
+        <p class="text-muted mt-3">Keine Plots gefunden</p>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,154 @@
+{% extends "base.peb" %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row g-4">
+        {# Welcome Card #}
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body d-flex align-items-center justify-content-between">
+                    <div>
+                        <h3 class="mb-1">Willkommen zurück{% if user %}, {{ user.username }}{% endif %}!</h3>
+                        <p class="text-muted mb-0">Hier ist dein aktueller Überblick über HomeClaim.</p>
+                    </div>
+                    <div class="text-end">
+                        <a href="/my-plots" class="btn btn-primary">
+                            <i class="bi bi-house-fill"></i> Meine Plots
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Stats Cards #}
+        <div class="col-md-6 col-xl-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <div class="rounded-circle bg-primary bg-opacity-10 p-3">
+                                <i class="bi bi-grid-3x3-gap text-primary fs-4"></i>
+                            </div>
+                        </div>
+                        <div>
+                            <h6 class="text-muted mb-1">Deine Plots</h6>
+                            <h4 class="mb-0" x-data x-text="homeClaimUtils.formatNumber(0)">0</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <div class="rounded-circle bg-danger bg-opacity-10 p-3">
+                                <i class="bi bi-heart-fill text-danger fs-4"></i>
+                            </div>
+                        </div>
+                        <div>
+                            <h6 class="text-muted mb-1">Likes (30 Tage)</h6>
+                            <h4 class="mb-0" x-data x-text="homeClaimUtils.formatNumber(0)">0</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <div class="rounded-circle bg-info bg-opacity-10 p-3">
+                                <i class="bi bi-eye-fill text-info fs-4"></i>
+                            </div>
+                        </div>
+                        <div>
+                            <h6 class="text-muted mb-1">Besuche (24h)</h6>
+                            <h4 class="mb-0" x-data x-text="homeClaimUtils.formatNumber(0)">0</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <div class="rounded-circle bg-success bg-opacity-10 p-3">
+                                <i class="bi bi-bookmark-fill text-success fs-4"></i>
+                            </div>
+                        </div>
+                        <div>
+                            <h6 class="text-muted mb-1">Lesezeichen</h6>
+                            <h4 class="mb-0" x-data x-text="homeClaimUtils.formatNumber(0)">0</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Recent Activity #}
+        <div class="col-12 col-xl-8">
+            <div class="card h-100">
+                <div class="card-header bg-transparent">
+                    <h5 class="mb-0">Letzte Aktivitäten</h5>
+                </div>
+                <div class="card-body">
+                    <div class="list-group list-group-flush">
+                        <div class="list-group-item d-flex align-items-center">
+                            <i class="bi bi-plus-circle text-success me-3"></i>
+                            <div>
+                                <div>Plot erstellt: <strong>Spawn Plaza</strong></div>
+                                <small class="text-muted">vor 2 Std.</small>
+                            </div>
+                        </div>
+                        <div class="list-group-item d-flex align-items-center">
+                            <i class="bi bi-heart-fill text-danger me-3"></i>
+                            <div>
+                                <div>Neuer Like auf <strong>Sky Garden</strong></div>
+                                <small class="text-muted">vor 5 Std.</small>
+                            </div>
+                        </div>
+                        <div class="list-group-item d-flex align-items-center">
+                            <i class="bi bi-eye-fill text-info me-3"></i>
+                            <div>
+                                <div>+24 Besuche auf <strong>Market Town</strong></div>
+                                <small class="text-muted">vor 1 Tag</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Quick Actions #}
+        <div class="col-12 col-xl-4">
+            <div class="card h-100">
+                <div class="card-header bg-transparent">
+                    <h5 class="mb-0">Schnellaktionen</h5>
+                </div>
+                <div class="card-body d-grid gap-2">
+                    <a href="/plots" class="btn btn-outline-primary">
+                        <i class="bi bi-grid-3x3-gap"></i> Alle Plots
+                    </a>
+                    <a href="/my-plots" class="btn btn-outline-primary">
+                        <i class="bi bi-house-fill"></i> Meine Plots
+                    </a>
+                    <a href="/bookmarks" class="btn btn-outline-primary">
+                        <i class="bi bi-bookmark-fill"></i> Lesezeichen
+                    </a>
+                    <a href="/settings" class="btn btn-outline-secondary">
+                        <i class="bi bi-gear"></i> Einstellungen
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="de" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ description | default('HomeClaim - Minecraft Plot Management System') }}">
+    <title>{{ title | default('HomeClaim') }}</title>
+
+    {# Favicon #}
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+
+    {# Bootstrap CSS #}
+    <link rel="stylesheet" href="/static/css/vendor/bootstrap.min.css">
+    
+    {# Bootstrap Icons (CSS-based icons) #}
+    <link rel="stylesheet" href="/static/css/bootstrap-icons.min.css">
+    
+    {# Custom CSS #}
+    <link rel="stylesheet" href="/static/css/app.css">
+    
+    {# Page-specific CSS #}
+    {% block styles %}{% endblock %}
+</head>
+<body x-data="{ darkMode: false }" :data-bs-theme="darkMode ? 'dark' : 'light'">
+    
+    {# Navbar #}
+    <nav class="navbar navbar-expand-lg hc-navbar bg-white border-bottom sticky-top" x-data="sidebar">
+        <div class="container-fluid">
+            {# Logo & Brand #}
+            <a class="navbar-brand d-flex align-items-center" href="/">
+                <i class="bi bi-house-fill text-primary fs-4 me-2"></i>
+                <span class="fw-bold">HomeClaim</span>
+            </a>
+
+            {# Mobile Toggle #}
+            <button class="navbar-toggler" type="button" @click="toggle">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            {# Navbar Items #}
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/plots">
+                            <i class="bi bi-grid-3x3-gap"></i> Plots
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/featured">
+                            <i class="bi bi-star-fill"></i> Featured
+                        </a>
+                    </li>
+                </ul>
+
+                {# User Menu #}
+                <div class="d-flex align-items-center gap-3">
+                    {# Dark Mode Toggle #}
+                    <button class="btn btn-link text-decoration-none" @click="darkMode = !darkMode">
+                        <i class="bi" :class="darkMode ? 'bi-sun-fill' : 'bi-moon-fill'"></i>
+                    </button>
+
+                    {# User Dropdown #}
+                    {% if user %}
+                    <div class="dropdown">
+                        <button class="btn btn-link text-decoration-none dropdown-toggle d-flex align-items-center" 
+                                type="button" 
+                                data-bs-toggle="dropdown">
+                            <img src="{{ user.avatarUrl }}" 
+                                 alt="{{ user.username }}" 
+                                 class="rounded-circle me-2"
+                                 width="32" height="32">
+                            <span>{{ user.username }}</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="/profile"><i class="bi bi-person"></i> Profil</a></li>
+                            <li><a class="dropdown-item" href="/my-plots"><i class="bi bi-house"></i> Meine Plots</a></li>
+                            <li><a class="dropdown-item" href="/settings"><i class="bi bi-gear"></i> Einstellungen</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item text-danger" href="/logout"><i class="bi bi-box-arrow-right"></i> Abmelden</a></li>
+                        </ul>
+                    </div>
+                    {% else %}
+                    <a href="/login" class="btn btn-primary">
+                        <i class="bi bi-box-arrow-in-right"></i> Anmelden
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# Main Layout #}
+    <div class="d-flex">
+        {# Sidebar #}
+        {% if showSidebar | default(true) %}
+        <aside class="hc-sidebar" x-data="sidebar" :class="{ 'show': open }">
+            <div class="p-3">
+                <h6 class="text-uppercase text-muted mb-3 fw-bold">Navigation</h6>
+                <ul class="nav flex-column">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/dashboard">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/plots">
+                            <i class="bi bi-grid-3x3-gap"></i> Alle Plots
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/my-plots">
+                            <i class="bi bi-house-fill"></i> Meine Plots
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/bookmarks">
+                            <i class="bi bi-bookmark-fill"></i> Lesezeichen
+                        </a>
+                    </li>
+                </ul>
+
+                {% if user.hasPermission('homeclaim.admin') %}
+                <h6 class="text-uppercase text-muted mb-3 fw-bold mt-4">Admin</h6>
+                <ul class="nav flex-column">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/plots">
+                            <i class="bi bi-shield-fill"></i> Plot-Verwaltung
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/users">
+                            <i class="bi bi-people-fill"></i> Benutzer
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/notifications">
+                            <i class="bi bi-bell-fill"></i> Benachrichtigungen
+                        </a>
+                    </li>
+                </ul>
+                {% endif %}
+            </div>
+        </aside>
+        {% endif %}
+
+        {# Main Content #}
+        <main class="hc-main-content flex-grow-1">
+            {# Breadcrumb #}
+            {% if breadcrumb %}
+            <nav aria-label="breadcrumb" class="mb-4">
+                <ol class="breadcrumb">
+                    {% for item in breadcrumb %}
+                    <li class="breadcrumb-item{% if loop.last %} active{% endif %}">
+                        {% if not loop.last %}
+                        <a href="{{ item.url }}">{{ item.label }}</a>
+                        {% else %}
+                        {{ item.label }}
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ol>
+            </nav>
+            {% endif %}
+
+            {# Flash Messages #}
+            {% if flash %}
+            <div class="alert alert-{{ flash.type }} alert-dismissible fade show" role="alert">
+                <i class="bi bi-{{ flash.icon }}"></i> {{ flash.message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endif %}
+
+            {# Page Content #}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {# WebSocket Connection Indicator #}
+    <div class="ws-indicator" 
+         x-data 
+         x-show="$store.ws" 
+         :class="$store.ws.connected ? 'connected' : 'disconnected'"
+         x-cloak>
+        <div class="ws-pulse"></div>
+        <span x-text="$store.ws.connected ? 'Verbunden' : 'Getrennt'"></span>
+    </div>
+
+    {# Notification Toasts #}
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" x-data="notifications">
+        <template x-for="item in items" :key="item.id">
+            <div class="toast show" role="alert">
+                <div class="toast-header">
+                    <i class="bi me-2" :class="{
+                        'bi-info-circle-fill text-info': item.type === 'info',
+                        'bi-check-circle-fill text-success': item.type === 'success',
+                        'bi-exclamation-triangle-fill text-warning': item.type === 'warning',
+                        'bi-x-circle-fill text-danger': item.type === 'error'
+                    }"></i>
+                    <strong class="me-auto">HomeClaim</strong>
+                    <button type="button" class="btn-close" @click="remove(item.id)"></button>
+                </div>
+                <div class="toast-body" x-text="item.message"></div>
+            </div>
+        </template>
+    </div>
+
+    {# Footer #}
+    <footer class="bg-light border-top py-4 mt-5">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6">
+                    <p class="text-muted mb-0">
+                        &copy; {{ "now" | date("Y") }} HomeClaim v{{ version | default('1.0.0') }}
+                    </p>
+                </div>
+                <div class="col-md-6 text-md-end">
+                    <a href="/docs" class="text-muted text-decoration-none me-3">Dokumentation</a>
+                    <a href="/api/docs" class="text-muted text-decoration-none me-3">API</a>
+                    <a href="/imprint" class="text-muted text-decoration-none">Impressum</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    {# Bootstrap JS Bundle (includes Popper) #}
+    <script src="/static/js/vendor/bootstrap.bundle.min.js"></script>
+    
+    {# Alpine.js #}
+    <script src="/static/js/vendor/alpine.min.js" defer></script>
+    
+    {# App JS #}
+    <script src="/static/js/app.js"></script>
+    
+    {# Page-specific JS #}
+    {% block scripts %}{% endblock %}
+</body>
+</html>
