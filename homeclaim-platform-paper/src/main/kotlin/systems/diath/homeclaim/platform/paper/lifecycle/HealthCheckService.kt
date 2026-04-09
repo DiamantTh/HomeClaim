@@ -120,13 +120,17 @@ object HealthCheckService {
         val server = plugin?.server
         val fawe = server?.pluginManager?.getPlugin("FastAsyncWorldEdit")
         if (fawe == null || !fawe.isEnabled) {
-            failures.add(ValidationFailure(
-                component = "FAWE",
-                message = "FastAsyncWorldEdit not found or disabled",
-                severity = Severity.CRITICAL
-            ))
+            warnings.add("FastAsyncWorldEdit not found - plot world conversion will run with limited performance")
+            log?.warning(i18n.msg("health.fawe.missing"))
         } else {
             log?.info(i18n.msg("health.fawe.ok", fawe.description.version))
+        }
+
+        val plotSquared = server?.pluginManager?.getPlugin("PlotSquared")
+        if (plotSquared != null && plotSquared.isEnabled) {
+            log?.info(i18n.msg("health.plotsquared.ok", plotSquared.description.version))
+        } else {
+            log?.info(i18n.msg("health.plotsquared.none"))
         }
         
         // Optional: Vault

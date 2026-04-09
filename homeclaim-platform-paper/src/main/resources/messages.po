@@ -1246,6 +1246,15 @@ msgstr "  §7○ Database: In-memory mode"
 msgid "health.fawe.ok"
 msgstr "  §a✓ FAWE: {0}"
 
+msgid "health.fawe.missing"
+msgstr "  §e⚠ FAWE: Not installed (world conversion uses limited/fallback mode)"
+
+msgid "health.plotsquared.ok"
+msgstr "  §a✓ PlotSquared: {0}"
+
+msgid "health.plotsquared.none"
+msgstr "  §7○ PlotSquared: Not installed"
+
 msgid "health.vault.ok"
 msgstr "  §a✓ Vault: {0}"
 

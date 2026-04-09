@@ -162,7 +162,7 @@ msgid "db.resilience.enabled"
 msgstr "§a✓ Database-Resilienz activated"
 
 msgid "fawe.detected"
-msgstr "FAWE erkannt: {0}"
+msgstr "FAWE detected: {0}"
 
 msgid "fawe.not_found.download"
 msgstr ""
@@ -172,25 +172,25 @@ msgid "fawe.not_found.download2"
 msgstr "GitHub: https://github.com/IntellectualSites/FastAsyncWorldEdit"
 
 msgid "fawe.not_found.line1"
-msgstr "HomeClaim benoetigt FastAsyncWorldEdit (FAWE) zum Betrieb."
+msgstr "HomeClaim requires FastAsyncWorldEdit (FAWE) for world conversion operations."
 
 msgid "fawe.not_found.line2"
-msgstr "FAWE will be for schnelle Block-Operationen beim Erstellen"
+msgstr "FAWE is used for fast block operations when creating"
 
 msgid "fawe.not_found.line3"
-msgstr "and Konvertieren from Plot-Welten benoetigt."
+msgstr "and converting plot worlds."
 
 msgid "fawe.not_found.shutdown"
-msgstr "Server will be in 10 Sekunden sicher heruntergefahren..."
+msgstr "Server will safely shut down in 10 seconds..."
 
 msgid "fawe.not_found.title"
 msgstr "FAWE not found!"
 
 msgid "fawe.operation.failed"
-msgstr "FAWE Block-Operation failed: {0}"
+msgstr "FAWE block operation failed: {0}"
 
 msgid "fawe.shutdown"
-msgstr "Server will be heruntergefahren - FAWE is erforderlich!"
+msgstr "Server is shutting down - FAWE is required!"
 
 msgid "fawe.warning.line1"
 msgstr "╔════════════════════════════════════════════════════════════════╗"
@@ -202,13 +202,13 @@ msgid "fawe.warning.line3"
 msgstr "╠════════════════════════════════════════════════════════════════╣"
 
 msgid "fawe.warning.line4"
-msgstr "HomeClaim läuft without FAWE-Unterstützung."
+msgstr "HomeClaim is running without FAWE support."
 
 msgid "fawe.warning.line5"
-msgstr "Einige Block-Operationen are eingeschränkt."
+msgstr "Some block operations will use a limited fallback mode."
 
 msgid "fawe.warning.line7"
-msgstr "Für volle Funktionalität, installiere FAWE:"
+msgstr "For full functionality, install FAWE:"
 
 msgid "fawe.warning.line8"
 msgstr "https://hangar.papermc.io/IntellectualSites/FAWE"
@@ -686,6 +686,15 @@ msgstr "  §a✓ Speicherplatz: {0}MB frei"
 
 msgid "health.fawe.ok"
 msgstr "  §a✓ FAWE: {0}"
+
+msgid "health.fawe.missing"
+msgstr "  §e⚠ FAWE: Not installed (world conversion uses limited/fallback mode)"
+
+msgid "health.plotsquared.ok"
+msgstr "  §a✓ PlotSquared: {0}"
+
+msgid "health.plotsquared.none"
+msgstr "  §7○ PlotSquared: Not installed"
 
 msgid "health.header.line1"
 msgstr "§e┌────────────────────────────────────────┐"

@@ -60,13 +60,8 @@ tasks.shadowJar {
     archiveVersion.set("")
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    
-    // Clean up intermediate module JARs
-    doLast {
-        rootProject.subprojects.forEach { sub ->
-            sub.layout.buildDirectory.dir("libs").get().asFile.deleteRecursively()
-        }
-    }
+
+    // Keep subproject build outputs intact so test/IDE classpaths and incremental Kotlin compilation remain stable.
 }
 
 tasks.named("build") {

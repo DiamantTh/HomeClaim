@@ -22,6 +22,7 @@ Erlaubte Startorte ohne --data/--worlddata:
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 from dataclasses import dataclass, asdict
@@ -161,25 +162,51 @@ class WorldGenerator:
             print(f"❌ Fehler beim Speichern: {e}")
             return False
 
-    def create_world_bundle(self, output_dir: str, data_dir: Path) -> bool:
+    def create_world_bundle(self, output_dir: str, data_dir: Path, include_defaults: bool = False) -> bool:
         """
         Create a world-only CLI bundle in a single output directory.
-        The structure is scoped to one world and does not execute any Minecraft setup.
+        The structure is scoped to one world and stages a copy-ready server tree.
           <output_dir>/<worldName>/worldgen-options.json
           <output_dir>/<worldName>/<worldName>.toml
           <output_dir>/<worldName>/bukkit-world.yml
           <output_dir>/<worldName>/copy-to-server/plugins/HomeClaim/plot-worlds/<worldName>.toml
+          <output_dir>/<worldName>/copy-to-server/plugins/HomeClaim/config.yml
+          <output_dir>/<worldName>/copy-to-server/plugins/HomeClaim/config.example.yml
+          <output_dir>/<worldName>/copy-to-server/plugins/HomeClaim/sensor-config.toml
+          <output_dir>/<worldName>/copy-to-server/plugins/HomeClaim/scripts/generate-world.py
+          <output_dir>/<worldName>/copy-to-server/config/HomeClaim.toml
           <output_dir>/<worldName>/copy-to-server/bukkit-world.yml
         """
         cfg = self.config
         world_dir = Path(output_dir).resolve() / cfg.name
         world_dir.mkdir(parents=True, exist_ok=True)
+
         copy_root = world_dir / "copy-to-server"
-        copy_plot_worlds = copy_root / "plugins" / "HomeClaim" / "plot-worlds"
-        copy_plot_worlds.mkdir(parents=True, exist_ok=True)
+        copy_homeclaim_dir = copy_root / "plugins" / "HomeClaim"
+        copy_plot_worlds = copy_homeclaim_dir / "plot-worlds"
+        copy_scripts_dir = copy_homeclaim_dir / "scripts"
+        copy_config_dir = copy_root / "config"
+        for folder in (copy_plot_worlds, copy_scripts_dir, copy_config_dir):
+            folder.mkdir(parents=True, exist_ok=True)
 
         homeclaim_toml = render_homeclaim_toml(cfg)
         bukkit_cfg = build_bukkit_generator_patch(cfg)
+
+        staged_files: list[str] = [
+            "bukkit-world.yml",
+            f"plugins/HomeClaim/plot-worlds/{cfg.name}.toml",
+        ]
+        if write_staged_config_yaml(copy_homeclaim_dir / "config.yml", cfg, include_defaults):
+            staged_files.append("plugins/HomeClaim/config.yml")
+
+        for relative_source, destination in (
+            ("config.example.yml", copy_homeclaim_dir / "config.example.yml"),
+            ("sensor-config.toml", copy_homeclaim_dir / "sensor-config.toml"),
+            ("HomeClaim.toml", copy_config_dir / "HomeClaim.toml"),
+            ("scripts/generate-world.py", copy_scripts_dir / "generate-world.py"),
+        ):
+            if copy_bundled_resource(relative_source, destination):
+                staged_files.append(str(destination.relative_to(copy_root)))
 
         manifest = {
             "generatedAt": datetime.now().isoformat(),
@@ -190,6 +217,11 @@ class WorldGenerator:
             "files": {
                 "bukkit": "bukkit-world.yml",
                 "homeclaim": f"{cfg.name}.toml",
+            },
+            "copyToServer": {
+                "root": "copy-to-server",
+                "files": sorted(set(staged_files)),
+                "defaultsApplied": include_defaults,
             },
         }
 
@@ -206,6 +238,30 @@ class WorldGenerator:
             with open(copy_root / "bukkit-world.yml", "w") as f:
                 yaml.dump(bukkit_cfg, f, default_flow_style=False, sort_keys=False)
 
+            with open(copy_root / "README.txt", "w") as f:
+                f.write(
+                    "HomeClaim copy-to-server\n"
+                    "========================\n\n"
+                    "Diesen Unterordner kannst du direkt als Vorlage in einen frischen Serverordner kopieren.\n"
+                    "Enthalten sind die benoetigten HomeClaim-Dateien fuer den ersten Start:\n"
+                    "- plugins/HomeClaim/plot-worlds/<worldName>.toml\n"
+                    "- plugins/HomeClaim/config.yml\n"
+                    "- plugins/HomeClaim/config.example.yml\n"
+                    "- plugins/HomeClaim/sensor-config.toml\n"
+                    "- plugins/HomeClaim/scripts/generate-world.py\n"
+                    "- config/HomeClaim.toml\n"
+                    "- bukkit-world.yml (Snippet zum Mergen in server-root/bukkit.yml)\n\n"
+                    "Empfohlenes Vorgehen:\n"
+                    "1) Inhalt von copy-to-server/ in den Server-Root kopieren\n"
+                    "2) bukkit-world.yml in die bestehende bukkit.yml uebernehmen\n"
+                    "3) Plugin-JAR nach plugins/ kopieren\n"
+                    "4) Server starten\n\n"
+                    + (
+                        f"Zusatz: In plugins/HomeClaim/config.yml wurden fuer '{cfg.name}' bereits Plot-Standardwerte eingetragen.\n"
+                        if include_defaults else ""
+                    )
+                )
+
             with open(world_dir / "worldgen-options.json", "w") as f:
                 json.dump(manifest, f, indent=2)
 
@@ -220,7 +276,13 @@ class WorldGenerator:
                     "- worldgen-options.json (generator metadata)\n\n"
                     "copy-to-server/:\n"
                     "- plugins/HomeClaim/plot-worlds/<worldName>.toml\n"
-                    "- bukkit-world.yml (zu mergen in server-root/bukkit.yml)\n\n"
+                    "- plugins/HomeClaim/config.yml\n"
+                    "- plugins/HomeClaim/config.example.yml\n"
+                    "- plugins/HomeClaim/sensor-config.toml\n"
+                    "- plugins/HomeClaim/scripts/generate-world.py\n"
+                    "- config/HomeClaim.toml\n"
+                    "- bukkit-world.yml (zu mergen in server-root/bukkit.yml)\n"
+                    "- README.txt (Copy/Install-Hinweise)\n\n"
                     "Hinweis:\n"
                     "Dieses Script startet keinen Minecraft-Server und steuert keinen Setup-Wizard.\n"
                     "Die eigentliche Welt wird vom Server/Plugin erzeugt, sobald die Welt geladen/erstellt wird.\n"
@@ -254,6 +316,70 @@ def render_homeclaim_toml(cfg: WorldConfig) -> str:
 
 def build_bukkit_generator_patch(cfg: WorldConfig) -> dict:
     return {"worlds": {cfg.name: {"generator": "HomeClaim"}}}
+
+
+def build_plotworld_defaults(cfg: WorldConfig) -> dict:
+    return {
+        "plotSize": cfg.plot_size,
+        "roadWidth": cfg.road_width,
+        "plotHeight": cfg.plot_height,
+        "plotBlock": cfg.plot_block,
+        "roadBlock": cfg.road_block,
+        "wallBlock": cfg.wall_block,
+        "accentBlock": cfg.accent_block,
+        "plotsPerSide": cfg.plots_per_side,
+        "schema": "default",
+    }
+
+
+def write_staged_config_yaml(destination: Path, cfg: WorldConfig, include_defaults: bool) -> bool:
+    """Write the staged config.yml and optionally inject the chosen/default plot values."""
+    resources_root = Path(__file__).resolve().parent.parent
+    source = resources_root / "config.yml"
+    if not source.exists() or not source.is_file():
+        return False
+
+    if not include_defaults:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return True
+
+    loaded = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    if not isinstance(loaded, dict):
+        loaded = {}
+
+    homeclaim_cfg = loaded.get("homeclaim")
+    if not isinstance(homeclaim_cfg, dict):
+        homeclaim_cfg = {}
+        loaded["homeclaim"] = homeclaim_cfg
+
+    plot_worlds = homeclaim_cfg.get("plotWorlds")
+    if not isinstance(plot_worlds, dict):
+        plot_worlds = {}
+        homeclaim_cfg["plotWorlds"] = plot_worlds
+
+    plot_worlds[cfg.name] = build_plotworld_defaults(cfg)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "# Default config with SQLite (persistent storage)\n"
+        "# See config.example.yml for PostgreSQL/MySQL variants\n"
+        "# Plot defaults for this world were inserted via --use-defaults / --defaults\n"
+        + yaml.dump(loaded, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+    return True
+
+
+def copy_bundled_resource(relative_path: str, destination: Path) -> bool:
+    """Copy a bundled resource next to the script into the staged server tree."""
+    resources_root = Path(__file__).resolve().parent.parent
+    source = resources_root / relative_path
+    if not source.exists() or not source.is_file():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
 
 
 def vprint(verbose: bool, message: str) -> None:
@@ -575,6 +701,7 @@ Beispiele:
     parser.add_argument("--data", default=None, help="Pfad zu plugins/HomeClaim (Data-Ordner)")
     parser.add_argument("--worlddata", default=None, help="Ausgabe-Ordner für Bundles (default: ./generate-world.py-data)")
     parser.add_argument("-y", "--yes", action="store_true", help="Erkannte Server-Einstellungen ohne Nachfrage übernehmen")
+    parser.add_argument("--use-defaults", "--defaults", action="store_true", help="Übernimmt explizit die HomeClaim-Standardwerte und schreibt sie in die erzeugte Struktur")
     parser.add_argument("--apply", action="store_true", help="Schreibt TOML direkt nach plugins/HomeClaim/plot-worlds und merged bukkit.yml")
     parser.add_argument("--apply-dry-run", action="store_true", help="Zeigt exakt, was --apply in bukkit.yml ändern würde (ohne Schreibzugriff)")
     parser.add_argument("--verbose", action="store_true", help="Ausführliche Ausgabe")
@@ -635,6 +762,10 @@ Beispiele:
             accent_block=args.accent_block,
             plots_per_side=args.plots_per_side
         )
+
+    if args.use_defaults:
+        config = WorldConfig(name=config.name)
+        print("✓ Standardwerte aktiviert: Plot-/Block-Defaults werden übernommen und ins Bundle geschrieben.")
     
     # Validiere
     if not config.validate():
@@ -660,7 +791,7 @@ Beispiele:
     )
     
     # Speichere Welt-Bundle (nur Weltdaten/Snippets)
-    if not gen.create_world_bundle(str(worlddata_dir), data_dir):
+    if not gen.create_world_bundle(str(worlddata_dir), data_dir, include_defaults=args.use_defaults):
         return 1
 
     if args.apply:

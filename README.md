@@ -31,7 +31,23 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 ## Entwicklungs-Setup
 - Java 21 Toolchain (Gradle konfiguriert automatisch; Ziel: MC 1.21.5+)
 - Gradle Wrapper 9.2 verwenden: `./gradlew`
-- Kotlin 1.9.25, JUnit 5
+- Kotlin 2.2.x, JUnit 5.10.x
+
+### Frontend-Status
+- `homeclaim-webux` wird ab jetzt **SvelteKit-first** weiterentwickelt.
+- Die bestehende `Pebble`/`Bootstrap`-UX bleibt nur noch als Fallback für Legacy-Seiten bestehen.
+- Der neue Frontend-Workspace liegt unter `homeclaim-webux/frontend`.
+
+**SvelteKit entwickeln/builden:**
+```bash
+cd homeclaim-webux/frontend
+npm install
+npm run dev
+# oder für das Plugin-Bundle:
+npm run build
+```
+
+Nach einem Build wird die App unter `http://<host>:8081/app` ausgeliefert.
 
 ### Build & Deployment
 
@@ -58,8 +74,22 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 ./generate-world.py --name MyWorld
 ```
 
+**Explizit mit Standardwerten vorbelegen:**
+```bash
+./generate-world.py --name MyWorld --use-defaults
+```
+
 Hinweis: Das Script ist bewusst CLI-only und steuert keinen Ingame-Setup-Wizard.
 Es erzeugt ein Welt-Bundle mit `bukkit-world.yml`, `<worldName>.toml` und `worldgen-options.json`.
+Zusätzlich wird automatisch `copy-to-server/` mit einer kopierbaren Zielstruktur erzeugt:
+- `plugins/HomeClaim/plot-worlds/<worldName>.toml`
+- `plugins/HomeClaim/config.yml`, `config.example.yml`, `sensor-config.toml`
+- `plugins/HomeClaim/scripts/generate-world.py`
+- `config/HomeClaim.toml`
+- `bukkit-world.yml` als Merge-Snippet
+
+Mit `--use-defaults` wird zusätzlich `plugins/HomeClaim/config.yml` bereits mit den Plot-Standardwerten für die erzeugte Welt vorbelegt.
+
 Standard-Ausgabe: `./generate-world.py-data/<worldName>/...`
 
 Ohne explizite Pfade (`--data`/`--worlddata`) ist das Script nur in zwei Kontexten erlaubt:
@@ -79,8 +109,8 @@ Außerhalb dieser Orte bitte explizit setzen:
 # 1) Bundle erzeugen
 ./generate-world.py --name MyWorld --output-dir ./out
 
-# 2) TOML ins Plugin-Verzeichnis kopieren
-cp ./out/MyWorld/MyWorld.toml /pfad/zum/server/plugins/HomeClaim/plot-worlds/
+# 2) vorbereitete Struktur in den Server-Ordner kopieren
+cp -r ./out/MyWorld/copy-to-server/* /pfad/zum/server/
 
 # 3) bukkit-world.yml in /pfad/zum/server/bukkit.yml mergen
 #    (Eintrag: worlds.MyWorld.generator: HomeClaim)

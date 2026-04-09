@@ -15,7 +15,7 @@ import java.time.Duration
 /**
  * WebUX Server Module
  * 
- * Provides web frontend with Pebble templates, Bootstrap 5, and Alpine.js.
+ * Provides a SvelteKit-first frontend with Pebble fallback for legacy pages.
  * Handles WebSocket connections for real-time updates.
  */
 class HomeClaimWebUxServer(
@@ -48,6 +48,15 @@ class HomeClaimWebUxServer(
         routing {
             // Static assets
             staticResources("/static", "static")
+            staticResources("/app", "static/spa")
+
+            get("/app") {
+                respondSvelteApp(call)
+            }
+
+            get("/app/{...}") {
+                respondSvelteApp(call)
+            }
 
             // WebSocket endpoint
             webSocket("/ws") {
@@ -69,6 +78,11 @@ class HomeClaimWebUxServer(
 
             // Web Routes
             get("/") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app")
+                    return@get
+                }
+
                 renderTemplate(call, "plots-list", mapOf(
                     "title" to "HomeClaim - Alle Plots",
                     "user" to getCurrentUser(call)
@@ -76,6 +90,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/plots") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/plots")
+                    return@get
+                }
+
                 renderTemplate(call, "plots-list", mapOf(
                     "title" to "Alle Plots",
                     "user" to getCurrentUser(call)
@@ -84,6 +103,11 @@ class HomeClaimWebUxServer(
 
             get("/plot/{id}") {
                 val plotId = call.parameters["id"]
+                if (hasSvelteKitBuild() && plotId != null) {
+                    call.respondRedirect("/app/plot/$plotId")
+                    return@get
+                }
+
                 renderTemplate(call, "plot-detail", mapOf(
                     "title" to "Plot Details",
                     "plotId" to plotId,
@@ -92,6 +116,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/my-plots") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/my-plots")
+                    return@get
+                }
+
                 renderTemplate(call, "plots-list", mapOf(
                     "title" to "Meine Plots",
                     "user" to getCurrentUser(call),
@@ -103,6 +132,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/dashboard") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app")
+                    return@get
+                }
+
                 renderTemplate(call, "dashboard", mapOf(
                     "title" to "Dashboard",
                     "user" to getCurrentUser(call)
@@ -110,6 +144,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/bookmarks") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/bookmarks")
+                    return@get
+                }
+
                 renderTemplate(call, "bookmarks", mapOf(
                     "title" to "Lesezeichen",
                     "user" to getCurrentUser(call)
@@ -117,6 +156,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/settings") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/settings")
+                    return@get
+                }
+
                 renderTemplate(call, "settings", mapOf(
                     "title" to "Einstellungen",
                     "user" to getCurrentUser(call)
@@ -124,6 +168,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/login") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/login")
+                    return@get
+                }
+
                 renderTemplate(call, "login", mapOf(
                     "title" to "Anmelden",
                     "showSidebar" to false
@@ -131,6 +180,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/admin/plots") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/admin/plots")
+                    return@get
+                }
+
                 renderTemplate(call, "admin-plots", mapOf(
                     "title" to "Admin - Plots",
                     "user" to getCurrentUser(call)
@@ -138,6 +192,11 @@ class HomeClaimWebUxServer(
             }
 
             get("/admin/users") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/admin/users")
+                    return@get
+                }
+
                 renderTemplate(call, "admin-users", mapOf(
                     "title" to "Admin - Benutzer",
                     "user" to getCurrentUser(call)
@@ -145,12 +204,42 @@ class HomeClaimWebUxServer(
             }
 
             get("/admin/notifications") {
+                if (hasSvelteKitBuild()) {
+                    call.respondRedirect("/app/admin/notifications")
+                    return@get
+                }
+
                 renderTemplate(call, "admin-notifications", mapOf(
                     "title" to "Admin - Benachrichtigungen",
                     "user" to getCurrentUser(call)
                 ))
             }
         }
+    }
+
+    private fun hasSvelteKitBuild(): Boolean =
+        javaClass.classLoader.getResource("static/spa/index.html") != null
+
+    /**
+     * Serve the built SvelteKit app if available, otherwise fall back to the legacy Pebble page.
+     */
+    private suspend fun respondSvelteApp(call: ApplicationCall) {
+        val resource = javaClass.classLoader.getResourceAsStream("static/spa/index.html")
+        if (resource == null) {
+            renderTemplate(call, "plots-list", mapOf(
+                "title" to "HomeClaim - Alle Plots",
+                "user" to getCurrentUser(call),
+                "flash" to mapOf(
+                    "type" to "info",
+                    "icon" to "info-circle-fill",
+                    "message" to "The new SvelteKit frontend is not built yet. Run npm install && npm run build in homeclaim-webux/frontend."
+                )
+            ))
+            return
+        }
+
+        val html = resource.bufferedReader().use { it.readText() }
+        call.respondText(html, io.ktor.http.ContentType.Text.Html)
     }
 
     /**

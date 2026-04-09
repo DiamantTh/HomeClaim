@@ -28,3 +28,8 @@ Thumbs.db
 __pycache__/
 **/__pycache__/
 *.py[cod]
+
+# Frontend / SvelteKit
+**/node_modules/
+**/.svelte-kit/
+homeclaim-webux/src/main/resources/static/spa/

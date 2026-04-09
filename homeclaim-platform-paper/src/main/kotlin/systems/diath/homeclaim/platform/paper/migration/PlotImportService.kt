@@ -9,6 +9,112 @@ import systems.diath.homeclaim.core.service.AuditEntry
 import java.util.*
 import kotlin.math.abs
 
+private object ReflectionAccess {
+    fun invokeNoArg(target: Any?, vararg methodNames: String): Any? {
+        if (target == null) return null
+        val type = target.javaClass
+        for (methodName in methodNames) {
+            val method = runCatching { type.getMethod(methodName) }.getOrNull() ?: continue
+            val result = runCatching { method.invoke(target) }.getOrNull()
+            if (result != null) return result
+        }
+        return null
+    }
+
+    fun asUuidSet(value: Any?): Set<UUID> =
+        (value as? Collection<*>)
+            ?.mapNotNull { it as? UUID }
+            ?.toSet()
+            ?: emptySet()
+
+    fun intFrom(point: Any?, vararg methodNames: String): Int? =
+        (invokeNoArg(point, *methodNames) as? Number)?.toInt()
+
+    fun asStringMap(value: Any?): Map<String, String> {
+        val map = value as? Map<*, *> ?: return emptyMap()
+        val result = linkedMapOf<String, String>()
+
+        for ((key, entryValue) in map) {
+            val normalizedKey = invokeNoArg(entryValue, "getName")?.toString()
+                ?: when (key) {
+                    is Class<*> -> key.simpleName
+                    null -> null
+                    else -> key.toString()
+                }
+                ?: continue
+
+            val normalizedValue = invokeNoArg(entryValue, "getValue")?.toString()
+                ?: entryValue?.toString()
+                ?: ""
+
+            result[normalizedKey.lowercase()] = normalizedValue
+        }
+
+        return result
+    }
+}
+
+internal object PlotSquaredImportAdapter {
+    fun extractFromApi(api: Any): List<PlotImportService.ExternalPlot> {
+        val allPlots = ReflectionAccess.invokeNoArg(api, "getAllPlots") as? Collection<*> ?: return emptyList()
+        return allPlots.mapNotNull { plot -> plot?.let(::extractPlot) }
+    }
+
+    fun extractPlot(plot: Any): PlotImportService.ExternalPlot? {
+        val owner = ReflectionAccess.invokeNoArg(plot, "getOwner") as? UUID ?: return null
+        val members = ReflectionAccess.asUuidSet(ReflectionAccess.invokeNoArg(plot, "getMembers"))
+        val trusted = ReflectionAccess.asUuidSet(ReflectionAccess.invokeNoArg(plot, "getTrusted"))
+        val denied = ReflectionAccess.asUuidSet(ReflectionAccess.invokeNoArg(plot, "getDenied"))
+
+        val worldName = ReflectionAccess.invokeNoArg(plot, "getWorldName")?.toString()
+            ?: ReflectionAccess.invokeNoArg(ReflectionAccess.invokeNoArg(plot, "getArea"), "getWorldName")?.toString()
+            ?: return null
+
+        val region = ReflectionAccess.invokeNoArg(plot, "getLargestRegion", "getRegion")
+            ?: (ReflectionAccess.invokeNoArg(plot, "getRegions") as? Iterable<*>)?.firstOrNull()
+            ?: return null
+
+        val minPoint = ReflectionAccess.invokeNoArg(region, "getMinimumPoint") ?: return null
+        val maxPoint = ReflectionAccess.invokeNoArg(region, "getMaximumPoint") ?: return null
+
+        val minX = ReflectionAccess.intFrom(minPoint, "getX", "getBlockX") ?: 0
+        val minZ = ReflectionAccess.intFrom(minPoint, "getZ", "getBlockZ") ?: 0
+        val maxX = ReflectionAccess.intFrom(maxPoint, "getX", "getBlockX") ?: minX
+        val maxZ = ReflectionAccess.intFrom(maxPoint, "getZ", "getBlockZ") ?: minZ
+
+        val flagMap = ReflectionAccess.asStringMap(ReflectionAccess.invokeNoArg(plot, "getFlags"))
+            .ifEmpty {
+                ReflectionAccess.asStringMap(
+                    ReflectionAccess.invokeNoArg(
+                        ReflectionAccess.invokeNoArg(plot, "getFlagContainer"),
+                        "getFlagMap"
+                    )
+                )
+            }
+
+        val plotId = ReflectionAccess.invokeNoArg(plot, "getId")?.toString() ?: "$worldName:$minX:$minZ"
+
+        return PlotImportService.ExternalPlot(
+            id = plotId,
+            owner = owner,
+            world = worldName,
+            minX = minX,
+            maxX = maxX,
+            minZ = minZ,
+            maxZ = maxZ,
+            members = members,
+            trusted = trusted,
+            denied = denied,
+            flags = flagMap,
+            metadata = mapOf(
+                "plugin" to "PlotSquared",
+                "plot_id" to plotId,
+                "world" to worldName
+            )
+        )
+    }
+}
+
 /**
  * Importiert externe Plot-Plugins (WorldGuard, PlotSquared) zu HomeClaim.
  * Async-Migration mit Progress-Tracking.
@@ -197,8 +303,9 @@ class PlotImportService(
      */
     private fun mapFlagsFromExternal(externalFlags: Map<String, String>): Map<FlagKey, FlagValue> {
         val mapped = mutableMapOf<FlagKey, FlagValue>()
-        
-        // Mapping-Tabelle für WorldGuard/PlotSquared → HomeClaim
+
+        // Mapping-Tabelle für WorldGuard/PlotSquared → HomeClaim.
+        // The boolean on the right is the fallback when the source value is not directly parseable.
         val flagMapping = mapOf(
             // WorldGuard Flags
             "deny-all" to "BUILD:false",
@@ -222,7 +329,7 @@ class PlotImportService(
             "sleep" to null,
             "lightning-strike" to null,
             "time-lock" to null,
-            
+
             // PlotSquared Flags
             "blocked-cmds" to null,
             "break" to "BREAK:false",
@@ -240,19 +347,25 @@ class PlotImportService(
             "flow" to "FIRE_SPREAD:false",
             "grass-grow" to null
         )
-        
-        for ((key, _) in externalFlags) {
+
+        fun resolveBoolean(rawValue: String?, fallback: Boolean): Boolean {
+            return when (rawValue?.trim()?.lowercase()) {
+                "true", "allow", "allowed", "enabled", "yes", "1", "on" -> true
+                "false", "deny", "denied", "disabled", "no", "0", "off" -> false
+                else -> fallback
+            }
+        }
+
+        for ((key, rawValue) in externalFlags) {
             val mapping = flagMapping[key.lowercase()] ?: continue
-            
             val parts = mapping.split(":")
             if (parts.size == 2) {
                 val flagKey = FlagKey(parts[0])
-                val boolValue = parts[1].toBoolean()
-                val flagValue: FlagValue = PolicyValue.Bool(boolValue)
-                mapped[flagKey] = flagValue
+                val fallback = parts[1].toBooleanStrictOrNull() ?: false
+                mapped[flagKey] = PolicyValue.Bool(resolveBoolean(rawValue, fallback))
             }
         }
-        
+
         return mapped
     }
     
@@ -447,100 +560,23 @@ class PlotImportService(
                 val psPlugin = Bukkit.getPluginManager().getPlugin("PlotSquared")
                 if (psPlugin == null || !psPlugin.isEnabled) return emptyList()
                 
-                // PlotSquared API Integration
+                // PlotSquared API integration (supports current constructor-based API and older singleton access patterns)
                 val plotAPIClass = Class.forName("com.plotsquared.core.PlotAPI")
-                val getInstance = plotAPIClass.getMethod("getInstance")
-                val plotAPI = getInstance.invoke(null)
-                
-                // Iteriere durch alle Plots
-                val getPlotsMethod = plotAPI.javaClass.getMethod("getAllPlots")
-                @Suppress("UNCHECKED_CAST")
-                val allPlots = getPlotsMethod.invoke(plotAPI) as? Collection<Any> ?: return emptyList()
-                
-                for (plot in allPlots) {
-                    try {
-                        val extracted = extractPlotSquaredPlot(plot, psPlugin)
-                        if (extracted != null) plots.add(extracted)
-                    } catch (e: Exception) {
-                        // Skip ungültige Plots
+                val plotAPI = runCatching { plotAPIClass.getDeclaredConstructor().newInstance() }
+                    .getOrElse {
+                        val getInstance = plotAPIClass.getMethod("getInstance")
+                        getInstance.invoke(null)
                     }
-                }
-                
+
+                plots += PlotSquaredImportAdapter.extractFromApi(plotAPI)
                 return plots
             } catch (e: Exception) {
                 return emptyList()
             }
         }
         
-        private fun extractPlotSquaredPlot(plot: Any, psPlugin: Plugin): ExternalPlot? {
-            try {
-                // Extrahiere Besitzer
-                val ownerMethod = plot.javaClass.getMethod("getOwner")
-                val ownerUUID = ownerMethod.invoke(plot) as? UUID ?: return null
-                
-                // Extrahiere Members/Trusted/Denied
-                val membersMethod = plot.javaClass.getMethod("getMembers")
-                val trustedMethod = plot.javaClass.getMethod("getTrusted")
-                val deniedMethod = plot.javaClass.getMethod("getDenied")
-                
-                @Suppress("UNCHECKED_CAST")
-                val members = (membersMethod.invoke(plot) as? Set<UUID>) ?: emptySet()
-                @Suppress("UNCHECKED_CAST")
-                val trusted = (trustedMethod.invoke(plot) as? Set<UUID>) ?: emptySet()
-                @Suppress("UNCHECKED_CAST")
-                val denied = (deniedMethod.invoke(plot) as? Set<UUID>) ?: emptySet()
-                
-                // Extrahiere Location/Bounds
-                val areaMethod = plot.javaClass.getMethod("getArea")
-                val area = areaMethod.invoke(plot)
-                
-                val regionMethod = plot.javaClass.getMethod("getRegion")
-                val region = regionMethod.invoke(plot)
-                
-                val minX = region?.javaClass?.getMethod("getMinimumPoint")?.invoke(region)?.javaClass?.getMethod("getX")?.invoke(region?.javaClass?.getMethod("getMinimumPoint")?.invoke(region)) as? Int ?: 0
-                val minZ = region?.javaClass?.getMethod("getMinimumPoint")?.invoke(region)?.javaClass?.getMethod("getZ")?.invoke(region?.javaClass?.getMethod("getMinimumPoint")?.invoke(region)) as? Int ?: 0
-                val maxX = region?.javaClass?.getMethod("getMaximumPoint")?.invoke(region)?.javaClass?.getMethod("getX")?.invoke(region?.javaClass?.getMethod("getMaximumPoint")?.invoke(region)) as? Int ?: 0
-                val maxZ = region?.javaClass?.getMethod("getMaximumPoint")?.invoke(region)?.javaClass?.getMethod("getZ")?.invoke(region?.javaClass?.getMethod("getMaximumPoint")?.invoke(region)) as? Int ?: 0
-                
-                // Extrahiere World
-                val worldNameMethod = plot.javaClass.getMethod("getWorldName")
-                val worldName = worldNameMethod.invoke(plot).toString()
-                
-                // Extrahiere Flags
-                val flagsMethod = plot.javaClass.getMethod("getFlags")
-                @Suppress("UNCHECKED_CAST")
-                val flagsMap = flagsMethod.invoke(plot) as? Map<String, Any> ?: emptyMap()
-                
-                val flagMap = mutableMapOf<String, String>()
-                for ((key, value) in flagsMap) {
-                    flagMap[key] = value.toString()
-                }
-                
-                // Extrahiere Plot ID
-                val plotIdMethod = plot.javaClass.getMethod("getId")
-                val plotId = plotIdMethod.invoke(plot).toString()
-                
-                return ExternalPlot(
-                    id = plotId,
-                    owner = ownerUUID,
-                    world = worldName,
-                    minX = minX,
-                    maxX = maxX,
-                    minZ = minZ,
-                    maxZ = maxZ,
-                    members = members.toSet(),
-                    trusted = trusted.toSet(),
-                    denied = denied.toSet(),
-                    flags = flagMap,
-                    metadata = mapOf(
-                        "plugin" to "PlotSquared",
-                        "plot_id" to plotId,
-                        "world" to worldName
-                    )
-                )
-            } catch (e: Exception) {
-                return null
-            }
+        private fun extractPlotSquaredPlot(plot: Any, @Suppress("UNUSED_PARAMETER") psPlugin: Plugin): ExternalPlot? {
+            return PlotSquaredImportAdapter.extractPlot(plot)
         }
     }
 }

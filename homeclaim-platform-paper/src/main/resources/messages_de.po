@@ -1436,6 +1436,15 @@ msgstr "  §7○ Datenbank: Im-Speicher-Modus"
 msgid "health.fawe.ok"
 msgstr "  §a✓ FAWE: {0}"
 
+msgid "health.fawe.missing"
+msgstr "  §e⚠ FAWE: Nicht installiert (Weltkonvertierung läuft im eingeschränkten Fallback-Modus)"
+
+msgid "health.plotsquared.ok"
+msgstr "  §a✓ PlotSquared: {0}"
+
+msgid "health.plotsquared.none"
+msgstr "  §7○ PlotSquared: Nicht installiert"
+
 msgid "health.vault.ok"
 msgstr "  §a✓ Vault: {0}"
 
