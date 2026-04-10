@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot
 import org.bukkit.Bukkit
 import org.bukkit.World
 import org.bukkit.plugin.Plugin
+import systems.diath.homeclaim.platform.paper.scheduler.BukkitTaskScheduler
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
@@ -18,6 +19,7 @@ class PlotWorldInitializer(
     private val regionService: RegionService,
     private val plugin: Plugin
 ) {
+    private val taskScheduler = BukkitTaskScheduler(plugin)
     companion object {
         // UUID for unclaimed plots (all zeros)
         private val UNCLAIMED_UUID = UUID.fromString("00000000-0000-0000-0000-000000000000")
@@ -39,15 +41,15 @@ class PlotWorldInitializer(
     ): java.util.concurrent.CompletableFuture<Int> {
         val future = java.util.concurrent.CompletableFuture<Int>()
         
-        // Run async to avoid blocking main thread
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+        // Run async to avoid blocking the main thread and to stay Folia-compatible.
+        taskScheduler.runAsyncTask(0) {
             try {
                 val count = createPlotRegions(world.name, config, progressCallback)
                 future.complete(count)
             } catch (e: Exception) {
                 future.completeExceptionally(e)
             }
-        })
+        }
         
         return future
     }

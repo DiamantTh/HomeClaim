@@ -10,7 +10,7 @@
     </div>
     <div class="plot-card">
       <strong>World generation</strong>
-      <p class="muted">`generate-world.py` now prepares a copy-to-server bundle for first startup.</p>
+      <p class="muted">Plot-Welten werden jetzt direkt im Spiel über `/homeclaim setup` eingerichtet.</p>
     </div>
   </div>
 </section>

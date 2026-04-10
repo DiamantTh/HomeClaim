@@ -144,38 +144,6 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         return true
     }
     
-    /**
-     * Extract bundled scripts to plugins/HomeClaim/scripts/
-     * Scripts are only extracted if they don't exist (won't overwrite user modifications)
-     */
-    private fun extractScripts() {
-        val scriptsDir = dataFolder.resolve("scripts")
-        if (!scriptsDir.exists()) {
-            scriptsDir.mkdirs()
-        }
-        
-        val scripts = listOf(
-            "scripts/generate-world.py"
-        )
-        
-        for (script in scripts) {
-            val targetFile = dataFolder.resolve(script)
-            if (!targetFile.exists()) {
-                try {
-                    saveResource(script, false)
-                    // Make shell scripts executable on Unix systems
-                    if (script.endsWith(".sh")) {
-                        targetFile.setExecutable(true)
-                    }
-                    logger.info("Extracted bundled script: $script")
-                } catch (e: Exception) {
-                    // Script extraction is optional - just log warning, don't use i18n (not loaded yet)
-                    logger.warning("Could not extract bundled script '$script': ${e.message}")
-                }
-            }
-        }
-    }
-    
     /** Pad string to the right with spaces */
     private fun padRight(s: String, length: Int): String {
         return if (s.length >= length) s.take(length) else s + " ".repeat(length - s.length)
@@ -222,7 +190,6 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             server.pluginManager.disablePlugin(this)
             return
         }
-        extractScripts()
         i18n = loadI18n()
         
         // ============================================

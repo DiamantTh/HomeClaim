@@ -69,73 +69,24 @@ Nach einem Build wird die App unter `http://<host>:8081/app` ausgeliefert.
 ./gradlew clean build
 ```
 
-**Welt-Generierung aus Repo-Root:**
-```bash
-./generate-world.py --name MyWorld
+### Plot-Welt Setup (Ingame)
+
+Der bisherige CLI-Weg für den World-Setup ist entfernt. Die Einrichtung läuft jetzt über Minecraft direkt:
+
+```text
+/homeclaim setup
 ```
 
-**Explizit mit Standardwerten vorbelegen:**
-```bash
-./generate-world.py --name MyWorld --use-defaults
-```
+#### Verhalten nach Plattform
+- **Paper**: neue Plot-Welt erstellen; Konvertierung bestehender Welten mit **FAWE** möglich
+- **Folia**: neue Plot-Welt erstellen **unterstützt**; Konvertierung bestehender Welten bleibt **deaktiviert**
 
-Hinweis: Das Script ist bewusst CLI-only und steuert keinen Ingame-Setup-Wizard.
-Es erzeugt ein Welt-Bundle mit `bukkit-world.yml`, `<worldName>.toml` und `worldgen-options.json`.
-Zusätzlich wird automatisch `copy-to-server/` mit einer kopierbaren Zielstruktur erzeugt:
-- `plugins/HomeClaim/plot-worlds/<worldName>.toml`
-- `plugins/HomeClaim/config.yml`, `config.example.yml`, `sensor-config.toml`
-- `plugins/HomeClaim/scripts/generate-world.py`
-- `config/HomeClaim.toml`
-- `bukkit-world.yml` als Merge-Snippet
+Der Wizard nutzt jetzt **plattform-optimierte Standardwerte**:
+- **Paper**: ausgewogene Defaults für normale Plot-Server
+- **Folia**: kleinere Standard-Welt und reduzierte Plot-Anzahl pro Seite für weniger Last bei Erstellung und Initialisierung
 
-Mit `--use-defaults` wird zusätzlich `plugins/HomeClaim/config.yml` bereits mit den Plot-Standardwerten für die erzeugte Welt vorbelegt.
-
-Standard-Ausgabe: `./generate-world.py-data/<worldName>/...`
-
-Ohne explizite Pfade (`--data`/`--worlddata`) ist das Script nur in zwei Kontexten erlaubt:
-- Server-Root (`server.properties` + `bukkit.yml` vorhanden)
-- `plugins/HomeClaim/scripts`
-
-Werden Server-Einstellungen erkannt (z. B. `level-name` oder vorhandene HomeClaim-Welt in `bukkit.yml`),
-fragt das Script interaktiv, ob diese übernommen werden sollen. Für non-interactive Nutzung: `--yes`.
-
-Außerhalb dieser Orte bitte explizit setzen:
-```bash
-./generate-world.py --name MyWorld --data /pfad/zum/plugins/HomeClaim --worlddata /pfad/zu/output
-```
-
-**CLI-Import (server-einsatzbereit):**
-```bash
-# 1) Bundle erzeugen
-./generate-world.py --name MyWorld --output-dir ./out
-
-# 2) vorbereitete Struktur in den Server-Ordner kopieren
-cp -r ./out/MyWorld/copy-to-server/* /pfad/zum/server/
-
-# 3) bukkit-world.yml in /pfad/zum/server/bukkit.yml mergen
-#    (Eintrag: worlds.MyWorld.generator: HomeClaim)
-
-# 4) Server neu starten
-```
-
-Automatisch (inkl. Merge) geht es mit:
-```bash
-python plugins/HomeClaim/scripts/generate-world.py --name MyWorld --apply
-```
-Dann schreibt das Script die TOML direkt nach `plugins/HomeClaim/plot-worlds/` und merged
-`bukkit.yml` auf `worlds.<name>.generator: HomeClaim` (inkl. `bukkit.yml.bak.<timestamp>` Backup).
-
-Preview ohne Schreibzugriff:
-```bash
-python plugins/HomeClaim/scripts/generate-world.py --name MyWorld --apply-dry-run
-```
-
-Ausführliche Logs:
-```bash
-python plugins/HomeClaim/scripts/generate-world.py --name MyWorld --apply-dry-run --verbose
-```
-
-Beim Start lädt Paper/Folia dann die Welt über den Generator `HomeClaim`,
+Der Wizard speichert die Plot-Konfiguration, setzt bei Bedarf den Generator-Eintrag und erstellt die Welt passend zur Plattform.
+Beim Start lädt Paper/Folia die Welt dann über den Generator `HomeClaim`,
 und HomeClaim liest die Plot-Parameter aus `plugins/HomeClaim/plot-worlds/<worldName>.toml`.
 
 **Plugin installieren:**
@@ -150,7 +101,7 @@ java -Xmx2G -jar paper.jar nogui
 
 **Erste Schritte nach Installation:**
 1. Server starten → `config.yml` wird automatisch erstellt (SQLite Standard)
-2. Plot-Welt erstellen: entweder per CLI-Bundle-Import (oben) oder `/homeclaim setup` im Spiel
+2. Plot-Welt im Spiel mit `/homeclaim setup` erstellen
 3. Plot claimen: `/plot claim` (funktioniert beim Stehen & Fliegen)
 4. Plots bleiben nach Server-Neustart erhalten (SQLite-Persistenz)
 

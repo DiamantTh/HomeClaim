@@ -5,7 +5,7 @@ import org.bukkit.Material
 private const val DEFAULT_PLOT_SIZE = 48
 private const val DEFAULT_ROAD_WIDTH = 10
 private const val DEFAULT_PLOT_HEIGHT = 64
-private const val DEFAULT_PLOTS_PER_SIDE = 500
+private const val DEFAULT_PLOTS_PER_SIDE = 128
 
 /**
  * Plot World Schema (1.21+)
@@ -44,6 +44,26 @@ object PlotSchemas {
         accentBlock = Material.SMOOTH_QUARTZ_STAIRS,
         schema = "default"
     )
+
+    fun recommended(foliaMode: Boolean): PlotWorldConfig {
+        return if (foliaMode) {
+            default().copy(
+                plotSize = 40,
+                roadWidth = 8,
+                plotHeight = 64,
+                plotsPerSide = 96,
+                schema = "default"
+            )
+        } else {
+            default().copy(
+                plotSize = DEFAULT_PLOT_SIZE,
+                roadWidth = DEFAULT_ROAD_WIDTH,
+                plotHeight = DEFAULT_PLOT_HEIGHT,
+                plotsPerSide = DEFAULT_PLOTS_PER_SIDE,
+                schema = "default"
+            )
+        }
+    }
     
     // Desert: Sand, Sandstone Straße, Orange Terracotta Rand
     fun desert(): PlotWorldConfig = PlotWorldConfig(

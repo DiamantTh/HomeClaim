@@ -27,7 +27,6 @@ class PlotWorldSetupWizard(
 ) {
     private val sessions = mutableMapOf<UUID, Session>()
     private val maxPlotsPerSide = 10000
-    private val schemaLoader = PlotSchemaLoader(plugin)
     private val bulkBlockSetter = BulkBlockSetter(plugin)
 
     fun handle(sender: CommandSender, args: List<String>): Boolean {
@@ -44,17 +43,32 @@ class PlotWorldSetupWizard(
                     player.sendMessage(i18n.msg("setup.already_running"))
                     return true
                 }
-                sessions[player.uniqueId] = Session()
+                val foliaMode = isFoliaServer()
+                val session = Session().applyRecommendedDefaults(foliaMode)
+                sessions[player.uniqueId] = session
                 player.sendMessage(i18n.msg("setup.started"))
                 player.sendMessage(i18n.msg("setup.header"))
-                player.sendMessage(i18n.msg("setup.fawe_detected", bulkBlockSetter.getFaweVersion()))
+                if (bulkBlockSetter.isFaweAvailable()) {
+                    player.sendMessage(i18n.msg("setup.fawe_detected", bulkBlockSetter.getFaweVersion()))
+                } else {
+                    player.sendMessage("§8FAWE nicht aktiv – die Konvertierung bestehender Welten ist nur auf Paper mit FAWE verfügbar.")
+                }
+                val recommended = PlotSchemas.recommended(foliaMode)
+                if (foliaMode) {
+                    player.sendMessage("§8Folia-Profil aktiv: ${recommended.plotSize}er Plots, ${recommended.roadWidth} breite Straßen, ${recommended.plotsPerSide} Plots/Seite")
+                } else {
+                    player.sendMessage("§8Empfohlene Defaults aktiv: ${recommended.plotSize}er Plots, ${recommended.roadWidth} breite Straßen, ${recommended.plotsPerSide} Plots/Seite")
+                }
                 player.sendMessage("")
                 player.sendMessage(i18n.msg("setup.mode_select"))
                 player.sendMessage(i18n.msg("setup.mode_new_world"))
                 
-                // Only show convert option if FAWE is available
-                if (bulkBlockSetter.isFaweAvailable()) {
+                // Conversion is only offered on Paper with FAWE.
+                if (supportsConvertMode()) {
                     player.sendMessage(i18n.msg("setup.mode_convert"))
+                } else if (isFoliaServer()) {
+                    player.sendMessage("§7§m2) Bestehende Welt konvertieren§r §c(auf Folia deaktiviert)")
+                    player.sendMessage("§8Nutze auf Folia bitte eine neue Plot-Welt über den Setup-Wizard.")
                 } else {
                     player.sendMessage(i18n.msg("setup.mode_convert_disabled"))
                 }
@@ -95,7 +109,14 @@ class PlotWorldSetupWizard(
                     return true
                 }
                 // Leere Eingabe = Default-Wert verwenden
-                val result = s.applyInput(input, i18n, maxPlotsPerSide, bulkBlockSetter)
+                val result = s.applyInput(
+                    input,
+                    i18n,
+                    maxPlotsPerSide,
+                    bulkBlockSetter,
+                    conversionAvailable = supportsConvertMode(),
+                    foliaMode = isFoliaServer(),
+                )
                 if (!result.ok) {
                     player.sendMessage(result.message)
                     return true
@@ -274,6 +295,17 @@ class PlotWorldSetupWizard(
         }
     }
 
+    private fun isFoliaServer(): Boolean {
+        return try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
+            true
+        } catch (_: ClassNotFoundException) {
+            false
+        }
+    }
+
+    private fun supportsConvertMode(): Boolean = bulkBlockSetter.isFaweAvailable() && !isFoliaServer()
+
     private data class Result(val ok: Boolean, val message: String)
 
     private enum class Step(val label: String, val promptKey: String) {
@@ -300,13 +332,30 @@ class PlotWorldSetupWizard(
         var roadBlock: Material = Material.DARK_PRISMARINE
         var wallBlock: Material = Material.DIAMOND_BLOCK
         var accentBlock: Material? = Material.SMOOTH_QUARTZ_STAIRS
-        var plotsPerSide: Int = 500
+        var plotsPerSide: Int = 128
+        var schema: String = "default"
+
+        fun applyRecommendedDefaults(foliaMode: Boolean): Session {
+            val recommended = PlotSchemas.recommended(foliaMode)
+            plotSize = recommended.plotSize
+            roadWidth = recommended.roadWidth
+            plotHeight = recommended.plotHeight
+            plotBlock = recommended.plotBlock
+            roadBlock = recommended.roadBlock
+            wallBlock = recommended.wallBlock
+            accentBlock = recommended.accentBlock
+            plotsPerSide = recommended.plotsPerSide
+            schema = recommended.schema
+            return this
+        }
 
         fun applyInput(
             rawInput: String, 
             i18n: systems.diath.homeclaim.platform.paper.I18n, 
             maxPlotsPerSide: Int,
-            bulkBlockSetter: BulkBlockSetter
+            bulkBlockSetter: BulkBlockSetter,
+            conversionAvailable: Boolean,
+            foliaMode: Boolean,
         ): Result {
             // "default" = use the default value (same as empty input)
             val input = if (rawInput.lowercase() == "default" || rawInput.lowercase() == "d") "" else rawInput
@@ -319,8 +368,10 @@ class PlotWorldSetupWizard(
                             Result(true, "ok")
                         }
                         "2", "convert", "konvertieren" -> {
-                            // Check if FAWE is available for conversion
-                            if (!bulkBlockSetter.isFaweAvailable()) {
+                            if (foliaMode) {
+                                return Result(false, "§cDie Konvertierung bestehender Welten ist auf Folia deaktiviert. Bitte erstelle dort eine neue Plot-Welt.")
+                            }
+                            if (!conversionAvailable || !bulkBlockSetter.isFaweAvailable()) {
                                 return Result(false, i18n.msg("setup.convert_requires_fawe"))
                             }
                             mode = SetupMode.CONVERT_EXISTING
@@ -403,6 +454,9 @@ class PlotWorldSetupWizard(
                         if (v < 0 || v > maxPlotsPerSide) {
                             return Result(false, i18n.msg("setup.invalid_plots_per_side", maxPlotsPerSide.toString()))
                         }
+                        if (foliaMode && v > 256) {
+                            return Result(false, "§cFür Folia sind mehr als 256 Plots pro Seite im Ingame-Setup nicht empfohlen. Nutze für größere Layouts bitte später eine manuelle Server-Konfiguration.")
+                        }
                         plotsPerSide = v
                     }
                     step = Step.DONE
@@ -423,7 +477,7 @@ class PlotWorldSetupWizard(
                 wallBlock = wallBlock,
                 accentBlock = accentBlock,                  // Added
                 plotsPerSide = plotsPerSide,
-                schema = "default"                          // Added
+                schema = schema
             )
         }
     }
