@@ -259,7 +259,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this)
         }
         plotResetService = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotResetService(this)
         } else {
             systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(this)
         }

@@ -61,6 +61,7 @@ object PlotSchemas {
                 roadWidth = 8,
                 plotHeight = 64,
                 plotsPerSide = 96,
+                resetBatchColumnsPerTick = 48,
                 schema = "default"
             )
         } else {
