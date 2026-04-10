@@ -502,6 +502,8 @@ class PlotWorldConfigStore(
 
         val toml = runCatching { FileConfig.of(file).apply { load() } }.getOrNull() ?: return null
 
+        val baseWall = Material.matchMaterial((toml.get<Any>("wallBlock") as? String) ?: "DIAMOND_BLOCK") ?: Material.DIAMOND_BLOCK
+        val accent = (toml.get<Any>("accentBlock") as? String)?.let { Material.matchMaterial(it) }
         val result = PlotWorldConfig(
             worldName = worldName,
             plotSize = (toml.get<Any>("plotSize") as? Number)?.toInt() ?: 48,
@@ -509,8 +511,14 @@ class PlotWorldConfigStore(
             plotHeight = (toml.get<Any>("plotHeight") as? Number)?.toInt() ?: 64,
             plotBlock = Material.matchMaterial((toml.get<Any>("plotBlock") as? String) ?: "GRASS_BLOCK") ?: Material.GRASS_BLOCK,
             roadBlock = Material.matchMaterial((toml.get<Any>("roadBlock") as? String) ?: "DARK_PRISMARINE") ?: Material.DARK_PRISMARINE,
-            wallBlock = Material.matchMaterial((toml.get<Any>("wallBlock") as? String) ?: "DIAMOND_BLOCK") ?: Material.DIAMOND_BLOCK,
-            accentBlock = (toml.get<Any>("accentBlock") as? String)?.let { Material.matchMaterial(it) },
+            wallBlock = baseWall,
+            accentBlock = accent,
+            unclaimedBorderBlock = Material.matchMaterial((toml.get<Any>("unclaimedBorderBlock") as? String) ?: baseWall.name) ?: baseWall,
+            claimedBorderBlock = Material.matchMaterial((toml.get<Any>("claimedBorderBlock") as? String) ?: (accent?.name ?: baseWall.name)) ?: (accent ?: baseWall),
+            mergedBorderBlock = Material.matchMaterial((toml.get<Any>("mergedBorderBlock") as? String) ?: (accent?.name ?: baseWall.name)) ?: (accent ?: baseWall),
+            saleBorderBlock = Material.matchMaterial((toml.get<Any>("saleBorderBlock") as? String) ?: "GOLD_BLOCK") ?: Material.GOLD_BLOCK,
+            adminBorderBlock = Material.matchMaterial((toml.get<Any>("adminBorderBlock") as? String) ?: "EMERALD_BLOCK") ?: Material.EMERALD_BLOCK,
+            reservedBorderBlock = Material.matchMaterial((toml.get<Any>("reservedBorderBlock") as? String) ?: "REDSTONE_BLOCK") ?: Material.REDSTONE_BLOCK,
             schema = (toml.get<Any>("schema") as? String) ?: "default",
             plotsPerSide = (toml.get<Any>("plotsPerSide") as? Number)?.toInt() ?: 500
         )
@@ -534,6 +542,12 @@ class PlotWorldConfigStore(
             appendLine("roadBlock = \"${cfg.roadBlock.name}\"")
             appendLine("wallBlock = \"${cfg.wallBlock.name}\"")
             appendLine("accentBlock = \"$accent\"")
+            appendLine("unclaimedBorderBlock = \"${cfg.unclaimedBorderBlock.name}\"")
+            appendLine("claimedBorderBlock = \"${cfg.claimedBorderBlock.name}\"")
+            appendLine("mergedBorderBlock = \"${cfg.mergedBorderBlock.name}\"")
+            appendLine("saleBorderBlock = \"${cfg.saleBorderBlock.name}\"")
+            appendLine("adminBorderBlock = \"${cfg.adminBorderBlock.name}\"")
+            appendLine("reservedBorderBlock = \"${cfg.reservedBorderBlock.name}\"")
             appendLine("schema = \"${cfg.schema}\"")
             appendLine("plotsPerSide = ${cfg.plotsPerSide}")
             appendLine("converted = true")

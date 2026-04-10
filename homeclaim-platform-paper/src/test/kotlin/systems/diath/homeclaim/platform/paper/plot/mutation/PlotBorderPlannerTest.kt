@@ -35,4 +35,30 @@ class PlotBorderPlannerTest {
         assertTrue((2 to 1) in result)
         assertTrue((1 to 2) in result)
     }
+
+    @Test
+    fun `detects shared east west edge for merged plots`() {
+        val first = Bounds(minX = 4, maxX = 53, minY = -64, maxY = 319, minZ = 4, maxZ = 53)
+        val second = Bounds(minX = 62, maxX = 111, minY = -64, maxY = 319, minZ = 4, maxZ = 53)
+
+        val shared = PlotBorderPlanner.sharedEdges(first, listOf(second), maxGap = 12)
+
+        assertTrue(shared.east)
+        assertFalse(shared.west)
+        assertFalse(shared.north)
+        assertFalse(shared.south)
+    }
+
+    @Test
+    fun `plans corridor columns between adjacent merged plots`() {
+        val first = Bounds(minX = 4, maxX = 53, minY = -64, maxY = 319, minZ = 4, maxZ = 53)
+        val second = Bounds(minX = 62, maxX = 111, minY = -64, maxY = 319, minZ = 4, maxZ = 53)
+
+        val corridor = PlotBorderPlanner.mergeCorridorColumns(first, second, maxGap = 12)
+
+        assertTrue((53 to 4) in corridor)
+        assertTrue((62 to 53) in corridor)
+        assertFalse((52 to 4) in corridor)
+        assertEquals(10 * 50, corridor.size)
+    }
 }

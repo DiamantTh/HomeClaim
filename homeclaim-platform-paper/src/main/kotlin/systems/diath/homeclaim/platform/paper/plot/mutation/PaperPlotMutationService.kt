@@ -46,11 +46,39 @@ class PaperPlotMutationService(
         val worldName = regions.first().world
         val world = Bukkit.getWorld(worldName) ?: return
         val config = configStore.loadConfig(worldName) ?: return
+        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
 
         Bukkit.getScheduler().runTask(plugin, Runnable {
             regions.forEach { region ->
+                val siblings = regions.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
+                val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
                 val style = styleFor(region, config, PlotVisualState.MERGED)
-                repaintBorder(world, region.bounds, config, style)
+                repaintBorder(
+                    world = world,
+                    bounds = region.bounds,
+                    config = config,
+                    style = style,
+                    includeNorth = !shared.north,
+                    includeSouth = !shared.south,
+                    includeWest = !shared.west,
+                    includeEast = !shared.east
+                )
+            }
+
+            val mergedFillStyle = PlotBorderStyle(
+                fillMaterial = config.plotBlock,
+                capMaterial = config.plotBlock
+            )
+            val regionList = regions.toList()
+            for (i in regionList.indices) {
+                for (j in i + 1 until regionList.size) {
+                    val first = regionList[i]
+                    val second = regionList[j]
+                    if (first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId) {
+                        val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
+                        repaintColumns(world, corridor, config, mergedFillStyle)
+                    }
+                }
             }
         })
     }
@@ -61,12 +89,12 @@ class PaperPlotMutationService(
             ?.takeIf { it != Material.AIR }
 
         val capMaterial = explicitCap ?: when (state) {
-            PlotVisualState.UNCLAIMED -> config.wallBlock
-            PlotVisualState.CLAIMED,
-            PlotVisualState.MERGED -> config.accentBlock ?: config.wallBlock
-            PlotVisualState.SALE -> Material.GOLD_BLOCK
-            PlotVisualState.ADMIN -> Material.EMERALD_BLOCK
-            PlotVisualState.RESERVED -> Material.REDSTONE_BLOCK
+            PlotVisualState.UNCLAIMED -> config.unclaimedBorderBlock
+            PlotVisualState.CLAIMED -> config.claimedBorderBlock
+            PlotVisualState.MERGED -> config.mergedBorderBlock
+            PlotVisualState.SALE -> config.saleBorderBlock
+            PlotVisualState.ADMIN -> config.adminBorderBlock
+            PlotVisualState.RESERVED -> config.reservedBorderBlock
         }
 
         return PlotBorderStyle(
@@ -79,13 +107,33 @@ class PaperPlotMutationService(
         world: org.bukkit.World,
         bounds: Bounds,
         config: PlotWorldConfig,
+        style: PlotBorderStyle,
+        includeNorth: Boolean = true,
+        includeSouth: Boolean = true,
+        includeWest: Boolean = true,
+        includeEast: Boolean = true
+    ) {
+        val borderColumns = PlotBorderPlanner.borderColumns(
+            bounds,
+            includeNorth = includeNorth,
+            includeSouth = includeSouth,
+            includeWest = includeWest,
+            includeEast = includeEast
+        )
+        repaintColumns(world, borderColumns, config, style)
+    }
+
+    private fun repaintColumns(
+        world: org.bukkit.World,
+        columns: Collection<Pair<Int, Int>>,
+        config: PlotWorldConfig,
         style: PlotBorderStyle
     ) {
-        val minY = config.minGenHeight ?: bounds.minY
+        if (columns.isEmpty()) return
+        val minY = config.minGenHeight ?: -64
         val topY = (config.plotHeight - 1).coerceAtLeast(minY)
-        val borderColumns = PlotBorderPlanner.borderColumns(bounds)
 
-        for ((x, z) in borderColumns) {
+        for ((x, z) in columns) {
             for (y in minY until topY) {
                 world.getBlockAt(x, y, z).setType(style.fillMaterial, false)
             }

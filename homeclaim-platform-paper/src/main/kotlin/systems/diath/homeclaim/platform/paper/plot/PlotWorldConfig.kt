@@ -23,6 +23,12 @@ data class PlotWorldConfig(
     val roadBlock: Material = Material.DARK_PRISMARINE,          // Standard: Dunkles Prismarinblock (Straße)
     val wallBlock: Material = Material.DIAMOND_BLOCK,            // Standard: Diamantblock (Plotrand)
     val accentBlock: Material? = Material.SMOOTH_QUARTZ_STAIRS,  // Standard: Glatte Quarztreppe (Straßenrand)
+    val unclaimedBorderBlock: Material = wallBlock,
+    val claimedBorderBlock: Material = accentBlock ?: wallBlock,
+    val mergedBorderBlock: Material = accentBlock ?: wallBlock,
+    val saleBorderBlock: Material = Material.GOLD_BLOCK,
+    val adminBorderBlock: Material = Material.EMERALD_BLOCK,
+    val reservedBorderBlock: Material = Material.REDSTONE_BLOCK,
     val plotsPerSide: Int = DEFAULT_PLOTS_PER_SIDE,
     val minGenHeight: Int? = null,
     val schema: String = "default"                               // "default" | "copper" | "deepslate" (P2)
@@ -141,6 +147,12 @@ fun PlotWorldConfig.sanitized(): PlotWorldConfig {
         plotSize = plotSize.coerceAtLeast(4),
         roadWidth = roadWidth.coerceAtLeast(1),
         plotHeight = plotHeight.coerceAtLeast(1),
-        plotsPerSide = plotsPerSide.coerceAtLeast(0)
+        plotsPerSide = plotsPerSide.coerceAtLeast(0),
+        unclaimedBorderBlock = unclaimedBorderBlock,
+        claimedBorderBlock = claimedBorderBlock,
+        mergedBorderBlock = mergedBorderBlock,
+        saleBorderBlock = saleBorderBlock,
+        adminBorderBlock = adminBorderBlock,
+        reservedBorderBlock = reservedBorderBlock
     )
 }
