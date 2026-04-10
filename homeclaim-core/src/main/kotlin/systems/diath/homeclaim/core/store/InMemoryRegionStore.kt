@@ -18,6 +18,8 @@ import systems.diath.homeclaim.core.event.RegionUpdateEvent
 import systems.diath.homeclaim.core.event.PostRegionUpdateEvent
 import systems.diath.homeclaim.core.event.RegionDeleteEvent
 import systems.diath.homeclaim.core.event.PostRegionDeleteEvent
+import systems.diath.homeclaim.core.event.RegionMergeEvent
+import systems.diath.homeclaim.core.event.PostRegionMergeEvent
 import systems.diath.homeclaim.core.event.EventResult
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.service.AuditEntry
@@ -64,10 +66,19 @@ class InMemoryRegionStore(
     override fun getRegionById(regionId: RegionId): Region? = regions[regionId]
 
     override fun mergeRegions(regionIds: Collection<RegionId>): MergeGroupId {
+        val normalizedIds = regionIds.toSet()
         val mergeId = MergeGroupId(UUID.randomUUID())
-        regionIds.forEach { id ->
+        if (normalizedIds.isEmpty()) return mergeId
+
+        val existingRegions = normalizedIds.mapNotNull { regions[it] }
+        val initiatorId = existingRegions.firstOrNull()?.owner ?: UUID(0L, 0L)
+        eventDispatcher?.dispatch(RegionMergeEvent(normalizedIds, initiatorId))
+
+        normalizedIds.forEach { id ->
             regions[id]?.let { regions[id] = it.copy(mergeGroupId = mergeId) }
         }
+
+        eventDispatcher?.dispatch(PostRegionMergeEvent(normalizedIds, initiatorId, mergeId))
         return mergeId
     }
 
@@ -123,6 +134,9 @@ class InMemoryRegionStore(
         val changes = mutableMapOf<String, Any>()
         if (existing.owner != region.owner) changes["owner"] = "${existing.owner} -> ${region.owner}"
         if (existing.price != region.price) changes["price"] = region.price
+        if (existing.mergeGroupId != region.mergeGroupId) {
+            changes["mergeGroupId"] = "${existing.mergeGroupId?.value} -> ${region.mergeGroupId?.value}"
+        }
         
         val updateEvent = RegionUpdateEvent(
             regionId = region.id,
@@ -206,7 +220,8 @@ class InMemoryRegionStore(
             PostRegionDeleteEvent(
                 regionId = regionId,
                 initiatorId = region.owner,
-                world = region.world
+                world = region.world,
+                regionSnapshot = region
             )
         )
     }

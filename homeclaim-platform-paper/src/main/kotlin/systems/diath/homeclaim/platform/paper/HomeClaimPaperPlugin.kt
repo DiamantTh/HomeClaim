@@ -43,6 +43,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var restServer: io.ktor.server.engine.ApplicationEngine? = null
     private var services: PlatformServices? = null
     private var guiManager: systems.diath.homeclaim.platform.paper.gui.GuiManager? = null
+    private var plotMutationHooksRegistered: Boolean = false
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
@@ -52,6 +53,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     fun bindServices(services: PlatformServices) {
         bridge = PaperPlatformBridge(this, services).also { it.registerListeners() }
         logger.info(i18n.msg("bridge.registered"))
+        registerPlotMutationHooks(services)
         
         // Initialize Economy system with auto-detection
         initializeEconomy()
@@ -240,6 +242,36 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
     }
     
+    private fun registerPlotMutationHooks(services: PlatformServices) {
+        if (plotMutationHooksRegistered) return
+
+        val dispatcher = services.eventDispatcher ?: eventDispatcher ?: return
+        val mutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService =
+            if (isFoliaRuntime()) {
+                systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this)
+            } else {
+                systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this)
+            }
+
+        dispatcher.registerListener(
+            systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener(
+                services.regionService,
+                mutationService
+            )
+        )
+        plotMutationHooksRegistered = true
+        logger.info("Plot mutation hooks registered (${if (isFoliaRuntime()) "Folia" else "Paper"} mode)")
+    }
+
+    private fun isFoliaRuntime(): Boolean {
+        return try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
+            true
+        } catch (e: ClassNotFoundException) {
+            false
+        }
+    }
+
     private fun registerShutdownHooks(services: PlatformServices) {
         // Player cleanup first
         ShutdownManager.registerHook("PlayerCleanup", priority = 10) {
@@ -408,7 +440,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             adminService = admin,
             flagProfileService = profileService,
             auditService = auditService,
-            dataSource = dataSource
+            dataSource = dataSource,
+            eventDispatcher = eventDispatcher
         )
     }
 

@@ -25,6 +25,8 @@ import systems.diath.homeclaim.core.event.RegionUpdateEvent
 import systems.diath.homeclaim.core.event.PostRegionUpdateEvent
 import systems.diath.homeclaim.core.event.RegionDeleteEvent
 import systems.diath.homeclaim.core.event.PostRegionDeleteEvent
+import systems.diath.homeclaim.core.event.RegionMergeEvent
+import systems.diath.homeclaim.core.event.PostRegionMergeEvent
 import systems.diath.homeclaim.core.event.EventResult
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.service.AuditEntry
@@ -119,11 +121,18 @@ class JdbcRegionRepository(
     }
 
     override fun mergeRegions(regionIds: Collection<RegionId>): MergeGroupId {
+        val normalizedIds = regionIds.toSet()
         val mergeId = MergeGroupId(UUID.randomUUID())
+        if (normalizedIds.isEmpty()) return mergeId
+
+        val existingRegions = normalizedIds.mapNotNull { getRegionById(it) }
+        val initiatorId = existingRegions.firstOrNull()?.owner ?: UUID(0L, 0L)
+        eventDispatcher?.dispatch(RegionMergeEvent(normalizedIds, initiatorId))
+
         dataSource.connection.use { conn ->
             conn.autoCommit = false
             conn.prepareStatement("UPDATE regions SET merge_group_id = ? WHERE id = ?").use { ps ->
-                for (id in regionIds) {
+                for (id in normalizedIds) {
                     ps.setObject(1, mergeId.value)
                     ps.setObject(2, id.value)
                     ps.addBatch()
@@ -132,6 +141,8 @@ class JdbcRegionRepository(
             }
             conn.commit()
         }
+
+        eventDispatcher?.dispatch(PostRegionMergeEvent(normalizedIds, initiatorId, mergeId))
         return mergeId
     }
 
@@ -255,7 +266,8 @@ class JdbcRegionRepository(
                 PostRegionDeleteEvent(
                     regionId = regionId,
                     initiatorId = it.owner,
-                    world = it.world
+                    world = it.world,
+                    regionSnapshot = it
                 )
             )
         }
@@ -269,6 +281,9 @@ class JdbcRegionRepository(
         if (existing != null) {
             if (existing.owner != region.owner) changes["owner"] = "${existing.owner} -> ${region.owner}"
             if (existing.price != region.price) changes["price"] = region.price
+            if (existing.mergeGroupId != region.mergeGroupId) {
+                changes["mergeGroupId"] = "${existing.mergeGroupId?.value} -> ${region.mergeGroupId?.value}"
+            }
         }
         
         val updateEvent = RegionUpdateEvent(

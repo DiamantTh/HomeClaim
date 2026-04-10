@@ -1,6 +1,8 @@
 package systems.diath.homeclaim.core.event
 
+import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
+import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import java.util.UUID
 
@@ -132,6 +134,27 @@ class PostRegionUpdateEvent(
 ) : RegionEvent(regionId, initiatorId)
 
 /**
+ * Event vor Region-Merge.
+ */
+class RegionMergeEvent(
+    regionIds: Set<RegionId>,
+    initiatorId: PlayerId
+) : RegionEvent(regionIds.first(), initiatorId) {
+    val regionIds: Set<RegionId> = regionIds.toSet()
+}
+
+/**
+ * Event nach erfolgreichem Region-Merge.
+ */
+class PostRegionMergeEvent(
+    regionIds: Set<RegionId>,
+    initiatorId: PlayerId,
+    val mergeGroupId: MergeGroupId
+) : RegionEvent(regionIds.first(), initiatorId) {
+    val regionIds: Set<RegionId> = regionIds.toSet()
+}
+
+/**
  * Event vor Region-Löschung (Pre-Event)
  * - Kann blockiert werden (z.B. wenn noch Komponenten vorhanden)
  */
@@ -148,5 +171,6 @@ class RegionDeleteEvent(
 class PostRegionDeleteEvent(
     regionId: RegionId,
     initiatorId: PlayerId,
-    val world: String
+    val world: String,
+    val regionSnapshot: Region
 ) : RegionEvent(regionId, initiatorId)
