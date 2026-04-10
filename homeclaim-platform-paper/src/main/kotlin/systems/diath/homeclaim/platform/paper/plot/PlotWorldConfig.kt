@@ -29,6 +29,9 @@ data class PlotWorldConfig(
     val saleBorderBlock: Material = Material.GOLD_BLOCK,
     val adminBorderBlock: Material = Material.EMERALD_BLOCK,
     val reservedBorderBlock: Material = Material.REDSTONE_BLOCK,
+    val resetOnDelete: Boolean = false,
+    val resetOnUnclaim: Boolean = false,
+    val resetBatchColumnsPerTick: Int = 128,
     val plotsPerSide: Int = DEFAULT_PLOTS_PER_SIDE,
     val minGenHeight: Int? = null,
     val schema: String = "default"                               // "default" | "copper" | "deepslate" (P2)
@@ -153,6 +156,9 @@ fun PlotWorldConfig.sanitized(): PlotWorldConfig {
         mergedBorderBlock = mergedBorderBlock,
         saleBorderBlock = saleBorderBlock,
         adminBorderBlock = adminBorderBlock,
-        reservedBorderBlock = reservedBorderBlock
+        reservedBorderBlock = reservedBorderBlock,
+        resetOnDelete = resetOnDelete,
+        resetOnUnclaim = resetOnUnclaim,
+        resetBatchColumnsPerTick = resetBatchColumnsPerTick.coerceAtLeast(1)
     )
 }

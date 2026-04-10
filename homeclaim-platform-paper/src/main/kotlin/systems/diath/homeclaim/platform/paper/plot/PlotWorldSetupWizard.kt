@@ -519,6 +519,9 @@ class PlotWorldConfigStore(
             saleBorderBlock = Material.matchMaterial((toml.get<Any>("saleBorderBlock") as? String) ?: "GOLD_BLOCK") ?: Material.GOLD_BLOCK,
             adminBorderBlock = Material.matchMaterial((toml.get<Any>("adminBorderBlock") as? String) ?: "EMERALD_BLOCK") ?: Material.EMERALD_BLOCK,
             reservedBorderBlock = Material.matchMaterial((toml.get<Any>("reservedBorderBlock") as? String) ?: "REDSTONE_BLOCK") ?: Material.REDSTONE_BLOCK,
+            resetOnDelete = (toml.get<Any>("resetOnDelete") as? Boolean) ?: false,
+            resetOnUnclaim = (toml.get<Any>("resetOnUnclaim") as? Boolean) ?: false,
+            resetBatchColumnsPerTick = (toml.get<Any>("resetBatchColumnsPerTick") as? Number)?.toInt() ?: 128,
             schema = (toml.get<Any>("schema") as? String) ?: "default",
             plotsPerSide = (toml.get<Any>("plotsPerSide") as? Number)?.toInt() ?: 500
         )
@@ -548,6 +551,9 @@ class PlotWorldConfigStore(
             appendLine("saleBorderBlock = \"${cfg.saleBorderBlock.name}\"")
             appendLine("adminBorderBlock = \"${cfg.adminBorderBlock.name}\"")
             appendLine("reservedBorderBlock = \"${cfg.reservedBorderBlock.name}\"")
+            appendLine("resetOnDelete = ${cfg.resetOnDelete}")
+            appendLine("resetOnUnclaim = ${cfg.resetOnUnclaim}")
+            appendLine("resetBatchColumnsPerTick = ${cfg.resetBatchColumnsPerTick}")
             appendLine("schema = \"${cfg.schema}\"")
             appendLine("plotsPerSide = ${cfg.plotsPerSide}")
             appendLine("converted = true")

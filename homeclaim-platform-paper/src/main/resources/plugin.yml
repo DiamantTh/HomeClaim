@@ -21,7 +21,7 @@ commands:
     permission: homeclaim.admin
   plot:
     description: Plot Verwaltung (P2-Style)
-    usage: /plot [claim|auto|home|info|list|visit]
+    usage: /plot [claim|auto|home|info|list|visit|merge|unlink|reset]
     aliases: [p]
   zone:
     description: Zone Informationen
@@ -48,4 +48,13 @@ permissions:
     default: true
   homeclaim.plot.visit:
     description: Allows visiting other players' plots
+    default: true
+  homeclaim.plot.merge:
+    description: Allows merging adjacent owned plots
+    default: true
+  homeclaim.plot.unlink:
+    description: Allows unlinking merged plots and optionally restoring roads
+    default: true
+  homeclaim.plot.reset:
+    description: Allows queueing a plot reset job
     default: true

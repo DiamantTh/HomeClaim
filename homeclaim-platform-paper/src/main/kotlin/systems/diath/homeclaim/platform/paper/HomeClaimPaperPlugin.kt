@@ -44,6 +44,10 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var services: PlatformServices? = null
     private var guiManager: systems.diath.homeclaim.platform.paper.gui.GuiManager? = null
     private var plotMutationHooksRegistered: Boolean = false
+    private var plotMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService =
+        systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
+    private var plotResetService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService =
+        systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
@@ -71,7 +75,10 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             val executor = systems.diath.homeclaim.platform.paper.command.PlotCommand(
                 services.regionService,
                 guiManager!!,
-                econService
+                econService,
+                plotResetService,
+                plotMutationService,
+                i18n
             )
             cmd.setExecutor(executor)
             cmd.tabCompleter = executor
@@ -246,17 +253,22 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         if (plotMutationHooksRegistered) return
 
         val dispatcher = services.eventDispatcher ?: eventDispatcher ?: return
-        val mutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService =
-            if (isFoliaRuntime()) {
-                systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this)
-            } else {
-                systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this)
-            }
+        plotMutationService = if (isFoliaRuntime()) {
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this)
+        } else {
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this)
+        }
+        plotResetService = if (isFoliaRuntime()) {
+            systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
+        } else {
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(this)
+        }
 
         dispatcher.registerListener(
             systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener(
                 services.regionService,
-                mutationService
+                plotMutationService,
+                plotResetService
             )
         )
         plotMutationHooksRegistered = true

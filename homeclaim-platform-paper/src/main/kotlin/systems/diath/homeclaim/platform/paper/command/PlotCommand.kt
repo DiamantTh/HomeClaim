@@ -7,11 +7,18 @@ import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.economy.EconService
+import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.PlayerId
+import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import systems.diath.homeclaim.platform.paper.util.Permissions
 import systems.diath.homeclaim.platform.paper.I18n
+import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
 
 /**
  * Command handler for /plot commands (P2-style).
@@ -27,6 +34,8 @@ class PlotCommand(
     private val regionService: RegionService,
     private val guiManager: GuiManager,
     private val econService: EconService?,
+    private val plotResetService: PlotResetService = NoOpPlotResetService,
+    private val plotMutationService: PlotMutationService = NoOpPlotMutationService,
     private val i18n: I18n = I18n()
 ) : CommandExecutor, TabCompleter {
     
@@ -70,15 +79,22 @@ class PlotCommand(
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_VISIT)) return true
                 handleVisit(sender, args.getOrNull(1))
             }
+            "merge", "m" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_MERGE)) return true
+                handleMerge(sender, args.getOrNull(1))
+            }
+            "unlink", "u", "unmerge" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_UNLINK)) return true
+                handleUnlink(sender, args.getOrNull(1))
+            }
+            "reset", "clear" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RESET)) return true
+                handleReset(sender)
+            }
             else -> showHelp(sender)
         }
         
         return true
-    }
-    
-    companion object {
-        // UUID for unclaimed plots (all zeros)
-        private val UNCLAIMED_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000")
     }
     
     private fun handleClaim(player: Player) {
@@ -240,6 +256,188 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.visit_success", target.name ?: "unknown"))
     }
     
+    private fun handleMerge(player: Player, directionArg: String?) {
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        if (region.owner == UNCLAIMED_UUID) {
+            player.sendMessage(i18n.msg("plot.merge_unclaimed"))
+            return
+        }
+        if (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+
+        val direction = parseMergeDirection(directionArg) ?: run {
+            player.sendMessage(i18n.msg("plot.merge_usage"))
+            return
+        }
+
+        val sameOwnerRegions = regionService.listRegionsByOwner(region.owner)
+            .filter { it.world == region.world && it.id != region.id }
+        val selected = collectMergeTargets(region, sameOwnerRegions, direction)
+        if (selected.isEmpty()) {
+            player.sendMessage(i18n.msg("plot.merge_no_adjacent"))
+            return
+        }
+
+        val groupIds = (listOf(region) + selected).mapNotNull { it.mergeGroupId }.toSet()
+        val expanded = if (groupIds.isEmpty()) {
+            emptyList()
+        } else {
+            sameOwnerRegions.filter { it.mergeGroupId != null && it.mergeGroupId in groupIds }
+        }
+        val mergedIds = (listOf(region) + selected + expanded).map { it.id }.toSet()
+        val mergeId = regionService.mergeRegions(mergedIds)
+        player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+    }
+
+    private fun handleUnlink(player: Player, createRoadsArg: String?) {
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        if (region.owner == UNCLAIMED_UUID) {
+            player.sendMessage(i18n.msg("plot.unlink_unclaimed"))
+            return
+        }
+        val mergeGroupId = region.mergeGroupId ?: run {
+            player.sendMessage(i18n.msg("plot.unlink_not_merged"))
+            return
+        }
+        if (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+
+        val createRoads = when (createRoadsArg?.lowercase()) {
+            null -> true
+            "true" -> true
+            "false" -> false
+            else -> {
+                player.sendMessage(i18n.msg("plot.unlink_usage"))
+                return
+            }
+        }
+
+        val groupedRegions = regionService.listAllRegions()
+            .filter { it.world == region.world && it.mergeGroupId == mergeGroupId }
+        if (groupedRegions.size <= 1) {
+            player.sendMessage(i18n.msg("plot.unlink_not_merged"))
+            return
+        }
+
+        val updatedRegions = groupedRegions.map { grouped ->
+            val updated = grouped.copy(mergeGroupId = null)
+            regionService.updateRegion(updated)
+            updated
+        }
+
+        plotMutationService.handleRegionsUnlinked(updatedRegions, createRoads)
+        player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
+    }
+
+    private fun handleReset(player: Player) {
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        if (region.owner == UNCLAIMED_UUID) {
+            player.sendMessage(i18n.msg("plot.reset_unclaimed"))
+            return
+        }
+        if (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+
+        val queued = plotResetService.queueReset(region, PlotResetReason.MANUAL)
+        if (queued) {
+            player.sendMessage(i18n.msg("plot.reset_queued"))
+        } else {
+            player.sendMessage(i18n.msg("plot.reset_unavailable"))
+        }
+    }
+
+    private fun currentRegion(player: Player): Region? {
+        val loc = player.location
+        val worldId: systems.diath.homeclaim.core.model.WorldId = loc.world.name
+        val regionId = regionService.getRegionAt2D(worldId, loc.blockX, loc.blockZ) ?: return null
+        return regionService.getRegionById(regionId)
+    }
+
+    private fun collectMergeTargets(current: Region, candidates: List<Region>, direction: MergeDirection): List<Region> {
+        return when (direction) {
+            MergeDirection.ALL -> {
+                val remaining = candidates.toMutableList()
+                val queue = ArrayDeque<Region>()
+                val result = linkedSetOf<Region>()
+                queue.add(current)
+
+                while (queue.isNotEmpty()) {
+                    val base = queue.removeFirst()
+                    val found = remaining.filter { adjacencyDirection(base.bounds, it.bounds) != null }
+                    remaining.removeAll(found)
+                    found.forEach {
+                        if (result.add(it)) {
+                            queue.add(it)
+                        }
+                    }
+                }
+                result.toList()
+            }
+            else -> candidates
+                .mapNotNull { candidate ->
+                    val match = adjacencyDirection(current.bounds, candidate.bounds)
+                    if (match == direction) candidate to gapForDirection(current.bounds, candidate.bounds, direction) else null
+                }
+                .sortedBy { it.second }
+                .map { it.first }
+                .take(1)
+        }
+    }
+
+    private fun adjacencyDirection(source: Bounds, other: Bounds, maxGap: Int = DEFAULT_MERGE_GAP): MergeDirection? {
+        val eastGap = other.minX - source.maxX
+        if (eastGap in 1..maxGap && overlaps(source.minZ, source.maxZ, other.minZ, other.maxZ)) return MergeDirection.EAST
+
+        val westGap = source.minX - other.maxX
+        if (westGap in 1..maxGap && overlaps(source.minZ, source.maxZ, other.minZ, other.maxZ)) return MergeDirection.WEST
+
+        val southGap = other.minZ - source.maxZ
+        if (southGap in 1..maxGap && overlaps(source.minX, source.maxX, other.minX, other.maxX)) return MergeDirection.SOUTH
+
+        val northGap = source.minZ - other.maxZ
+        if (northGap in 1..maxGap && overlaps(source.minX, source.maxX, other.minX, other.maxX)) return MergeDirection.NORTH
+
+        return null
+    }
+
+    private fun gapForDirection(source: Bounds, other: Bounds, direction: MergeDirection): Int = when (direction) {
+        MergeDirection.NORTH -> source.minZ - other.maxZ
+        MergeDirection.SOUTH -> other.minZ - source.maxZ
+        MergeDirection.WEST -> source.minX - other.maxX
+        MergeDirection.EAST -> other.minX - source.maxX
+        MergeDirection.ALL -> 0
+    }
+
+    private fun overlaps(firstMin: Int, firstMax: Int, secondMin: Int, secondMax: Int): Boolean {
+        return firstMin <= secondMax && secondMin <= firstMax
+    }
+
+    private fun parseMergeDirection(input: String?): MergeDirection? {
+        return when (input?.lowercase()) {
+            null, "all", "auto" -> MergeDirection.ALL
+            "north", "n" -> MergeDirection.NORTH
+            "east", "e" -> MergeDirection.EAST
+            "south", "s" -> MergeDirection.SOUTH
+            "west", "w" -> MergeDirection.WEST
+            else -> null
+        }
+    }
+
     private fun showHelp(player: Player) {
         player.sendMessage(i18n.msg("plot.help_header"))
         player.sendMessage(i18n.msg("plot.help_claim"))
@@ -248,6 +446,9 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_info"))
         player.sendMessage(i18n.msg("plot.help_list"))
         player.sendMessage(i18n.msg("plot.help_visit"))
+        player.sendMessage(i18n.msg("plot.help_merge"))
+        player.sendMessage(i18n.msg("plot.help_unlink"))
+        player.sendMessage(i18n.msg("plot.help_reset"))
     }
     
     override fun onTabComplete(
@@ -257,7 +458,7 @@ class PlotCommand(
         args: Array<out String>
     ): List<String> {
         if (args.size == 1) {
-            return listOf("claim", "auto", "home", "info", "list", "visit")
+            return listOf("claim", "auto", "home", "info", "list", "visit", "merge", "unlink", "reset")
                 .filter { it.startsWith(args[0].lowercase()) }
         }
         if (args.size == 2 && args[0].lowercase() == "visit") {
@@ -265,6 +466,24 @@ class PlotCommand(
                 .map { it.name }
                 .filter { it.lowercase().startsWith(args[1].lowercase()) }
         }
+        if (args.size == 2 && args[0].lowercase() == "merge") {
+            return listOf("all", "north", "east", "south", "west")
+                .filter { it.startsWith(args[1].lowercase()) }
+        }
+        if (args.size == 2 && args[0].lowercase() == "unlink") {
+            return listOf("true", "false")
+                .filter { it.startsWith(args[1].lowercase()) }
+        }
         return emptyList()
+    }
+
+    private enum class MergeDirection {
+        NORTH, EAST, SOUTH, WEST, ALL
+    }
+
+    companion object {
+        // UUID for unclaimed plots (all zeros)
+        private val UNCLAIMED_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000")
+        private const val DEFAULT_MERGE_GAP = 32
     }
 }

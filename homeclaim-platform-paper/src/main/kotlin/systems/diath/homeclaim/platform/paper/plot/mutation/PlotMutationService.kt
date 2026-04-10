@@ -18,6 +18,10 @@ interface PlotMutationService {
     fun handleRegionsMerged(regions: Collection<Region>) {
         regions.forEach(::applyRegionState)
     }
+
+    fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean = true) {
+        regions.forEach(::applyRegionState)
+    }
 }
 
 object NoOpPlotMutationService : PlotMutationService {

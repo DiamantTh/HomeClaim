@@ -1,17 +1,11 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
-import org.bukkit.Material
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
-
-private data class PlotBorderStyle(
-    val fillMaterial: Material,
-    val capMaterial: Material
-)
 
 /**
  * Initial Paper-first implementation.
@@ -29,7 +23,7 @@ class PaperPlotMutationService(
         val world = Bukkit.getWorld(region.world) ?: return
         val config = configStore.loadConfig(region.world) ?: return
         val visualState = PlotVisualStates.resolve(region)
-        val style = styleFor(region, config, visualState)
+        val style = PlotMutationSupport.styleFor(region, config, visualState)
 
         Bukkit.getScheduler().runTask(plugin, Runnable {
             repaintBorder(world, region.bounds, config, style)
@@ -52,7 +46,7 @@ class PaperPlotMutationService(
             regions.forEach { region ->
                 val siblings = regions.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
                 val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
-                val style = styleFor(region, config, PlotVisualState.MERGED)
+                val style = PlotMutationSupport.styleFor(region, config, PlotVisualState.MERGED)
                 repaintBorder(
                     world = world,
                     bounds = region.bounds,
@@ -69,38 +63,33 @@ class PaperPlotMutationService(
                 fillMaterial = config.plotBlock,
                 capMaterial = config.plotBlock
             )
-            val regionList = regions.toList()
-            for (i in regionList.indices) {
-                for (j in i + 1 until regionList.size) {
-                    val first = regionList[i]
-                    val second = regionList[j]
-                    if (first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId) {
-                        val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
-                        repaintColumns(world, corridor, config, mergedFillStyle)
-                    }
-                }
+            repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap) { first, second ->
+                first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
             }
         })
     }
 
-    private fun styleFor(region: Region, config: PlotWorldConfig, state: PlotVisualState): PlotBorderStyle {
-        val explicitCap = region.metadata["plot.visual.border.material"]
-            ?.let(Material::matchMaterial)
-            ?.takeIf { it != Material.AIR }
+    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean) {
+        if (regions.isEmpty()) return
+        val worldName = regions.first().world
+        val world = Bukkit.getWorld(worldName) ?: return
+        val config = configStore.loadConfig(worldName) ?: return
+        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
 
-        val capMaterial = explicitCap ?: when (state) {
-            PlotVisualState.UNCLAIMED -> config.unclaimedBorderBlock
-            PlotVisualState.CLAIMED -> config.claimedBorderBlock
-            PlotVisualState.MERGED -> config.mergedBorderBlock
-            PlotVisualState.SALE -> config.saleBorderBlock
-            PlotVisualState.ADMIN -> config.adminBorderBlock
-            PlotVisualState.RESERVED -> config.reservedBorderBlock
-        }
+        Bukkit.getScheduler().runTask(plugin, Runnable {
+            regions.forEach { region ->
+                val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
+                repaintBorder(world, region.bounds, config, style)
+            }
 
-        return PlotBorderStyle(
-            fillMaterial = config.wallBlock,
-            capMaterial = capMaterial
-        )
+            if (createRoads) {
+                val roadStyle = PlotBorderStyle(
+                    fillMaterial = config.roadBlock,
+                    capMaterial = config.roadBlock
+                )
+                repaintCorridors(world, regions.toList(), config, roadStyle, maxGap) { _, _ -> true }
+            }
+        })
     }
 
     private fun repaintBorder(
@@ -129,15 +118,26 @@ class PaperPlotMutationService(
         config: PlotWorldConfig,
         style: PlotBorderStyle
     ) {
-        if (columns.isEmpty()) return
-        val minY = config.minGenHeight ?: -64
-        val topY = (config.plotHeight - 1).coerceAtLeast(minY)
+        PlotMutationSupport.repaintColumns(world, columns, config, style)
+    }
 
-        for ((x, z) in columns) {
-            for (y in minY until topY) {
-                world.getBlockAt(x, y, z).setType(style.fillMaterial, false)
+    private fun repaintCorridors(
+        world: org.bukkit.World,
+        regions: List<Region>,
+        config: PlotWorldConfig,
+        style: PlotBorderStyle,
+        maxGap: Int,
+        predicate: (Region, Region) -> Boolean
+    ) {
+        for (i in regions.indices) {
+            for (j in i + 1 until regions.size) {
+                val first = regions[i]
+                val second = regions[j]
+                if (predicate(first, second)) {
+                    val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
+                    repaintColumns(world, corridor, config, style)
+                }
             }
-            world.getBlockAt(x, topY, z).setType(style.capMaterial, false)
         }
     }
 }

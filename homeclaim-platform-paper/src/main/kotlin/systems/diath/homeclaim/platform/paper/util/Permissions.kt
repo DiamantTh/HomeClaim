@@ -50,6 +50,8 @@ object Permissions {
     const val PLOT_SELL = "homeclaim.plot.sell"
     const val PLOT_BUY = "homeclaim.plot.buy"
     const val PLOT_MERGE = "homeclaim.plot.merge"
+    const val PLOT_UNLINK = "homeclaim.plot.unlink"
+    const val PLOT_RESET = "homeclaim.plot.reset"
     
     // ============================================
     // COMPONENT PERMISSIONS

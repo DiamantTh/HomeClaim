@@ -13,7 +13,8 @@ import systems.diath.homeclaim.core.service.RegionService
  */
 class PlotMutationEventListener(
     private val regionService: RegionService,
-    private val plotMutationService: PlotMutationService
+    private val plotMutationService: PlotMutationService,
+    private val plotResetService: PlotResetService = NoOpPlotResetService
 ) : EventListener {
 
     fun onPostRegionClaimEvent(event: PostRegionClaimEvent) {
@@ -26,11 +27,16 @@ class PlotMutationEventListener(
 
     fun onPostRegionUpdateEvent(event: PostRegionUpdateEvent) {
         if (event.changes.isEmpty()) return
-        regionService.getRegionById(event.regionId)?.let(plotMutationService::applyRegionState)
+        val region = regionService.getRegionById(event.regionId) ?: return
+        plotMutationService.applyRegionState(region)
+        if ("owner" in event.changes && PlotVisualStates.resolve(region) == PlotVisualState.UNCLAIMED) {
+            plotResetService.queueReset(region, PlotResetReason.UNCLAIM)
+        }
     }
 
     fun onPostRegionDeleteEvent(event: PostRegionDeleteEvent) {
         plotMutationService.handleRegionDeleted(event.regionSnapshot)
+        plotResetService.queueReset(event.regionSnapshot, PlotResetReason.DELETE)
     }
 
     fun onPostRegionMergeEvent(event: PostRegionMergeEvent) {
