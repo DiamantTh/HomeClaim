@@ -604,6 +604,11 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             version = pluginMeta.version,
             storage = storageType.name
         )
+        val metricsService = systems.diath.homeclaim.platform.paper.PaperServerMetricsService(
+            pluginMeta.version,
+            plotMutationService,
+            plotResetService
+        )
         restServer = PlotRestServer(
             regionService = services.regionService,
             plotMemberService = services.plotMemberService,
@@ -611,6 +616,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             componentService = services.componentService,
             adminService = adminService,
             auditService = services.auditService,
+            metricsService = metricsService,
             port = port,
             authToken = resolvedToken,
             rateLimitPerMinute = rateLimit ?: 60,

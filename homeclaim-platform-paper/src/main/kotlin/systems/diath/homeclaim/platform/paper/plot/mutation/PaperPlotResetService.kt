@@ -32,6 +32,18 @@ class PaperPlotResetService(
         }
     }
 
+    override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
+        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+            PlotJobSnapshot(
+                key = snapshot.key,
+                world = snapshot.world,
+                kind = snapshot.kind.name,
+                ageMillis = snapshot.ageMillis,
+                cancelRequested = snapshot.cancelRequested
+            )
+        }
+    }
+
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
         val config = configStore.loadConfig(region.world)?.sanitized() ?: return false

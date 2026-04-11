@@ -26,8 +26,18 @@ interface PlotMutationService {
     fun cancelPendingJobs(worldName: String? = null): Int = 0
 
     fun activeJobDiagnostics(worldName: String? = null): List<String> = emptyList()
+
+    fun activeJobs(worldName: String? = null): List<PlotJobSnapshot> = emptyList()
 }
 
 object NoOpPlotMutationService : PlotMutationService {
     override fun applyRegionState(region: Region) = Unit
 }
+
+data class PlotJobSnapshot(
+    val key: String,
+    val world: String,
+    val kind: String,
+    val ageMillis: Long,
+    val cancelRequested: Boolean
+)

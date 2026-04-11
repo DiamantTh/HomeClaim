@@ -184,9 +184,31 @@ class PlotRestServer(
                         version = "1.0.0",
                         endpoints = listOf(
                             "/health", "/info", "/plots", "/plots/{id}", "/plots/at",
-                            "/players/{uuid}/plots", "/zones", "/profiles", "/admin/stats"
+                            "/players/{uuid}/plots", "/zones", "/profiles", "/admin/stats",
+                            "/metrics", "/metrics/plots", "/metrics/worlds/{name}"
                         )
                     ))
+                }
+
+                route("/metrics") {
+                    get {
+                        if (!auth.check(call)) return@get
+                        call.respond((metricsService ?: NoOpServerMetricsService).collectMetrics())
+                    }
+
+                    get("/plots") {
+                        if (!auth.check(call)) return@get
+                        call.respond((metricsService ?: NoOpServerMetricsService).collectPlotsMetrics())
+                    }
+
+                    get("/worlds/{name}") {
+                        if (!auth.check(call)) return@get
+                        val worldName = call.parameters["name"]
+                            ?: throw IllegalArgumentException("Missing world name")
+                        val metrics = (metricsService ?: NoOpServerMetricsService).collectWorldMetrics(worldName)
+                            ?: throw NoSuchElementException("World not found: $worldName")
+                        call.respond(metrics)
+                    }
                 }
                 
                 // ============================================

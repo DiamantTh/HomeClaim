@@ -18,6 +18,8 @@ interface PlotResetService {
     fun cancelPendingJobs(worldName: String? = null): Int = 0
 
     fun activeJobDiagnostics(worldName: String? = null): List<String> = emptyList()
+
+    fun activeJobs(worldName: String? = null): List<PlotJobSnapshot> = emptyList()
 }
 
 object NoOpPlotResetService : PlotResetService {

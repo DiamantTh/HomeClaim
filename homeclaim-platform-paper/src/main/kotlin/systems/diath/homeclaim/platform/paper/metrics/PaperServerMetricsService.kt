@@ -10,6 +10,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
  * Collects metrics from Bukkit/Paper/Folia servers including Multiverse worlds.
  */
 class PaperServerMetricsService(
+    private val homeClaimVersion: String,
     private val plotMutationService: PlotMutationService,
     private val plotResetService: PlotResetService
 ) : ServerMetricsService {
@@ -19,7 +20,7 @@ class PaperServerMetricsService(
         val worldMetrics = Bukkit.getWorlds().map { world ->
             WorldMetrics(
                 name = world.name,
-                type = world.worldType?.name ?: "NORMAL",
+                type = world.environment.name,
                 loaded = true,
                 environment = world.environment.name,
                 chunkCount = world.loadedChunks.size,
@@ -63,7 +64,7 @@ class PaperServerMetricsService(
         val server = Bukkit.getServer()
         val serverImpl = if (isFolia()) "Folia" else "Paper"
         return VersionInfo(
-            homeclaimVersion = "0.1.0",  // TODO: read from plugin descriptor
+            homeclaimVersion = homeClaimVersion,
             javaVersion = javaVersion,
             serverImplementation = serverImpl,
             serverVersion = server.version
@@ -94,6 +95,9 @@ class PaperServerMetricsService(
         var totalActive = 0
         var totalQueued = 0
         var totalFailed = 0
+        var totalCancelling = 0
+        val oldestPendingMillis = mutableListOf<Long>()
+        val averageAges = mutableListOf<Long>()
         
         for (world in Bukkit.getWorlds()) {
             val worldMetrics = collectWorldPlotMetrics(world.name)
@@ -102,13 +106,23 @@ class PaperServerMetricsService(
             totalActive += worldMetrics.activeMutations + worldMetrics.activeResets
             totalQueued += worldMetrics.queuedMutations + worldMetrics.queuedResets
             totalFailed += worldMetrics.failedMutations + worldMetrics.failedResets
+            totalCancelling += worldMetrics.cancellingMutations + worldMetrics.cancellingResets
+            listOf(worldMetrics.oldestMutationAgeMillis, worldMetrics.oldestResetAgeMillis)
+                .filter { it > 0L }
+                .forEach(oldestPendingMillis::add)
+            listOf(worldMetrics.oldestMutationAgeMillis, worldMetrics.oldestResetAgeMillis)
+                .filter { it > 0L }
+                .forEach(averageAges::add)
         }
         
         return PlotsMetrics(
             totalActive = totalActive,
             totalQueued = totalQueued,
             totalFailed = totalFailed,
-            byWorld = byWorld
+            totalCancelling = totalCancelling,
+            byWorld = byWorld,
+            avgProcessingMs = averageAges.average().takeIf { !it.isNaN() }?.toLong() ?: 0L,
+            oldestPendingSeconds = (oldestPendingMillis.maxOrNull() ?: 0L) / 1000L
         )
     }
     
@@ -116,7 +130,7 @@ class PaperServerMetricsService(
         val world = Bukkit.getWorld(worldName) ?: return null
         return WorldMetrics(
             name = world.name,
-            type = world.worldType?.name ?: "NORMAL",
+            type = world.environment.name,
             loaded = true,
             environment = world.environment.name,
             chunkCount = world.loadedChunks.size,
@@ -126,22 +140,22 @@ class PaperServerMetricsService(
     }
     
     private fun collectWorldPlotMetrics(worldName: String): WorldPlotsMetrics {
-        val mutationDiags = plotMutationService.activeJobDiagnostics(worldName)
-        val resetDiags = plotResetService.activeJobDiagnostics(worldName)
-        
-        // SimpleHeuristic: count by job type in diagnostics
-        // In production, could be more granular with job registry access
-        val activeMutations = mutationDiags.filter { it.contains("active") }.size
-        val queuedMutations = mutationDiags.filter { it.contains("queued") }.size
-        val activeResets = resetDiags.filter { it.contains("active") }.size
-        val queuedResets = resetDiags.filter { it.contains("queued") }.size
+        val mutationJobs = plotMutationService.activeJobs(worldName)
+        val resetJobs = plotResetService.activeJobs(worldName)
         
         return WorldPlotsMetrics(
             worldName = worldName,
-            activeMutations = activeMutations,
-            queuedMutations = queuedMutations,
-            activeResets = activeResets,
-            queuedResets = queuedResets
+            activeMutations = mutationJobs.size,
+            queuedMutations = 0,
+            failedMutations = 0,
+            cancellingMutations = mutationJobs.count { it.cancelRequested },
+            activeResets = resetJobs.size,
+            queuedResets = 0,
+            failedResets = 0,
+            cancellingResets = resetJobs.count { it.cancelRequested },
+            totalPlots = 0,
+            oldestMutationAgeMillis = mutationJobs.maxOfOrNull { it.ageMillis } ?: 0L,
+            oldestResetAgeMillis = resetJobs.maxOfOrNull { it.ageMillis } ?: 0L
         )
     }
     

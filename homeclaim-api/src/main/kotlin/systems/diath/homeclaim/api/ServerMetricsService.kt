@@ -62,6 +62,7 @@ data class PlotsMetrics(
     val totalActive: Int = 0,
     val totalQueued: Int = 0,
     val totalFailed: Int = 0,
+    val totalCancelling: Int = 0,
     val byWorld: Map<String, WorldPlotsMetrics> = emptyMap(),
     val avgProcessingMs: Long = 0L,
     val oldestPendingSeconds: Long = 0L
@@ -76,10 +77,14 @@ data class WorldPlotsMetrics(
     val activeMutations: Int = 0,
     val queuedMutations: Int = 0,
     val failedMutations: Int = 0,
+    val cancellingMutations: Int = 0,
     val activeResets: Int = 0,
     val queuedResets: Int = 0,
     val failedResets: Int = 0,
-    val totalPlots: Int = 0
+    val cancellingResets: Int = 0,
+    val totalPlots: Int = 0,
+    val oldestMutationAgeMillis: Long = 0L,
+    val oldestResetAgeMillis: Long = 0L
 )
 
 /**
