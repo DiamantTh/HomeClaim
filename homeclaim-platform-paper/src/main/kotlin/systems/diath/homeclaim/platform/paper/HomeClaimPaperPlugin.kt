@@ -610,6 +610,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             plotMutationService,
             plotResetService
         )
+        val ownerMetadataResolver = systems.diath.homeclaim.platform.paper.PaperOwnerMetadataResolver()
         restServer = PlotRestServer(
             regionService = services.regionService,
             plotMemberService = services.plotMemberService,
@@ -618,6 +619,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             adminService = adminService,
             auditService = services.auditService,
             metricsService = metricsService,
+            ownerMetadataResolver = ownerMetadataResolver,
             port = port,
             authToken = resolvedToken,
             rateLimitPerMinute = rateLimit ?: 60,

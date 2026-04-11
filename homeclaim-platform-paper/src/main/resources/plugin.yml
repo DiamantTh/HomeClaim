@@ -61,3 +61,6 @@ permissions:
   homeclaim.plot.jobs:
     description: Allows viewing and cancelling queued plot jobs
     default: op
+  homeclaim.plot.info.platform:
+    description: Allows viewing owner UUID/platform details in /plot info
+    default: op

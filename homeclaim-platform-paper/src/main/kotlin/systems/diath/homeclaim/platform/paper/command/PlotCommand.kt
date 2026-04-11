@@ -193,6 +193,11 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.info_header"))
         player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString().take(8)))
         player.sendMessage(i18n.msg("plot.info_owner", ownerName))
+        if (region.owner != UNCLAIMED_UUID && Permissions.check(player, Permissions.PLOT_INFO_PLATFORM)) {
+            val platformInfo = systems.diath.homeclaim.platform.paper.util.PlayerPlatformClassifier.classify(region.owner)
+            player.sendMessage("§7Owner UUID: §f${region.owner}")
+            player.sendMessage("§7Owner Platform: §f${if (platformInfo.isBedrock) "Bedrock" else "Java"}")
+        }
         player.sendMessage(i18n.msg("plot.info_size", region.bounds.maxX - region.bounds.minX, region.bounds.maxZ - region.bounds.minZ))
         val priceStr = if (region.price > 0) "${region.price}$" else i18n.msg("plot.info_not_for_sale")
         player.sendMessage(i18n.msg("plot.info_price", priceStr))

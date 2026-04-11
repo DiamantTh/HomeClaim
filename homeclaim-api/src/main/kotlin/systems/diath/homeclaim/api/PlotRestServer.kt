@@ -80,6 +80,7 @@ class PlotRestServer(
     private val adminService: RegionAdminService?,
     private val auditService: AuditService? = null,
     private val metricsService: ServerMetricsService? = null,
+    private val ownerMetadataResolver: OwnerMetadataResolver? = null,
     private val port: Int = 8080,
     private val authToken: String,
     private val rateLimitPerMinute: Int = 60,
@@ -249,6 +250,7 @@ class PlotRestServer(
                     // GET /plots - List plots with filters
                     get {
                         if (!auth.check(call)) return@get
+                        val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
                         val worldFilter = call.request.queryParameters["world"]
                         val owner = call.request.queryParameters["owner"]?.toUuidOrNull()
                         val available = call.request.queryParameters["available"]?.toBoolean()
@@ -275,7 +277,7 @@ class PlotRestServer(
                         plots = plots.drop(offset).take(limit)
                         
                         call.respond(PaginatedResponse(
-                            data = plots.map { it.toDto() },
+                            data = plots.map { it.toDto(includeOwnerMeta, ownerMetadataResolver) },
                             total = total,
                             limit = limit,
                             offset = offset
@@ -285,6 +287,7 @@ class PlotRestServer(
                     // GET /plots/at - Get plot at coordinates
                     get("/at") {
                         if (!auth.check(call)) return@get
+                        val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
                         val world = call.request.queryParameters["world"]
                             ?: throw IllegalArgumentException("Missing 'world' parameter")
                         val x = call.request.queryParameters["x"]?.toIntOrNull()
@@ -299,7 +302,7 @@ class PlotRestServer(
                         } else {
                             val region = regionService.getRegionById(regionId)
                             if (region != null) {
-                                call.respond(region.toDto())
+                                call.respond(region.toDto(includeOwnerMeta, ownerMetadataResolver))
                             } else {
                                 call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Plot not found"))
                             }
@@ -309,11 +312,12 @@ class PlotRestServer(
                     // GET /plots/{id}
                     get("/{id}") {
                         if (!auth.check(call)) return@get
+                        val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val region = regionService.getRegionById(id)
                             ?: throw NoSuchElementException("Plot not found")
-                        call.respond(region.toDto())
+                        call.respond(region.toDto(includeOwnerMeta, ownerMetadataResolver))
                     }
                     
                     // POST /plots/{id}/buy
@@ -452,11 +456,12 @@ class PlotRestServer(
                     // GET /players/{uuid}/plots
                     get("/plots") {
                         if (!auth.check(call)) return@get
+                        val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
                         val uuid = call.parameters["uuid"]?.toUuidOrNull()
                             ?: throw IllegalArgumentException("Invalid player UUID")
                         
                         val plots = regionService.listRegionsByOwner(uuid)
-                        call.respond(plots.map { it.toDto() })
+                        call.respond(plots.map { it.toDto(includeOwnerMeta, ownerMetadataResolver) })
                     }
                     
                     // GET /players/{uuid}/stats
@@ -854,6 +859,7 @@ data class PlotDto(
     val id: String,
     val world: String,
     val owner: String,
+    val ownerMeta: OwnerMetadataDto? = null,
     val bounds: BoundsDto,
     val shape: String,
     val price: Double,
@@ -863,6 +869,24 @@ data class PlotDto(
     val members: List<String>,
     val banned: List<String>
 )
+
+data class OwnerMetadataDto(
+    val uuid: String,
+    val name: String? = null,
+    val isJava: Boolean? = null,
+    val isBedrock: Boolean? = null
+)
+
+data class OwnerMetadata(
+    val uuid: String,
+    val name: String? = null,
+    val isJava: Boolean? = null,
+    val isBedrock: Boolean? = null
+)
+
+interface OwnerMetadataResolver {
+    fun resolve(owner: UUID): OwnerMetadata?
+}
 
 data class BoundsDto(
     val minX: Int, val maxX: Int,
@@ -968,10 +992,20 @@ data class ProjectLicenseScore(
 // Extension Functions
 // ============================================
 
-private fun Region.toDto() = PlotDto(
+private fun Region.toDto(includeOwnerMeta: Boolean = false, ownerMetadataResolver: OwnerMetadataResolver? = null) = PlotDto(
     id = id.value.toString(),
     world = world,
     owner = owner.toString(),
+    ownerMeta = if (includeOwnerMeta && ownerMetadataResolver != null) {
+        ownerMetadataResolver.resolve(owner)?.let {
+            OwnerMetadataDto(
+                uuid = it.uuid,
+                name = it.name,
+                isJava = it.isJava,
+                isBedrock = it.isBedrock
+            )
+        }
+    } else null,
     bounds = BoundsDto(bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, bounds.minZ, bounds.maxZ),
     shape = shape.name,
     price = price,
