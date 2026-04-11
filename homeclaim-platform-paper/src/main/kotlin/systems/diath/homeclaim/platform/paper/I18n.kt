@@ -16,6 +16,7 @@ class I18n(
     private val bundle: ResourceBundle = runCatching { ResourceBundle.getBundle(baseName, locale, loader) }
         .getOrElse { ResourceBundle.getBundle(baseName, Locale.ENGLISH, loader) }
 
+    @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
     override fun msg(key: String, vararg params: Any?): String = t(key, *params)
 
     fun t(msgid: String, vararg args: Any?): String {

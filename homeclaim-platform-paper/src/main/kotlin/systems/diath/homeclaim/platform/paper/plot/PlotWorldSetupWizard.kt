@@ -126,13 +126,13 @@ class PlotWorldSetupWizard(
                     
                     if (s.mode == SetupMode.CONVERT_EXISTING) {
                         // Convert existing world
-                        handleConversion(player, cfg, s, i18n)
+                        handleConversion(player, cfg, i18n)
                     } else {
                         // Create new world (default) – callback-based for Folia async support
                         sessions.remove(player.uniqueId)
                         player.sendMessage(i18n.msg("setup.creating_world", cfg.worldName))
-                        configStore.persistAndCreateWorld(cfg) { result ->
-                            when (result) {
+                        configStore.persistAndCreateWorld(cfg) { createResult ->
+                            when (createResult) {
                                 WorldCreateResult.CREATED -> {
                                     player.sendMessage(i18n.msg("setup.done.created", cfg.worldName))
                                     // Initialize plots in database
@@ -205,7 +205,6 @@ class PlotWorldSetupWizard(
     private fun handleConversion(
         player: Player, 
         cfg: PlotWorldConfig, 
-        session: Session,
         i18n: systems.diath.homeclaim.platform.paper.I18n
     ) {
         val world = Bukkit.getWorld(cfg.worldName)

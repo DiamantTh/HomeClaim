@@ -436,9 +436,9 @@ class PlotImportService(
                         @Suppress("UNCHECKED_CAST")
                         val regions = regionsMethod.invoke(regionManager) as? Map<String, Any> ?: continue
                         
-                        for ((regionName, region) in regions) {
+                        for ((_, region) in regions) {
                             try {
-                                val plot = extractWorldGuardRegion(region, world.name, wgPlugin)
+                                val plot = extractWorldGuardRegion(region, world.name)
                                 if (plot != null) plots.add(plot)
                             } catch (e: Exception) {
                                 // Skip ungültige Regionen
@@ -455,7 +455,7 @@ class PlotImportService(
             }
         }
         
-        private fun extractWorldGuardRegion(region: Any, worldName: String, wgPlugin: Plugin): ExternalPlot? {
+        private fun extractWorldGuardRegion(region: Any, worldName: String): ExternalPlot? {
             try {
                 // Extrahiere Owner/Members/Denied Sets
                 val ownersField = region.javaClass.getField("owners")
@@ -481,11 +481,9 @@ class PlotImportService(
                 val maxPoint = maxPointField.invoke(region)
                 
                 val minX = minPoint?.javaClass?.getMethod("getBlockX")?.invoke(minPoint) as? Int ?: 0
-                val minY = minPoint?.javaClass?.getMethod("getBlockY")?.invoke(minPoint) as? Int ?: 0
                 val minZ = minPoint?.javaClass?.getMethod("getBlockZ")?.invoke(minPoint) as? Int ?: 0
-                
+
                 val maxX = maxPoint?.javaClass?.getMethod("getBlockX")?.invoke(maxPoint) as? Int ?: 0
-                val maxY = maxPoint?.javaClass?.getMethod("getBlockY")?.invoke(maxPoint) as? Int ?: 0
                 val maxZ = maxPoint?.javaClass?.getMethod("getBlockZ")?.invoke(maxPoint) as? Int ?: 0
                 
                 // Extrahiere Flags

@@ -713,11 +713,11 @@ private fun HomeClaimPaperPlugin.loadProfilesFromConfig(
         val flagsRaw = configEntries(raw.get<Any>("flags") as? com.electronwill.nightconfig.core.UnmodifiableConfig)
         val limitsRaw = configEntries(raw.get<Any>("limits") as? com.electronwill.nightconfig.core.UnmodifiableConfig)
         val flags = flagsRaw.mapNotNull { (k, v) ->
-            val key = k?.toString() ?: return@mapNotNull null
+            val key = k.toString()
             systems.diath.homeclaim.core.model.FlagKey(key) to toPolicyValue(v)
         }.toMap()
         val limits = limitsRaw.mapNotNull { (k, v) ->
-            val key = k?.toString() ?: return@mapNotNull null
+            val key = k.toString()
             systems.diath.homeclaim.core.model.LimitKey(key) to toPolicyValue(v)
         }.toMap()
         val profile = systems.diath.homeclaim.core.policy.FlagProfile(name = name, flags = flags, limits = limits)

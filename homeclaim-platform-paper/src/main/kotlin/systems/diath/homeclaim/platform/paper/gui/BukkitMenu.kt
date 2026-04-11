@@ -26,6 +26,7 @@ abstract class BukkitMenu(
     /**
      * Convert MenuItem to Bukkit ItemStack.
      */
+    @Suppress("DEPRECATION")
     protected fun menuItemToBukkit(item: MenuItem?): ItemStack? {
         if (item == null) return null
         

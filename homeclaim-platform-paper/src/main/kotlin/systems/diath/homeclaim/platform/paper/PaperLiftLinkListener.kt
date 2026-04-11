@@ -76,7 +76,7 @@ class PaperLiftLinkListener(
         }
         
         // Prüfe Welt-Berechtigung wenn nötig
-        if (hasWorldTeleportRestriction(player, target.world)) {
+        if (hasWorldTeleportRestriction(player)) {
             player.sendMessage(i18n.msg("liftlink.no.world.access", target.world))
             return
         }
@@ -89,7 +89,7 @@ class PaperLiftLinkListener(
     /**
      * Prüfe ob Spieler in die Zielwelt teleportiert darf
      */
-    private fun hasWorldTeleportRestriction(player: org.bukkit.entity.Player, worldName: String): Boolean {
+    private fun hasWorldTeleportRestriction(player: org.bukkit.entity.Player): Boolean {
         // Admins haben immer Zugriff
         if (player.hasPermission("homeclaim.admin")) return false
         
