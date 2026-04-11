@@ -21,7 +21,7 @@ commands:
     permission: homeclaim.admin
   plot:
     description: Plot Verwaltung (P2-Style)
-    usage: /plot [claim|auto|home|info|list|visit|merge|unlink|reset]
+    usage: /plot [claim|auto|home|info|list|visit|merge|unlink|reset|jobs]
     aliases: [p]
   zone:
     description: Zone Informationen
@@ -58,3 +58,6 @@ permissions:
   homeclaim.plot.reset:
     description: Allows queueing a plot reset job
     default: true
+  homeclaim.plot.jobs:
+    description: Allows viewing and cancelling queued plot jobs
+    default: op

@@ -52,6 +52,7 @@ object Permissions {
     const val PLOT_MERGE = "homeclaim.plot.merge"
     const val PLOT_UNLINK = "homeclaim.plot.unlink"
     const val PLOT_RESET = "homeclaim.plot.reset"
+    const val PLOT_JOBS = "homeclaim.plot.jobs"
     
     // ============================================
     // COMPONENT PERMISSIONS
