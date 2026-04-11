@@ -368,38 +368,16 @@ class PlotCommand(
     private fun handleJobs(player: Player, args: Array<out String>) {
         val action = args.getOrNull(1)?.lowercase()
         when (action) {
-            null, "status", "list" -> showJobDiagnostics(player)
             "cancel", "stop" -> {
                 val worldName = args.getOrNull(2)
                 val cancelled = plotMutationService.cancelPendingJobs(worldName) +
                     plotResetService.cancelPendingJobs(worldName)
                 val scope = worldName ?: "all worlds"
                 player.sendMessage("§aCancelled §e$cancelled§a pending plot job(s) in §e$scope§a.")
-                showJobDiagnostics(player, worldName)
             }
             else -> {
-                showJobDiagnostics(player, action)
+                player.sendMessage("§7Use /plot jobs cancel [world] to manage jobs. See /api/v1/metrics/plots for details.")
             }
-        }
-    }
-
-    private fun showJobDiagnostics(player: Player, worldName: String? = null) {
-        val mutation = plotMutationService.activeJobDiagnostics(worldName)
-        val resets = plotResetService.activeJobDiagnostics(worldName)
-        val combined = mutation + resets
-        val scope = worldName ?: "all worlds"
-
-        if (combined.isEmpty()) {
-            player.sendMessage("§7No active plot jobs in §e$scope§7.")
-            return
-        }
-
-        player.sendMessage("§6Plot jobs in §e$scope§6: §f${combined.size}")
-        combined.take(MAX_JOB_DIAGNOSTICS_LINES).forEach { line ->
-            player.sendMessage("§8- §7$line")
-        }
-        if (combined.size > MAX_JOB_DIAGNOSTICS_LINES) {
-            player.sendMessage("§8... and ${combined.size - MAX_JOB_DIAGNOSTICS_LINES} more")
         }
     }
 
@@ -491,7 +469,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_merge"))
         player.sendMessage(i18n.msg("plot.help_unlink"))
         player.sendMessage(i18n.msg("plot.help_reset"))
-        player.sendMessage("§7/plot jobs [status|<world>|cancel [world]]")
+        player.sendMessage("§7/plot jobs cancel [world] - Cancel queued plot jobs")
     }
     
     override fun onTabComplete(
@@ -537,6 +515,5 @@ class PlotCommand(
         // UUID for unclaimed plots (all zeros)
         private val UNCLAIMED_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000")
         private const val DEFAULT_MERGE_GAP = 32
-        private const val MAX_JOB_DIAGNOSTICS_LINES = 20
     }
 }

@@ -66,6 +66,11 @@ import java.time.Instant
  * ### Admin
  * - GET  /admin/stats         - Server statistics
  * - POST /admin/reload        - Trigger config reload
+ * 
+ * ### Metrics
+ * - GET  /metrics             - Aggregated server metrics
+ * - GET  /metrics/plots       - Plot-specific metrics
+ * - GET  /metrics/worlds/{name} - Per-world metrics
  */
 class PlotRestServer(
     private val regionService: RegionService,
@@ -74,6 +79,7 @@ class PlotRestServer(
     private val componentService: ComponentService?,
     private val adminService: RegionAdminService?,
     private val auditService: AuditService? = null,
+    private val metricsService: ServerMetricsService? = null,
     private val port: Int = 8080,
     private val authToken: String,
     private val rateLimitPerMinute: Int = 60,
