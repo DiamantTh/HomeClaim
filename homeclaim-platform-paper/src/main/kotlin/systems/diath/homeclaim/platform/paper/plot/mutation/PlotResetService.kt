@@ -14,6 +14,10 @@ enum class PlotResetReason {
 
 interface PlotResetService {
     fun queueReset(region: Region, reason: PlotResetReason = PlotResetReason.MANUAL): Boolean
+
+    fun cancelPendingJobs(worldName: String? = null): Int = 0
+
+    fun activeJobDiagnostics(worldName: String? = null): List<String> = emptyList()
 }
 
 object NoOpPlotResetService : PlotResetService {

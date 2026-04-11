@@ -21,7 +21,16 @@ internal class PlotJobRegistry(
     private data class JobRecord(
         val world: String,
         val kind: JobKind,
-        val startedAt: Long
+        val startedAt: Long,
+        var cancelRequested: Boolean = false
+    )
+
+    data class JobSnapshot(
+        val key: String,
+        val world: String,
+        val kind: JobKind,
+        val ageMillis: Long,
+        val cancelRequested: Boolean
     )
 
     private val lock = Any()
@@ -66,6 +75,67 @@ internal class PlotJobRegistry(
         }
     }
 
+    fun isCancellationRequested(key: String, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): Boolean {
+        synchronized(lock) {
+            cleanupExpiredLocked(timeoutMillis)
+            return inFlight[key]?.cancelRequested == true
+        }
+    }
+
+    fun requestCancel(key: String, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): Boolean {
+        synchronized(lock) {
+            cleanupExpiredLocked(timeoutMillis)
+            val record = inFlight[key] ?: return false
+            record.cancelRequested = true
+            return true
+        }
+    }
+
+    fun requestCancelAll(
+        world: String? = null,
+        kind: JobKind? = null,
+        timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
+    ): Int {
+        synchronized(lock) {
+            cleanupExpiredLocked(timeoutMillis)
+            var count = 0
+            inFlight.values.forEach { record ->
+                if ((world == null || record.world == world) && (kind == null || record.kind == kind)) {
+                    if (!record.cancelRequested) {
+                        record.cancelRequested = true
+                        count++
+                    }
+                }
+            }
+            return count
+        }
+    }
+
+    fun snapshot(
+        world: String? = null,
+        kind: JobKind? = null,
+        timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
+    ): List<JobSnapshot> {
+        synchronized(lock) {
+            cleanupExpiredLocked(timeoutMillis)
+            val now = nowProvider()
+            return inFlight.entries
+                .filter { (_, record) ->
+                    (world == null || record.world == world) && (kind == null || record.kind == kind)
+                }
+                .map { (key, record) ->
+                    JobSnapshot(
+                        key = key,
+                        world = record.world,
+                        kind = record.kind,
+                        ageMillis = (now - record.startedAt).coerceAtLeast(0L),
+                        cancelRequested = record.cancelRequested
+                    )
+                }
+                .sortedWith(compareBy<JobSnapshot>({ it.world }, { it.kind.name }, { it.key }))
+        }
+    }
+
     fun runIfIdle(key: String, action: Runnable): Boolean {
         val handle = tryAcquire(key) ?: return false
         try {
@@ -92,6 +162,12 @@ internal class PlotJobRegistry(
         private val key: String
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
+
+        fun requestCancel(): Boolean = this@PlotJobRegistry.requestCancel(key)
+
+        fun isCancellationRequested(timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): Boolean {
+            return this@PlotJobRegistry.isCancellationRequested(key, timeoutMillis)
+        }
 
         override fun close() {
             if (closed.compareAndSet(false, true)) {

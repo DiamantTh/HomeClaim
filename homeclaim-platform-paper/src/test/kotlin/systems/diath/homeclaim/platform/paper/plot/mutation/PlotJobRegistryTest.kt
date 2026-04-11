@@ -106,4 +106,25 @@ class PlotJobRegistryTest {
         assertEquals(1, registry.activeJobs(world = "plots", kind = PlotJobRegistry.JobKind.MUTATION, timeoutMillis = 100L))
         second?.close()
     }
+
+    @Test
+    fun `can request cancellation for a matching world and inspect diagnostics`() {
+        val registry = PlotJobRegistry { 5_000L }
+        val handle = registry.tryAcquire(
+            key = "plot:1",
+            world = "plots",
+            kind = PlotJobRegistry.JobKind.MUTATION,
+            maxConcurrentPerWorld = 2,
+            timeoutMillis = 60_000L
+        )
+
+        val cancelled = registry.requestCancelAll(world = "plots", kind = PlotJobRegistry.JobKind.MUTATION)
+        val snapshot = registry.snapshot(world = "plots", kind = PlotJobRegistry.JobKind.MUTATION)
+
+        assertEquals(1, cancelled)
+        assertTrue(handle?.isCancellationRequested(60_000L) == true)
+        assertEquals(1, snapshot.size)
+        assertTrue(snapshot.first().cancelRequested)
+        handle?.close()
+    }
 }

@@ -24,6 +24,16 @@ class FoliaPlotMutationService(
 ) : PlotMutationService {
     private val jobRegistry = PlotJobRegistry()
 
+    override fun cancelPendingJobs(worldName: String?): Int {
+        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION)
+    }
+
+    override fun activeJobDiagnostics(worldName: String?): List<String> {
+        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION).map { snapshot ->
+            "mutation:${snapshot.world}:${snapshot.key}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+        }
+    }
+
     override fun applyRegionState(region: Region) {
         val world = Bukkit.getWorld(region.world) ?: return
         val config = configStore.loadConfig(region.world) ?: return
@@ -184,6 +194,13 @@ class FoliaPlotMutationService(
         attempt: Int = 0
     ) {
         Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
+            if (jobHandle.isCancellationRequested(config.jobTimeoutMillis)) {
+                if (remainingBatches.decrementAndGet() == 0) {
+                    jobHandle.close()
+                }
+                return@run
+            }
+
             val failure = runCatching {
                 PlotMutationSupport.repaintColumns(world, batch.columns, config, style)
             }.exceptionOrNull()

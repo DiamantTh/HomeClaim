@@ -24,6 +24,16 @@ class FoliaPlotResetService(
 ) : PlotResetService {
     private val jobRegistry = PlotJobRegistry()
 
+    override fun cancelPendingJobs(worldName: String?): Int {
+        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
+    }
+
+    override fun activeJobDiagnostics(worldName: String?): List<String> {
+        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+            "reset:${snapshot.world}:${snapshot.key}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+        }
+    }
+
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
         val config = configStore.loadConfig(region.world)?.sanitized() ?: return false
@@ -61,7 +71,7 @@ class FoliaPlotResetService(
         chunkBatches.groupBy { it.chunk }.forEach { (chunk, batches) ->
             val queue = ArrayDeque<List<Pair<Int, Int>>>(batches.map { it.columns })
             val anchor = Location(world, (chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (chunk.z shl 4).toDouble())
-            scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues)
+            scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, config.jobTimeoutMillis)
         }
 
         plugin.logger.info("Queued Folia plot reset for ${region.id.value} (${reason.name.lowercase()})")
@@ -77,9 +87,14 @@ class FoliaPlotResetService(
         clearUntil: Int,
         jobHandle: PlotJobRegistry.JobHandle,
         remainingChunkQueues: AtomicInteger,
+        timeoutMillis: Long,
         attempt: Int = 0
     ) {
         Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
+            if (jobHandle.isCancellationRequested(timeoutMillis)) {
+                finishChunkQueue(remainingChunkQueues, jobHandle)
+                return@run
+            }
             val world = anchor.world
             if (world == null) {
                 finishChunkQueue(remainingChunkQueues, jobHandle)
@@ -109,7 +124,7 @@ class FoliaPlotResetService(
                         "Folia plot reset batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} at ${anchor.blockX shr 4},${anchor.blockZ shr 4}: ${failure.message}"
                     )
                     Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                        scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, attempt + 1)
+                        scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, timeoutMillis, attempt + 1)
                     }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
                     return@run
                 }
@@ -120,7 +135,7 @@ class FoliaPlotResetService(
 
             if (queue.isNotEmpty()) {
                 Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                    scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues)
+                    scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, timeoutMillis)
                 }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
             } else {
                 finishChunkQueue(remainingChunkQueues, jobHandle)

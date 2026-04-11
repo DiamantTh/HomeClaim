@@ -22,6 +22,16 @@ class PaperPlotResetService(
 ) : PlotResetService {
     private val jobRegistry = PlotJobRegistry()
 
+    override fun cancelPendingJobs(worldName: String?): Int {
+        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
+    }
+
+    override fun activeJobDiagnostics(worldName: String?): List<String> {
+        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+            "reset:${snapshot.world}:${snapshot.key}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+        }
+    }
+
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
         val config = configStore.loadConfig(region.world)?.sanitized() ?: return false
@@ -56,6 +66,11 @@ class PaperPlotResetService(
         var scheduledTask: BukkitTask? = null
         return runCatching {
             scheduledTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
+                if (jobHandle.isCancellationRequested(config.jobTimeoutMillis)) {
+                    scheduledTask?.cancel()
+                    jobHandle.close()
+                    return@Runnable
+                }
                 runCatching {
                     var processed = 0
                     while (processed < columnsPerTick && columns.isNotEmpty()) {

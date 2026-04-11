@@ -294,6 +294,16 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         ShutdownManager.registerHook("GuiManager", priority = 20) {
             guiManager?.closeAll()
         }
+
+        // Cancel in-flight plot jobs before the rest server/data layer shuts down.
+        ShutdownManager.registerHook("PlotJobs", priority = 30) {
+            val diagnostics = plotMutationService.activeJobDiagnostics() + plotResetService.activeJobDiagnostics()
+            val cancelled = plotMutationService.cancelPendingJobs() + plotResetService.cancelPendingJobs()
+            if (diagnostics.isNotEmpty() || cancelled > 0) {
+                logger.info("Cancelling $cancelled pending plot job(s) during shutdown")
+                diagnostics.take(10).forEach { detail -> logger.info("PlotJob: $detail") }
+            }
+        }
         
         // REST server
         ShutdownManager.registerHook("RestServer", priority = 100) {
