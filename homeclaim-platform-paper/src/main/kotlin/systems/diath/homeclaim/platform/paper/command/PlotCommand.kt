@@ -373,10 +373,22 @@ class PlotCommand(
                 val cancelled = plotMutationService.cancelPendingJobs(worldName) +
                     plotResetService.cancelPendingJobs(worldName)
                 val scope = worldName ?: "all worlds"
-                player.sendMessage("§aCancelled §e$cancelled§a pending plot job(s) in §e$scope§a.")
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
+                player.sendMessage("\u00a7aPlot Jobs Manager")
+                player.sendMessage("\u00a77Cancelled: \u00a7e$cancelled job(s) in \u00a7f$scope")
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
             else -> {
-                player.sendMessage("§7Use /plot jobs cancel [world] to manage jobs. See /api/v1/metrics/plots for details.")
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
+                player.sendMessage("\u00a7aPlot Jobs Manager")
+                player.sendMessage("\u00a77Status: Check server metrics at REST API")
+                player.sendMessage("\u00a79Usage:")
+                player.sendMessage("\u00a7f  /plot jobs cancel [world]\u00a77 - Cancel queued jobs")
+                player.sendMessage("\u00a79API:")
+                player.sendMessage("\u00a7f  GET /api/v1/metrics\u00a77 - Full server metrics")
+                player.sendMessage("\u00a7f  GET /api/v1/metrics/plots\u00a77 - Plot-specific metrics")
+                player.sendMessage("\u00a7f  GET /api/v1/metrics/worlds/{name}\u00a77 - Per-world metrics")
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
         }
     }

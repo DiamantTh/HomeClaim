@@ -34,10 +34,14 @@ class PaperServerMetricsService(
         val allocatedMB = memory.totalMemory() / (1024 * 1024)
         val percentUsed = (usedMB * 100) / maxMB
         
+        val version = getVersionInfo()
+        val load = getLoadInfo()
         val plotsMetrics = collectPlotsMetrics()
         
         return ServerMetrics(
+            version = version,
             uptime = (System.currentTimeMillis() - startupTime) / 1000,
+            load = load,
             onlinePlayers = Bukkit.getOnlinePlayers().size,
             maxPlayers = Bukkit.getMaxPlayers(),
             tps = getServerTPS(),
@@ -52,6 +56,37 @@ class PaperServerMetricsService(
             ),
             plots = plotsMetrics
         )
+    }
+    
+    private fun getVersionInfo(): VersionInfo {
+        val javaVersion = System.getProperty("java.version") ?: "unknown"
+        val server = Bukkit.getServer()
+        val serverImpl = if (isFolia()) "Folia" else "Paper"
+        return VersionInfo(
+            homeclaimVersion = "0.1.0",  // TODO: read from plugin descriptor
+            javaVersion = javaVersion,
+            serverImplementation = serverImpl,
+            serverVersion = server.version
+        )
+    }
+    
+    private fun getLoadInfo(): LoadInfo {
+        val osBean = java.lang.management.ManagementFactory.getOperatingSystemMXBean()
+        return LoadInfo(
+            oneMinuteAverage = osBean.systemLoadAverage.coerceAtLeast(0.0),
+            fiveMinuteAverage = osBean.systemLoadAverage.coerceAtLeast(0.0),  // Java doesn't expose 5/15 min directly
+            fifteenMinuteAverage = osBean.systemLoadAverage.coerceAtLeast(0.0),
+            availableProcessors = osBean.availableProcessors
+        )
+    }
+    
+    private fun isFolia(): Boolean {
+        return try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
     
     override fun collectPlotsMetrics(): PlotsMetrics {

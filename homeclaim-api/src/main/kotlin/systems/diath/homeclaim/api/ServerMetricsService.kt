@@ -19,7 +19,9 @@ interface ServerMetricsService {
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class ServerMetrics(
     val timestamp: Long = Instant.now().epochSecond,
+    val version: VersionInfo = VersionInfo(),
     val uptime: Long = 0L,
+    val load: LoadInfo = LoadInfo(),
     val onlinePlayers: Int = 0,
     val maxPlayers: Int = 0,
     val tps: Float = 20.0f,
@@ -28,6 +30,28 @@ data class ServerMetrics(
     val worlds: List<WorldMetrics> = emptyList(),
     val memory: MemoryMetrics = MemoryMetrics(),
     val plots: PlotsMetrics = PlotsMetrics()
+)
+
+/**
+ * Version and build information.
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class VersionInfo(
+    val homeclaimVersion: String = "unknown",
+    val javaVersion: String = "unknown",
+    val serverImplementation: String = "unknown",  // Paper, Folia, Bukkit, etc.
+    val serverVersion: String = "unknown"
+)
+
+/**
+ * System load average metrics.
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class LoadInfo(
+    val oneMinuteAverage: Double = 0.0,
+    val fiveMinuteAverage: Double = 0.0,
+    val fifteenMinuteAverage: Double = 0.0,
+    val availableProcessors: Int = 0
 )
 
 /**
