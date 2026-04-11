@@ -702,10 +702,8 @@ private fun HomeClaimPaperPlugin.loadProfilesFromConfig(
     }
     list.forEach { raw ->
         val name = (raw.get<Any>("name") as? String) ?: return@forEach
-        val flagsRaw = (raw.get<Any>("flags") as? com.electronwill.nightconfig.core.UnmodifiableConfig)?.valueMap()
-            ?: emptyMap<String, Any?>()
-        val limitsRaw = (raw.get<Any>("limits") as? com.electronwill.nightconfig.core.UnmodifiableConfig)?.valueMap()
-            ?: emptyMap<String, Any?>()
+        val flagsRaw = configEntries(raw.get<Any>("flags") as? com.electronwill.nightconfig.core.UnmodifiableConfig)
+        val limitsRaw = configEntries(raw.get<Any>("limits") as? com.electronwill.nightconfig.core.UnmodifiableConfig)
         val flags = flagsRaw.mapNotNull { (k, v) ->
             val key = k?.toString() ?: return@mapNotNull null
             systems.diath.homeclaim.core.model.FlagKey(key) to toPolicyValue(v)
@@ -717,6 +715,15 @@ private fun HomeClaimPaperPlugin.loadProfilesFromConfig(
         val profile = systems.diath.homeclaim.core.policy.FlagProfile(name = name, flags = flags, limits = limits)
         inMemory?.register(profile)
         jdbcService?.upsert(profile)
+    }
+}
+
+private fun configEntries(
+    config: com.electronwill.nightconfig.core.UnmodifiableConfig?
+): Map<String, Any?> {
+    if (config == null) return emptyMap()
+    return config.entrySet().associate { entry ->
+        entry.key to entry.getRawValue<Any?>()
     }
 }
 
