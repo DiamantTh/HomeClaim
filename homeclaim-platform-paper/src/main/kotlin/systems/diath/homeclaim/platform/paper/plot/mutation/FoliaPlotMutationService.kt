@@ -126,8 +126,15 @@ class FoliaPlotMutationService(
         style: PlotBorderStyle,
         jobKey: String
     ) {
-        val jobHandle = jobRegistry.tryAcquire(jobKey) ?: run {
-            plugin.logger.fine("Skipping duplicate Folia plot mutation job $jobKey")
+        val jobHandle = jobRegistry.tryAcquire(
+            key = jobKey,
+            world = world.name,
+            kind = PlotJobRegistry.JobKind.MUTATION,
+            maxConcurrentPerWorld = config.maxConcurrentMutationJobsPerWorld,
+            timeoutMillis = config.jobTimeoutMillis
+        ) ?: run {
+            val reasonText = if (jobRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
+            plugin.logger.fine("Skipping $reasonText Folia plot mutation job $jobKey")
             return
         }
 

@@ -30,6 +30,9 @@ data class PlotWorldConfig(
     val adminBorderBlock: Material = Material.EMERALD_BLOCK,
     val reservedBorderBlock: Material = Material.REDSTONE_BLOCK,
     val mutationBatchColumnsPerTask: Int = 64,
+    val maxConcurrentMutationJobsPerWorld: Int = 8,
+    val maxConcurrentResetJobsPerWorld: Int = 2,
+    val jobTimeoutMillis: Long = 120_000L,
     val resetOnDelete: Boolean = false,
     val resetOnUnclaim: Boolean = false,
     val resetBatchColumnsPerTick: Int = 128,
@@ -63,6 +66,9 @@ object PlotSchemas {
                 plotHeight = 64,
                 plotsPerSide = 96,
                 mutationBatchColumnsPerTask = 32,
+                maxConcurrentMutationJobsPerWorld = 2,
+                maxConcurrentResetJobsPerWorld = 1,
+                jobTimeoutMillis = 180_000L,
                 resetBatchColumnsPerTick = 48,
                 schema = "default"
             )
@@ -161,6 +167,9 @@ fun PlotWorldConfig.sanitized(): PlotWorldConfig {
         adminBorderBlock = adminBorderBlock,
         reservedBorderBlock = reservedBorderBlock,
         mutationBatchColumnsPerTask = mutationBatchColumnsPerTask.coerceAtLeast(1),
+        maxConcurrentMutationJobsPerWorld = maxConcurrentMutationJobsPerWorld.coerceAtLeast(1),
+        maxConcurrentResetJobsPerWorld = maxConcurrentResetJobsPerWorld.coerceAtLeast(1),
+        jobTimeoutMillis = jobTimeoutMillis.coerceAtLeast(1_000L),
         resetOnDelete = resetOnDelete,
         resetOnUnclaim = resetOnUnclaim,
         resetBatchColumnsPerTick = resetBatchColumnsPerTick.coerceAtLeast(1)

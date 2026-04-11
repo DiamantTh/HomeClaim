@@ -31,8 +31,15 @@ class FoliaPlotResetService(
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
         val jobKey = "folia-reset:${region.world}:${region.id.value}"
-        val jobHandle = jobRegistry.tryAcquire(jobKey) ?: run {
-            plugin.logger.fine("Skipping duplicate Folia plot reset for ${region.id.value}")
+        val jobHandle = jobRegistry.tryAcquire(
+            key = jobKey,
+            world = region.world,
+            kind = PlotJobRegistry.JobKind.RESET,
+            maxConcurrentPerWorld = config.maxConcurrentResetJobsPerWorld,
+            timeoutMillis = config.jobTimeoutMillis
+        ) ?: run {
+            val reasonText = if (jobRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
+            plugin.logger.fine("Skipping $reasonText Folia plot reset for ${region.id.value}")
             return false
         }
 

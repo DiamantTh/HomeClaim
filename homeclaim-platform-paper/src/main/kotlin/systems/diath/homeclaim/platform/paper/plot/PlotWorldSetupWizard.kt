@@ -520,6 +520,9 @@ class PlotWorldConfigStore(
             adminBorderBlock = Material.matchMaterial((toml.get<Any>("adminBorderBlock") as? String) ?: "EMERALD_BLOCK") ?: Material.EMERALD_BLOCK,
             reservedBorderBlock = Material.matchMaterial((toml.get<Any>("reservedBorderBlock") as? String) ?: "REDSTONE_BLOCK") ?: Material.REDSTONE_BLOCK,
             mutationBatchColumnsPerTask = (toml.get<Any>("mutationBatchColumnsPerTask") as? Number)?.toInt() ?: 64,
+            maxConcurrentMutationJobsPerWorld = (toml.get<Any>("maxConcurrentMutationJobsPerWorld") as? Number)?.toInt() ?: 8,
+            maxConcurrentResetJobsPerWorld = (toml.get<Any>("maxConcurrentResetJobsPerWorld") as? Number)?.toInt() ?: 2,
+            jobTimeoutMillis = (toml.get<Any>("jobTimeoutMillis") as? Number)?.toLong() ?: 120000L,
             resetOnDelete = (toml.get<Any>("resetOnDelete") as? Boolean) ?: false,
             resetOnUnclaim = (toml.get<Any>("resetOnUnclaim") as? Boolean) ?: false,
             resetBatchColumnsPerTick = (toml.get<Any>("resetBatchColumnsPerTick") as? Number)?.toInt() ?: 128,
@@ -553,6 +556,9 @@ class PlotWorldConfigStore(
             appendLine("adminBorderBlock = \"${cfg.adminBorderBlock.name}\"")
             appendLine("reservedBorderBlock = \"${cfg.reservedBorderBlock.name}\"")
             appendLine("mutationBatchColumnsPerTask = ${cfg.mutationBatchColumnsPerTask}")
+            appendLine("maxConcurrentMutationJobsPerWorld = ${cfg.maxConcurrentMutationJobsPerWorld}")
+            appendLine("maxConcurrentResetJobsPerWorld = ${cfg.maxConcurrentResetJobsPerWorld}")
+            appendLine("jobTimeoutMillis = ${cfg.jobTimeoutMillis}")
             appendLine("resetOnDelete = ${cfg.resetOnDelete}")
             appendLine("resetOnUnclaim = ${cfg.resetOnUnclaim}")
             appendLine("resetBatchColumnsPerTick = ${cfg.resetBatchColumnsPerTick}")
