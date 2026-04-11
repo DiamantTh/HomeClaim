@@ -53,6 +53,8 @@ subprojects {
             add("testImplementation", "org.jetbrains.kotlin:kotlin-test:2.2.0")
             add("testImplementation", "org.jetbrains.kotlin:kotlin-test-junit5:2.2.0")
             add("testImplementation", "org.junit.jupiter:junit-jupiter:5.10.2")
+            add("testImplementation", "org.mockito:mockito-core:5.12.0")
+            add("testImplementation", "org.mockito:mockito-junit-jupiter:5.12.0")
             add("testRuntimeOnly", "org.junit.platform:junit-platform-launcher:1.10.2")
         }
     }

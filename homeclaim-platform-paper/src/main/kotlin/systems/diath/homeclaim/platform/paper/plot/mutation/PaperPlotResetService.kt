@@ -20,6 +20,7 @@ class PaperPlotResetService(
     private val plugin: JavaPlugin,
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
 ) : PlotResetService {
+    private val jobRegistry = PlotJobRegistry()
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
@@ -27,8 +28,17 @@ class PaperPlotResetService(
         if (reason == PlotResetReason.DELETE && !config.resetOnDelete) return false
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
+        val jobKey = "paper-reset:${region.world}:${region.id.value}"
+        val jobHandle = jobRegistry.tryAcquire(jobKey) ?: run {
+            plugin.logger.fine("Skipping duplicate Paper plot reset for ${region.id.value}")
+            return false
+        }
+
         val columns = ArrayDeque(PlotResetPlanner.interiorColumns(region.bounds))
-        if (columns.isEmpty()) return false
+        if (columns.isEmpty()) {
+            jobHandle.close()
+            return false
+        }
 
         val generator = PlotWorldChunkGenerator(config)
         val minY = config.minGenHeight ?: region.bounds.minY
@@ -37,24 +47,37 @@ class PaperPlotResetService(
         val columnsPerTick = config.resetBatchColumnsPerTick.coerceAtLeast(1)
 
         var scheduledTask: BukkitTask? = null
-        scheduledTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
-            var processed = 0
-            while (processed < columnsPerTick && columns.isNotEmpty()) {
-                val (x, z) = columns.removeFirst()
-                for (y in minY..topY) {
-                    world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
+        return runCatching {
+            scheduledTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
+                runCatching {
+                    var processed = 0
+                    while (processed < columnsPerTick && columns.isNotEmpty()) {
+                        val (x, z) = columns.removeFirst()
+                        for (y in minY..topY) {
+                            world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
+                        }
+                        for (y in (topY + 1)..clearUntil) {
+                            world.getBlockAt(x, y, z).setType(Material.AIR, false)
+                        }
+                        processed++
+                    }
+                    if (columns.isEmpty()) {
+                        scheduledTask?.cancel()
+                        jobHandle.close()
+                    }
+                }.onFailure { error ->
+                    scheduledTask?.cancel()
+                    jobHandle.close()
+                    plugin.logger.warning("Paper plot reset failed for ${region.id.value}: ${error.message}")
                 }
-                for (y in (topY + 1)..clearUntil) {
-                    world.getBlockAt(x, y, z).setType(Material.AIR, false)
-                }
-                processed++
-            }
-            if (columns.isEmpty()) {
-                scheduledTask?.cancel()
-            }
-        }, 1L, 1L)
+            }, 1L, 1L)
 
-        plugin.logger.info("Queued plot reset for ${region.id.value} (${reason.name.lowercase()})")
-        return true
+            plugin.logger.info("Queued plot reset for ${region.id.value} (${reason.name.lowercase()})")
+            true
+        }.getOrElse { error ->
+            jobHandle.close()
+            plugin.logger.warning("Failed to schedule Paper plot reset for ${region.id.value}: ${error.message}")
+            false
+        }
     }
 }

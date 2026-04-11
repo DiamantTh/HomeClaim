@@ -8,6 +8,8 @@ import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Folia-aware mutation path.
@@ -20,6 +22,7 @@ class FoliaPlotMutationService(
     private val plugin: JavaPlugin,
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
 ) : PlotMutationService {
+    private val jobRegistry = PlotJobRegistry()
 
     override fun applyRegionState(region: Region) {
         val world = Bukkit.getWorld(region.world) ?: return
@@ -27,7 +30,13 @@ class FoliaPlotMutationService(
         val visualState = PlotVisualStates.resolve(region)
         val style = PlotMutationSupport.styleFor(region, config, visualState)
 
-        repaintBorder(world, region.bounds, config, style)
+        repaintBorder(
+            world,
+            region.bounds,
+            config,
+            style,
+            jobKey = "folia-mutation:region:${region.id.value}"
+        )
     }
 
     override fun handleRegionDeleted(region: Region) {
@@ -54,7 +63,8 @@ class FoliaPlotMutationService(
                 includeNorth = !shared.north,
                 includeSouth = !shared.south,
                 includeWest = !shared.west,
-                includeEast = !shared.east
+                includeEast = !shared.east,
+                jobKey = "folia-mutation:merge-border:${region.id.value}"
             )
         }
 
@@ -62,7 +72,7 @@ class FoliaPlotMutationService(
             fillMaterial = config.plotBlock,
             capMaterial = config.plotBlock
         )
-        repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap) { first, second ->
+        repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap, jobKeyPrefix = "folia-mutation:merge-corridor") { first, second ->
             first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
         }
     }
@@ -76,7 +86,7 @@ class FoliaPlotMutationService(
 
         regions.forEach { region ->
             val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
-            repaintBorder(world, region.bounds, config, style)
+            repaintBorder(world, region.bounds, config, style, jobKey = "folia-mutation:unlink-border:${region.id.value}")
         }
 
         if (createRoads) {
@@ -84,7 +94,7 @@ class FoliaPlotMutationService(
                 fillMaterial = config.roadBlock,
                 capMaterial = config.roadBlock
             )
-            repaintCorridors(world, regions.toList(), config, roadStyle, maxGap) { _, _ -> true }
+            repaintCorridors(world, regions.toList(), config, roadStyle, maxGap, jobKeyPrefix = "folia-mutation:unlink-corridor") { _, _ -> true }
         }
     }
 
@@ -96,7 +106,8 @@ class FoliaPlotMutationService(
         includeNorth: Boolean = true,
         includeSouth: Boolean = true,
         includeWest: Boolean = true,
-        includeEast: Boolean = true
+        includeEast: Boolean = true,
+        jobKey: String
     ) {
         val borderColumns = PlotBorderPlanner.borderColumns(
             bounds,
@@ -105,27 +116,31 @@ class FoliaPlotMutationService(
             includeWest = includeWest,
             includeEast = includeEast
         )
-        repaintColumns(world, borderColumns, config, style)
+        repaintColumns(world, borderColumns, config, style, jobKey)
     }
 
     private fun repaintColumns(
         world: org.bukkit.World,
         columns: Collection<Pair<Int, Int>>,
         config: PlotWorldConfig,
-        style: PlotBorderStyle
+        style: PlotBorderStyle,
+        jobKey: String
     ) {
+        val jobHandle = jobRegistry.tryAcquire(jobKey) ?: run {
+            plugin.logger.fine("Skipping duplicate Folia plot mutation job $jobKey")
+            return
+        }
+
         val batches = PlotChunkPlanner.batchColumnsByChunk(columns, config.mutationBatchColumnsPerTask)
+        if (batches.isEmpty()) {
+            jobHandle.close()
+            return
+        }
+
+        val remainingBatches = AtomicInteger(batches.size)
         batches.forEach { batch ->
             val anchor = Location(world, (batch.chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (batch.chunk.z shl 4).toDouble())
-            Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
-                runCatching {
-                    PlotMutationSupport.repaintColumns(world, batch.columns, config, style)
-                }.onFailure { error ->
-                    plugin.logger.warning(
-                        "Folia plot mutation batch failed in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${error.message}"
-                    )
-                }
-            }
+            scheduleMutationBatch(anchor, batch, world, config, style, jobHandle, remainingBatches)
         }
     }
 
@@ -135,6 +150,7 @@ class FoliaPlotMutationService(
         config: PlotWorldConfig,
         style: PlotBorderStyle,
         maxGap: Int,
+        jobKeyPrefix: String,
         predicate: (Region, Region) -> Boolean
     ) {
         for (i in regions.indices) {
@@ -143,9 +159,51 @@ class FoliaPlotMutationService(
                 val second = regions[j]
                 if (predicate(first, second)) {
                     val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
-                    repaintColumns(world, corridor, config, style)
+                    val orderedIds = listOf(first.id.value.toString(), second.id.value.toString()).sorted()
+                    repaintColumns(world, corridor, config, style, "$jobKeyPrefix:${orderedIds[0]}:${orderedIds[1]}")
                 }
             }
         }
+    }
+
+    private fun scheduleMutationBatch(
+        anchor: Location,
+        batch: PlotChunkPlanner.ChunkBatch,
+        world: org.bukkit.World,
+        config: PlotWorldConfig,
+        style: PlotBorderStyle,
+        jobHandle: PlotJobRegistry.JobHandle,
+        remainingBatches: AtomicInteger,
+        attempt: Int = 0
+    ) {
+        Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
+            val failure = runCatching {
+                PlotMutationSupport.repaintColumns(world, batch.columns, config, style)
+            }.exceptionOrNull()
+
+            if (failure != null && attempt < MAX_BATCH_RETRIES) {
+                plugin.logger.warning(
+                    "Folia plot mutation batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${failure.message}"
+                )
+                Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
+                    scheduleMutationBatch(anchor, batch, world, config, style, jobHandle, remainingBatches, attempt + 1)
+                }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
+                return@run
+            }
+
+            if (failure != null) {
+                plugin.logger.warning(
+                    "Folia plot mutation batch failed in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${failure.message}"
+                )
+            }
+            if (remainingBatches.decrementAndGet() == 0) {
+                jobHandle.close()
+            }
+        }
+    }
+
+    private companion object {
+        const val MAX_BATCH_RETRIES = 1
+        const val RETRY_DELAY_MS = 50L
     }
 }
