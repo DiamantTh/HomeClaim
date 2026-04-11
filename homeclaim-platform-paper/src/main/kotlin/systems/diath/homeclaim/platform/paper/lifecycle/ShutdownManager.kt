@@ -221,6 +221,7 @@ object ShutdownManager {
         val action: () -> Unit
     )
     
+    @ConsistentCopyVisibility
     data class PendingOperation internal constructor(
         val name: String,
         val startTime: Long,

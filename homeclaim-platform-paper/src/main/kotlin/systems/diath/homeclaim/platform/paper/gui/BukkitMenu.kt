@@ -1,5 +1,6 @@
 package systems.diath.homeclaim.platform.paper.gui
 
+import net.kyori.adventure.text.Component
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.entity.Player
@@ -20,8 +21,7 @@ abstract class BukkitMenu(
     rows: Int = 6
 ) : AbstractMenu(title, rows) {
     
-    @Suppress("DEPRECATION")
-    private val bukkitInventory: Inventory = Bukkit.createInventory(null, rows * 9, title)
+    private val bukkitInventory: Inventory = Bukkit.createInventory(null, rows * 9, Component.text(title))
     
     /**
      * Convert MenuItem to Bukkit ItemStack.
@@ -34,9 +34,9 @@ abstract class BukkitMenu(
             val itemStack = ItemStack(material, item.amount)
             val meta = itemStack.itemMeta ?: return itemStack
             
-            meta.setDisplayName(item.displayName)
+            meta.displayName(Component.text(item.displayName))
             if (item.lore.isNotEmpty()) {
-                meta.lore = item.lore
+                meta.lore(item.lore.map(Component::text))
             }
             
             // Store custom data in item meta (could use NBT if needed)

@@ -131,9 +131,11 @@ class PlotWorldChunkGenerator(
 
     override fun shouldGenerateNoise(): Boolean = false
     override fun shouldGenerateSurface(): Boolean = true
+    @Deprecated("Required compatibility override for the current Bukkit/Paper generator API")
     override fun shouldGenerateBedrock(): Boolean = false
     override fun shouldGenerateCaves(): Boolean = false
     override fun shouldGenerateDecorations(): Boolean = false
     override fun shouldGenerateMobs(): Boolean = false
+    @Deprecated("Required compatibility override for the current Bukkit/Paper generator API")
     override fun shouldGenerateStructures(): Boolean = false
 }
