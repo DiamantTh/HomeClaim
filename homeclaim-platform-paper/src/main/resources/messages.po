@@ -290,22 +290,58 @@ msgid "plot.home_teleported"
 msgstr "§a✓ Teleported to your plot!"
 
 msgid "plot.info_header"
-msgstr "§6=== Plot Info ==="
+msgstr "§6§m──────────── §6§lPlot Info §6§m────────────"
 
 msgid "plot.info_id"
-msgstr "§7ID: §f{0}..."
+msgstr "§7ID: §f{0}"
+
+msgid "plot.info_world"
+msgstr "§7World: §f{0}"
+
+msgid "plot.info_biome"
+msgstr "§7Biome: §f{0}"
 
 msgid "plot.info_owner"
 msgstr "§7Owner: §f{0}"
 
+msgid "plot.info_trusted"
+msgstr "§7Trusted: §f{0}"
+
+msgid "plot.info_members"
+msgstr "§7Members: §f{0}"
+
+msgid "plot.info_banned"
+msgstr "§7Banned: §f{0}"
+
+msgid "plot.info_flags"
+msgstr "§7Flags: §f{0}"
+
+msgid "plot.info_none"
+msgstr "§8None"
+
 msgid "plot.info_size"
-msgstr "§7Size: §f{0} x {1}"
+msgstr "§7Size: §f{0} x {1} blocks"
 
 msgid "plot.info_price"
 msgstr "§7Price: §f{0}"
 
 msgid "plot.info_not_for_sale"
 msgstr "Not for sale"
+
+msgid "plot.info_footer"
+msgstr "§6§m──────────────────────────────────────"
+
+msgid "plot.info_uuid"
+msgstr "§7UUID: §f{0}"
+
+msgid "plot.info_platform"
+msgstr "§7Platform: §f{0}"
+
+msgid "plot.info_platform_java"
+msgstr "Java"
+
+msgid "plot.info_platform_bedrock"
+msgstr "Bedrock"
 
 msgid "plot.visit_teleported"
 msgstr "§a✓ Teleported to {0}''s plot!"

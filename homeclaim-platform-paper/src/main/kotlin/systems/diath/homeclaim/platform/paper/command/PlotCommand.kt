@@ -187,20 +187,54 @@ class PlotCommand(
         val ownerName = if (region.owner == UNCLAIMED_UUID) {
             i18n.msg("plot.info_owner_unclaimed")
         } else {
-            org.bukkit.Bukkit.getOfflinePlayer(region.owner).name ?: "Unbekannt"
+            org.bukkit.Bukkit.getOfflinePlayer(region.owner).name ?: region.owner.toString().take(8)
         }
         
+        val noneText = i18n.msg("plot.info_none")
+        
+        fun resolveNames(uuids: Set<java.util.UUID>): String {
+            if (uuids.isEmpty()) return noneText
+            return uuids.mapNotNull { org.bukkit.Bukkit.getOfflinePlayer(it).name }
+                .ifEmpty { listOf(noneText) }
+                .joinToString(", ")
+        }
+        
+        fun formatFlags(): String {
+            if (region.flags.isEmpty()) return noneText
+            val rendered = region.flags.entries.take(8).joinToString(", ") { (key, value) ->
+                when (value) {
+                    is systems.diath.homeclaim.core.model.PolicyValue.Bool -> "${key.value}: ${value.allowed}"
+                    is systems.diath.homeclaim.core.model.PolicyValue.IntValue -> "${key.value}: ${value.value}"
+                    is systems.diath.homeclaim.core.model.PolicyValue.Text -> "${key.value}: ${value.value}"
+                }
+            }
+            return if (region.flags.size > 8) "$rendered (+${region.flags.size - 8})" else rendered
+        }
+        
+        val biome = try { loc.block.biome.key.toString() } catch (_: Exception) { "?" }
+        val width = region.bounds.maxX - region.bounds.minX
+        val depth = region.bounds.maxZ - region.bounds.minZ
+        val priceStr = if (region.price > 0) "${region.price}$" else i18n.msg("plot.info_not_for_sale")
+        
         player.sendMessage(i18n.msg("plot.info_header"))
-        player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString().take(8)))
+        player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString()))
+        player.sendMessage(i18n.msg("plot.info_world", region.world))
+        player.sendMessage(i18n.msg("plot.info_size", width, depth))
+        player.sendMessage(i18n.msg("plot.info_biome", biome))
         player.sendMessage(i18n.msg("plot.info_owner", ownerName))
+        player.sendMessage(i18n.msg("plot.info_trusted", resolveNames(region.roles.trusted)))
+        player.sendMessage(i18n.msg("plot.info_members", resolveNames(region.roles.members)))
+        player.sendMessage(i18n.msg("plot.info_banned", resolveNames(region.roles.banned)))
+        player.sendMessage(i18n.msg("plot.info_flags", formatFlags()))
+        player.sendMessage(i18n.msg("plot.info_price", priceStr))
+        player.sendMessage(i18n.msg("plot.info_footer"))
+        
         if (region.owner != UNCLAIMED_UUID && Permissions.check(player, Permissions.PLOT_INFO_PLATFORM)) {
             val platformInfo = systems.diath.homeclaim.platform.paper.util.PlayerPlatformClassifier.classify(region.owner)
-            player.sendMessage("§7Owner UUID: §f${region.owner}")
-            player.sendMessage("§7Owner Platform: §f${if (platformInfo.isBedrock) "Bedrock" else "Java"}")
+            player.sendMessage(i18n.msg("plot.info_uuid", region.owner.toString()))
+            val platformLabel = if (platformInfo.isBedrock) i18n.msg("plot.info_platform_bedrock") else i18n.msg("plot.info_platform_java")
+            player.sendMessage(i18n.msg("plot.info_platform", platformLabel))
         }
-        player.sendMessage(i18n.msg("plot.info_size", region.bounds.maxX - region.bounds.minX, region.bounds.maxZ - region.bounds.minZ))
-        val priceStr = if (region.price > 0) "${region.price}$" else i18n.msg("plot.info_not_for_sale")
-        player.sendMessage(i18n.msg("plot.info_price", priceStr))
     }
     
     private fun handleList(player: Player) {

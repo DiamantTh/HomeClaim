@@ -62,5 +62,5 @@ permissions:
     description: Allows viewing and cancelling queued plot jobs
     default: op
   homeclaim.plot.info.platform:
-    description: Allows viewing owner UUID/platform details in /plot info
+    description: Allows viewing owner UUID and Java/Bedrock platform in /plot info (admin/rank permission)
     default: op
