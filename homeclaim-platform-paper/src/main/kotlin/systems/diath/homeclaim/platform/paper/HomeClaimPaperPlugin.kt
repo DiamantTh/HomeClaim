@@ -271,6 +271,14 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 plotResetService
             )
         )
+        server.pluginManager.registerEvents(
+            systems.diath.homeclaim.platform.paper.plot.mutation.PlotJobWorldListener(
+                logger,
+                plotMutationService,
+                plotResetService
+            ),
+            this
+        )
         plotMutationHooksRegistered = true
         logger.info("Plot mutation hooks registered (${if (isFoliaRuntime()) "Folia" else "Paper"} mode)")
     }

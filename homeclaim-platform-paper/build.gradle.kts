@@ -12,6 +12,7 @@ dependencies {
     implementation(project(":homeclaim-liftlink"))
     implementation(project(":homeclaim-api"))
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     implementation("org.flywaydb:flyway-core:10.10.0")
     compileOnly("com.github.MilkBowl:VaultAPI:1.7.1")
     implementation("com.electronwill.night-config:toml:3.8.3")

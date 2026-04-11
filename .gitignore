@@ -5,6 +5,9 @@ build/
 **/bin/
 **/run/
 tmp/
+# Keep the upstream PlotSquared checkout available for manual pull/update,
+# but do not let the HomeClaim repo track or care about it.
+tmp/PlotSquared/
 generate-world.py-data/
 *.log
 
