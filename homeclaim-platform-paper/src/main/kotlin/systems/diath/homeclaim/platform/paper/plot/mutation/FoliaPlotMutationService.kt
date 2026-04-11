@@ -114,11 +114,17 @@ class FoliaPlotMutationService(
         config: PlotWorldConfig,
         style: PlotBorderStyle
     ) {
-        val chunked = PlotChunkPlanner.groupColumnsByChunk(columns)
-        chunked.forEach { (chunk, chunkColumns) ->
-            val anchor = Location(world, (chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (chunk.z shl 4).toDouble())
+        val batches = PlotChunkPlanner.batchColumnsByChunk(columns, config.mutationBatchColumnsPerTask)
+        batches.forEach { batch ->
+            val anchor = Location(world, (batch.chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (batch.chunk.z shl 4).toDouble())
             Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
-                PlotMutationSupport.repaintColumns(world, chunkColumns, config, style)
+                runCatching {
+                    PlotMutationSupport.repaintColumns(world, batch.columns, config, style)
+                }.onFailure { error ->
+                    plugin.logger.warning(
+                        "Folia plot mutation batch failed in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${error.message}"
+                    )
+                }
             }
         }
     }

@@ -28,19 +28,21 @@ class FoliaPlotResetService(
         if (reason == PlotResetReason.DELETE && !config.resetOnDelete) return false
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
-        val chunkedColumns = PlotChunkPlanner.groupColumnsByChunk(PlotResetPlanner.interiorColumns(region.bounds))
-        if (chunkedColumns.isEmpty()) return false
+        val chunkBatches = PlotChunkPlanner.batchColumnsByChunk(
+            PlotResetPlanner.interiorColumns(region.bounds),
+            config.resetBatchColumnsPerTick
+        )
+        if (chunkBatches.isEmpty()) return false
 
         val generator = PlotWorldChunkGenerator(config)
         val minY = config.minGenHeight ?: region.bounds.minY
         val topY = (config.plotHeight - 1).coerceAtLeast(minY)
         val clearUntil = region.bounds.maxY
-        val columnsPerBatch = (config.resetBatchColumnsPerTick / chunkedColumns.size).coerceAtLeast(1)
 
-        chunkedColumns.forEach { (chunk, chunkColumns) ->
-            val queue = ArrayDeque(chunkColumns)
+        chunkBatches.groupBy { it.chunk }.forEach { (chunk, batches) ->
+            val queue = ArrayDeque<List<Pair<Int, Int>>>(batches.map { it.columns })
             val anchor = Location(world, (chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (chunk.z shl 4).toDouble())
-            scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, columnsPerBatch)
+            scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil)
         }
 
         plugin.logger.info("Queued Folia plot reset for ${region.id.value} (${reason.name.lowercase()})")
@@ -49,30 +51,34 @@ class FoliaPlotResetService(
 
     private fun scheduleChunkBatch(
         anchor: Location,
-        queue: ArrayDeque<Pair<Int, Int>>,
+        queue: ArrayDeque<List<Pair<Int, Int>>>,
         generator: PlotWorldChunkGenerator,
         minY: Int,
         topY: Int,
-        clearUntil: Int,
-        columnsPerBatch: Int
+        clearUntil: Int
     ) {
         Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
             val world = anchor.world ?: return@run
-            var processed = 0
-            while (processed < columnsPerBatch && queue.isNotEmpty()) {
-                val (x, z) = queue.removeFirst()
-                for (y in minY..topY) {
-                    world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
+            val batch = queue.pollFirst() ?: return@run
+
+            runCatching {
+                for ((x, z) in batch) {
+                    for (y in minY..topY) {
+                        world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
+                    }
+                    for (y in (topY + 1)..clearUntil) {
+                        world.getBlockAt(x, y, z).setType(Material.AIR, false)
+                    }
                 }
-                for (y in (topY + 1)..clearUntil) {
-                    world.getBlockAt(x, y, z).setType(Material.AIR, false)
-                }
-                processed++
+            }.onFailure { error ->
+                plugin.logger.warning(
+                    "Folia plot reset batch failed in ${world.name} at ${anchor.blockX shr 4},${anchor.blockZ shr 4}: ${error.message}"
+                )
             }
 
             if (queue.isNotEmpty()) {
                 Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                    scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, columnsPerBatch)
+                    scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil)
                 }, 50L, TimeUnit.MILLISECONDS)
             }
         }

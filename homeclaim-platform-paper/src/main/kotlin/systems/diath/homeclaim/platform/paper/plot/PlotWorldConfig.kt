@@ -29,6 +29,7 @@ data class PlotWorldConfig(
     val saleBorderBlock: Material = Material.GOLD_BLOCK,
     val adminBorderBlock: Material = Material.EMERALD_BLOCK,
     val reservedBorderBlock: Material = Material.REDSTONE_BLOCK,
+    val mutationBatchColumnsPerTask: Int = 64,
     val resetOnDelete: Boolean = false,
     val resetOnUnclaim: Boolean = false,
     val resetBatchColumnsPerTick: Int = 128,
@@ -61,6 +62,7 @@ object PlotSchemas {
                 roadWidth = 8,
                 plotHeight = 64,
                 plotsPerSide = 96,
+                mutationBatchColumnsPerTask = 32,
                 resetBatchColumnsPerTick = 48,
                 schema = "default"
             )
@@ -158,6 +160,7 @@ fun PlotWorldConfig.sanitized(): PlotWorldConfig {
         saleBorderBlock = saleBorderBlock,
         adminBorderBlock = adminBorderBlock,
         reservedBorderBlock = reservedBorderBlock,
+        mutationBatchColumnsPerTask = mutationBatchColumnsPerTask.coerceAtLeast(1),
         resetOnDelete = resetOnDelete,
         resetOnUnclaim = resetOnUnclaim,
         resetBatchColumnsPerTick = resetBatchColumnsPerTick.coerceAtLeast(1)
