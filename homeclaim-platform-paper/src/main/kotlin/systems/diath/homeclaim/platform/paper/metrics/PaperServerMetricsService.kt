@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper
 
 import org.bukkit.Bukkit
 import systems.diath.homeclaim.api.*
+import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
 
@@ -11,6 +12,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
  */
 class PaperServerMetricsService(
     private val homeClaimVersion: String,
+    private val regionService: RegionService,
     private val plotMutationService: PlotMutationService,
     private val plotResetService: PlotResetService
 ) : ServerMetricsService {
@@ -153,7 +155,7 @@ class PaperServerMetricsService(
             queuedResets = 0,
             failedResets = 0,
             cancellingResets = resetJobs.count { it.cancelRequested },
-            totalPlots = 0,
+            totalPlots = regionService.listAllRegions().count { it.world == worldName },
             oldestMutationAgeMillis = mutationJobs.maxOfOrNull { it.ageMillis } ?: 0L,
             oldestResetAgeMillis = resetJobs.maxOfOrNull { it.ageMillis } ?: 0L
         )

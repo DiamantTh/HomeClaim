@@ -606,6 +606,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         )
         val metricsService = systems.diath.homeclaim.platform.paper.PaperServerMetricsService(
             pluginMeta.version,
+            services.regionService,
             plotMutationService,
             plotResetService
         )

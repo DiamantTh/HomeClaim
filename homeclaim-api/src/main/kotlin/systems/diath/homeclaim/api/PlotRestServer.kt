@@ -774,6 +774,33 @@ class PlotRestServer(
                     ),
                     "responses" to mapOf("200" to mapOf("description" to "Profile created/updated"))
                 )
+            ),
+            "/metrics" to mapOf(
+                "get" to mapOf(
+                    "summary" to "Get aggregated server metrics",
+                    "tags" to listOf("Metrics"),
+                    "responses" to mapOf("200" to mapOf("description" to "Aggregated server metrics"))
+                )
+            ),
+            "/metrics/plots" to mapOf(
+                "get" to mapOf(
+                    "summary" to "Get plot job metrics",
+                    "tags" to listOf("Metrics"),
+                    "responses" to mapOf("200" to mapOf("description" to "Plot job metrics by world"))
+                )
+            ),
+            "/metrics/worlds/{name}" to mapOf(
+                "get" to mapOf(
+                    "summary" to "Get metrics for a single world",
+                    "tags" to listOf("Metrics"),
+                    "parameters" to listOf(
+                        mapOf("name" to "name", "in" to "path", "required" to true, "schema" to mapOf("type" to "string"))
+                    ),
+                    "responses" to mapOf(
+                        "200" to mapOf("description" to "Per-world metrics"),
+                        "404" to mapOf("description" to "World not found")
+                    )
+                )
             )
         )
     )
