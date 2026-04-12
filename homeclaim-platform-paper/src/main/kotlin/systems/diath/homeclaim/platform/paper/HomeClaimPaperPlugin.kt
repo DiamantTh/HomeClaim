@@ -129,6 +129,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
 
         val listener = PaperClientLinkChannelListener(
             plugin = this,
+            regionService = services?.regionService ?: return,
             logTraffic = homeClaimConfig.getBoolean("homeclaim.clientlink.logTraffic", false)
         )
 
