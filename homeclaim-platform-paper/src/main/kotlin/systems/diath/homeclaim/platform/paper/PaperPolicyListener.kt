@@ -12,6 +12,7 @@ import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.PolicyActionRequest
 import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditPayloads
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
 import org.bukkit.block.Container
@@ -60,13 +61,10 @@ class PaperPolicyListener(
                     targetId = null,
                     category = "BLOCK",
                     action = "PLACE_DENIED",
-                    payload = mapOf(
-                        "block" to event.blockPlaced.type.name,
-                        "world" to position.world,
-                        "x" to position.x,
-                        "y" to position.y,
-                        "z" to position.z,
-                        "reason" to decision.reason
+                    payload = AuditPayloads.deniedPolicyPayload(
+                        position = position,
+                        decision = decision,
+                        extra = mapOf("block" to event.blockPlaced.type.name)
                     )
                 )
             )
@@ -92,13 +90,10 @@ class PaperPolicyListener(
                     targetId = null,
                     category = "BLOCK",
                     action = "BREAK_DENIED",
-                    payload = mapOf(
-                        "block" to event.block.type.name,
-                        "world" to position.world,
-                        "x" to position.x,
-                        "y" to position.y,
-                        "z" to position.z,
-                        "reason" to decision.reason
+                    payload = AuditPayloads.deniedPolicyPayload(
+                        position = position,
+                        decision = decision,
+                        extra = mapOf("block" to event.block.type.name)
                     )
                 )
             )
@@ -230,13 +225,7 @@ class PaperPolicyListener(
                     targetId = victim.uniqueId,
                     category = "PVP",
                     action = "PVP_DENIED",
-                    payload = mapOf(
-                        "world" to position.world,
-                        "x" to position.x,
-                        "y" to position.y,
-                        "z" to position.z,
-                        "reason" to decision.reason
-                    )
+                    payload = AuditPayloads.deniedPolicyPayload(position, decision)
                 )
             )
         }
@@ -297,13 +286,10 @@ class PaperPolicyListener(
                     targetId = null,
                     category = "REDSTONE",
                     action = "BLOCK_DENIED",
-                    payload = mapOf(
-                        "block" to event.block.type.name,
-                        "world" to pos.world,
-                        "x" to pos.x,
-                        "y" to pos.y,
-                        "z" to pos.z,
-                        "reason" to decision.reason
+                    payload = AuditPayloads.deniedPolicyPayload(
+                        position = pos,
+                        decision = decision,
+                        extra = mapOf("block" to event.block.type.name)
                     )
                 )
             )
@@ -341,15 +327,14 @@ class PaperPolicyListener(
                     targetId = null,
                     category = "MOB",
                     action = "GRIEF_DENIED",
-                    payload = mapOf(
-                        "entityType" to entity.type.name,
-                        "block" to event.block.type.name,
-                        "to" to event.to.name,
-                        "world" to pos.world,
-                        "x" to pos.x,
-                        "y" to pos.y,
-                        "z" to pos.z,
-                        "reason" to decision.reason
+                    payload = AuditPayloads.deniedPolicyPayload(
+                        position = pos,
+                        decision = decision,
+                        extra = mapOf(
+                            "entityType" to entity.type.name,
+                            "block" to event.block.type.name,
+                            "to" to event.to.name
+                        )
                     )
                 )
             )
@@ -384,13 +369,10 @@ class PaperPolicyListener(
                     targetId = null,
                     category = "VEHICLE",
                     action = "ENTER_DENIED",
-                    payload = mapOf(
-                        "vehicleType" to event.vehicle.type.name,
-                        "world" to position.world,
-                        "x" to position.x,
-                        "y" to position.y,
-                        "z" to position.z,
-                        "reason" to decision.reason
+                    payload = AuditPayloads.deniedPolicyPayload(
+                        position = position,
+                        decision = decision,
+                        extra = mapOf("vehicleType" to event.vehicle.type.name)
                     )
                 )
             )
