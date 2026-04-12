@@ -210,6 +210,45 @@ class PlotRestServer(
                             ?: throw NoSuchElementException("World not found: $worldName")
                         call.respond(metrics)
                     }
+
+                    get("/prometheus") {
+                        if (!auth.check(call)) return@get
+                        val metrics = (metricsService ?: NoOpServerMetricsService).collectMetrics()
+                        val prometheus = StringBuilder()
+                        prometheus.append("# HELP homeclaim_uptime_seconds Server uptime in seconds\n")
+                        prometheus.append("# TYPE homeclaim_uptime_seconds gauge\n")
+                        prometheus.append("homeclaim_uptime_seconds ${metrics.uptime / 1000}\n")
+                        
+                        prometheus.append("# HELP homeclaim_online_players Number of online players\n")
+                        prometheus.append("# TYPE homeclaim_online_players gauge\n")
+                        prometheus.append("homeclaim_online_players ${metrics.onlinePlayers}\n")
+                        
+                        prometheus.append("# HELP homeclaim_server_tps Ticks per second\n")
+                        prometheus.append("# TYPE homeclaim_server_tps gauge\n")
+                        prometheus.append("homeclaim_server_tps ${metrics.tps}\n")
+                        
+                        prometheus.append("# HELP homeclaim_server_mspt Milliseconds per tick\n")
+                        prometheus.append("# TYPE homeclaim_server_mspt gauge\n")
+                        prometheus.append("homeclaim_server_mspt ${metrics.mspt}\n")
+                        
+                        prometheus.append("# HELP homeclaim_memory_used_mb Memory used in megabytes\n")
+                        prometheus.append("# TYPE homeclaim_memory_used_mb gauge\n")
+                        prometheus.append("homeclaim_memory_used_mb ${metrics.memory.usedMB}\n")
+                        
+                        prometheus.append("# HELP homeclaim_cpu_load System CPU load average\n")
+                        prometheus.append("# TYPE homeclaim_cpu_load gauge\n")
+                        prometheus.append("homeclaim_cpu_load{period=\"1m\"} ${metrics.load.oneMinuteAverage}\n")
+                        prometheus.append("homeclaim_cpu_load{period=\"5m\"} ${metrics.load.fiveMinuteAverage}\n")
+                        prometheus.append("homeclaim_cpu_load{period=\"15m\"} ${metrics.load.fifteenMinuteAverage}\n")
+                        
+                        metrics.worlds.forEach { world ->
+                            prometheus.append("# HELP homeclaim_world_plots Total plots in world\n")
+                            prometheus.append("# TYPE homeclaim_world_plots gauge\n")
+                            prometheus.append("homeclaim_world_plots{world=\"${world.name}\"} ${world.plots.totalPlots}\n")
+                        }
+                        
+                        call.respondText(prometheus.toString(), ContentType.Text.Plain)
+                    }
                 }
                 
                 // ============================================
@@ -808,6 +847,16 @@ class PlotRestServer(
                     "responses" to mapOf(
                         "200" to mapOf("description" to "Per-world metrics"),
                         "404" to mapOf("description" to "World not found")
+                    )
+                )
+            ),
+            "/metrics/prometheus" to mapOf(
+                "get" to mapOf(
+                    "summary" to "Export metrics in Prometheus format",
+                    "tags" to listOf("Metrics"),
+                    "description" to "Returns metrics in Prometheus text exposition format (text/plain)",
+                    "responses" to mapOf(
+                        "200" to mapOf("description" to "Prometheus metrics export")
                     )
                 )
             )
