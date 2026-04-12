@@ -26,4 +26,66 @@ object AuditEntries {
             payload = AuditPayloads.deniedPolicyPayload(position, decision, extra)
         )
     }
+
+    fun regionCreated(actorId: PlayerId?, targetId: UUID, world: String, bounds: String, shape: String): AuditEntry {
+        return AuditEntry(
+            actorId = actorId,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.REGION,
+            action = AuditTaxonomy.Action.CREATED,
+            payload = AuditPayloads.worldPayload(world, extra = mapOf("bounds" to bounds, "shape" to shape))
+        )
+    }
+
+    fun regionUpdated(actorId: PlayerId?, targetId: UUID, world: String, owner: String, ownerChanged: Boolean? = null): AuditEntry {
+        val extra = mutableMapOf<String, Any?>("owner" to owner)
+        if (ownerChanged != null) extra["ownerChanged"] = ownerChanged
+        return AuditEntry(
+            actorId = actorId,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.REGION,
+            action = AuditTaxonomy.Action.UPDATED,
+            payload = AuditPayloads.worldPayload(world, extra = extra)
+        )
+    }
+
+    fun regionDeleted(actorId: PlayerId?, targetId: UUID, world: String, owner: String): AuditEntry {
+        return AuditEntry(
+            actorId = actorId,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.REGION,
+            action = AuditTaxonomy.Action.DELETED,
+            payload = AuditPayloads.worldPayload(world, extra = mapOf("owner" to owner))
+        )
+    }
+
+    fun profileApplied(targetId: UUID, profileName: String, flagCount: Int, limitCount: Int): AuditEntry {
+        return AuditEntry(
+            actorId = null,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.PROFILE,
+            action = AuditTaxonomy.Action.APPLIED,
+            payload = mapOf("profileName" to profileName, "flagCount" to flagCount, "limitCount" to limitCount)
+        )
+    }
+
+    fun flagUpsert(targetId: UUID, key: String, value: String): AuditEntry {
+        return AuditEntry(
+            actorId = null,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.FLAG,
+            action = AuditTaxonomy.Action.UPSERT,
+            payload = mapOf("key" to key, "value" to value)
+        )
+    }
+
+    fun limitUpsert(targetId: UUID, key: String, value: String): AuditEntry {
+        return AuditEntry(
+            actorId = null,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.LIMIT,
+            action = AuditTaxonomy.Action.UPSERT,
+            payload = mapOf("key" to key, "value" to value)
+        )
+    }
 }

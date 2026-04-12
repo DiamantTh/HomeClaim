@@ -30,6 +30,7 @@ import systems.diath.homeclaim.core.event.PostRegionMergeEvent
 import systems.diath.homeclaim.core.event.EventResult
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
 import java.sql.ResultSet
 import java.util.UUID
@@ -191,16 +192,12 @@ class JdbcRegionRepository(
                 
                 // Audit log
                 auditService?.append(
-                    AuditEntry(
+                    AuditEntries.regionCreated(
                         actorId = region.owner,
                         targetId = region.id.value,
-                        category = "REGION",
-                        action = "CREATED",
-                        payload = mapOf(
-                            "world" to region.world,
-                            "bounds" to "${bounds.minX},${bounds.minY},${bounds.minZ} to ${bounds.maxX},${bounds.maxY},${bounds.maxZ}",
-                            "shape" to region.shape.name
-                        )
+                        world = region.world,
+                        bounds = "${bounds.minX},${bounds.minY},${bounds.minZ} to ${bounds.maxX},${bounds.maxY},${bounds.maxZ}",
+                        shape = region.shape.name
                     )
                 )
             } catch (ex: Exception) {
@@ -249,16 +246,7 @@ class JdbcRegionRepository(
         // Audit log
         region?.let {
             auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Actor unknown in this context
-                    targetId = regionId.value,
-                    category = "REGION",
-                    action = "DELETED",
-                    payload = mapOf(
-                        "world" to it.world,
-                        "owner" to it.owner.toString()
-                    )
-                )
+                AuditEntries.regionDeleted(null, regionId.value, it.world, it.owner.toString())
             )
             
             // Dispatch post-event
@@ -328,15 +316,11 @@ class JdbcRegionRepository(
                 
                 // Audit log
                 auditService?.append(
-                    AuditEntry(
+                    AuditEntries.regionUpdated(
                         actorId = region.owner,
                         targetId = region.id.value,
-                        category = "REGION",
-                        action = "UPDATED",
-                        payload = mapOf(
-                            "world" to region.world,
-                            "owner" to region.owner.toString()
-                        )
+                        world = region.world,
+                        owner = region.owner.toString()
                     )
                 )
             } catch (ex: Exception) {

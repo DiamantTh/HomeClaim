@@ -7,26 +7,35 @@ package systems.diath.homeclaim.core.service
  */
 object AuditTaxonomy {
     object Category {
-        const val BLOCK = "BLOCK"
-        const val PVP = "PVP"
-        const val REDSTONE = "REDSTONE"
-        const val MOB = "MOB"
-        const val VEHICLE = "VEHICLE"
-        const val COMPONENT = "COMPONENT"
-        const val IMPORT = "IMPORT"
+        val BLOCK = AuditCategory.BLOCK.wire
+        val PVP = AuditCategory.PVP.wire
+        val REDSTONE = AuditCategory.REDSTONE.wire
+        val MOB = AuditCategory.MOB.wire
+        val VEHICLE = AuditCategory.VEHICLE.wire
+        val COMPONENT = AuditCategory.COMPONENT.wire
+        val IMPORT = AuditCategory.IMPORT.wire
+        val REGION = AuditCategory.REGION.wire
+        val FLAG = AuditCategory.FLAG.wire
+        val LIMIT = AuditCategory.LIMIT.wire
+        val PROFILE = AuditCategory.PROFILE.wire
     }
 
     object Action {
-        const val PLACE_DENIED = "PLACE_DENIED"
-        const val PLACE_ALLOWED = "PLACE_ALLOWED"
-        const val BREAK_DENIED = "BREAK_DENIED"
-        const val BREAK_ALLOWED = "BREAK_ALLOWED"
-        const val PVP_DENIED = "PVP_DENIED"
-        const val BLOCK_DENIED = "BLOCK_DENIED"
-        const val GRIEF_DENIED = "GRIEF_DENIED"
-        const val ENTER_DENIED = "ENTER_DENIED"
-        const val ELEVATOR_USED = "ELEVATOR_USED"
-        const val TELEPORT_USED = "TELEPORT_USED"
-        const val PLOT_IMPORTED = "PLOT_IMPORTED"
+        val PLACE_DENIED = AuditAction.PLACE_DENIED.wire
+        val PLACE_ALLOWED = AuditAction.PLACE_ALLOWED.wire
+        val BREAK_DENIED = AuditAction.BREAK_DENIED.wire
+        val BREAK_ALLOWED = AuditAction.BREAK_ALLOWED.wire
+        val PVP_DENIED = AuditAction.PVP_DENIED.wire
+        val BLOCK_DENIED = AuditAction.BLOCK_DENIED.wire
+        val GRIEF_DENIED = AuditAction.GRIEF_DENIED.wire
+        val ENTER_DENIED = AuditAction.ENTER_DENIED.wire
+        val ELEVATOR_USED = AuditAction.ELEVATOR_USED.wire
+        val TELEPORT_USED = AuditAction.TELEPORT_USED.wire
+        val PLOT_IMPORTED = AuditAction.PLOT_IMPORTED.wire
+        val CREATED = AuditAction.CREATED.wire
+        val UPDATED = AuditAction.UPDATED.wire
+        val DELETED = AuditAction.DELETED.wire
+        val UPSERT = AuditAction.UPSERT.wire
+        val APPLIED = AuditAction.APPLIED.wire
     }
 }

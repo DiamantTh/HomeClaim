@@ -23,18 +23,7 @@ class RegionAdminServiceImpl(
             regionService.updateRegion(updated)
             
             // Audit log
-            auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Actor passed from caller context if needed
-                    targetId = regionId.value,
-                    category = "FLAG",
-                    action = "UPSERT",
-                    payload = mapOf(
-                        "key" to key.value,
-                        "value" to value.toString()
-                    )
-                )
-            )
+            auditService?.append(AuditEntries.flagUpsert(regionId.value, key.value, value.toString()))
         }
     }
 
@@ -45,18 +34,7 @@ class RegionAdminServiceImpl(
             regionService.updateRegion(updated)
             
             // Audit log
-            auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Actor passed from caller context if needed
-                    targetId = regionId.value,
-                    category = "LIMIT",
-                    action = "UPSERT",
-                    payload = mapOf(
-                        "key" to key.value,
-                        "value" to value.toString()
-                    )
-                )
-            )
+            auditService?.append(AuditEntries.limitUpsert(regionId.value, key.value, value.toString()))
         }
     }
 
@@ -71,17 +49,7 @@ class RegionAdminServiceImpl(
             
             // Audit log
             auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Actor passed from caller context if needed
-                    targetId = regionId.value,
-                    category = "PROFILE",
-                    action = "APPLIED",
-                    payload = mapOf(
-                        "profileName" to profileName,
-                        "flagCount" to profile.flags.size,
-                        "limitCount" to profile.limits.size
-                    )
-                )
+                AuditEntries.profileApplied(regionId.value, profileName, profile.flags.size, profile.limits.size)
             )
         }
     }
