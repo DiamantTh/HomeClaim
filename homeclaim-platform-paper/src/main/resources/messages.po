@@ -322,6 +322,12 @@ msgstr "✓"
 msgid "plot.info_can_build_no"
 msgstr "✗"
 
+msgid "plot.info_rating"
+msgstr "§7Rating: §f{0}"
+
+msgid "plot.info_rating_no_ratings"
+msgstr "No ratings yet"
+
 msgid "plot.info_flags"
 msgstr "§7Flags: §f{0}"
 

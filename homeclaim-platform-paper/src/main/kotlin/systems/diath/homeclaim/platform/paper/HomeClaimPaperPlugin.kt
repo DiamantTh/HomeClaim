@@ -11,6 +11,7 @@ import systems.diath.homeclaim.core.store.JdbcFlagProfileService
 import systems.diath.homeclaim.core.store.JdbcRegionRepository
 import systems.diath.homeclaim.core.store.JdbcRoleRepository
 import systems.diath.homeclaim.core.store.JdbcZoneRepository
+import systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository
 import systems.diath.homeclaim.core.store.SqlDsl
 import systems.diath.homeclaim.api.PlotRestServer
 import systems.diath.homeclaim.api.HealthInfo
@@ -72,12 +73,16 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         
         // Register /plot command (P2-Style)
         getCommand("plot")?.let { cmd ->
+            val ratingRepository = services.dataSource?.let { ds ->
+                systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository(ds)
+            }
             val executor = systems.diath.homeclaim.platform.paper.command.PlotCommand(
                 services.regionService,
                 guiManager!!,
                 econService,
                 plotResetService,
                 plotMutationService,
+                ratingRepository,
                 i18n
             )
             cmd.setExecutor(executor)
