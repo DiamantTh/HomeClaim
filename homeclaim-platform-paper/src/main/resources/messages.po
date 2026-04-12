@@ -313,6 +313,15 @@ msgstr "§7Members: §f{0}"
 msgid "plot.info_banned"
 msgstr "§7Banned: §f{0}"
 
+msgid "plot.info_can_build"
+msgstr "§7Can Build: §f{0}"
+
+msgid "plot.info_can_build_yes"
+msgstr "✓"
+
+msgid "plot.info_can_build_no"
+msgstr "✗"
+
 msgid "plot.info_flags"
 msgstr "§7Flags: §f{0}"
 

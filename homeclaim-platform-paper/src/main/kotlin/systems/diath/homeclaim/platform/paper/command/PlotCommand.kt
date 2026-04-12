@@ -10,6 +10,7 @@ import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
+import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import systems.diath.homeclaim.platform.paper.util.Permissions
@@ -215,6 +216,9 @@ class PlotCommand(
         val width = region.bounds.maxX - region.bounds.minX
         val depth = region.bounds.maxZ - region.bounds.minZ
         val priceStr = if (region.price > 0) "${region.price}$" else i18n.msg("plot.info_not_for_sale")
+        val playerRole = region.roles.resolve(player.uniqueId, region.owner)
+        val canBuild = playerRole == RegionRole.OWNER || playerRole == RegionRole.TRUSTED
+        val canBuildStr = if (canBuild) i18n.msg("plot.info_can_build_yes") else i18n.msg("plot.info_can_build_no")
         
         player.sendMessage(i18n.msg("plot.info_header"))
         player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString()))
@@ -225,6 +229,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.info_trusted", resolveNames(region.roles.trusted)))
         player.sendMessage(i18n.msg("plot.info_members", resolveNames(region.roles.members)))
         player.sendMessage(i18n.msg("plot.info_banned", resolveNames(region.roles.banned)))
+        player.sendMessage(i18n.msg("plot.info_can_build", canBuildStr))
         player.sendMessage(i18n.msg("plot.info_flags", formatFlags()))
         player.sendMessage(i18n.msg("plot.info_price", priceStr))
         player.sendMessage(i18n.msg("plot.info_footer"))
