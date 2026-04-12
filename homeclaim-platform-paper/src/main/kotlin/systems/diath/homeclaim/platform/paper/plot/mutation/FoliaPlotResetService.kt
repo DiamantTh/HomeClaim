@@ -4,6 +4,7 @@ import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
@@ -30,7 +31,7 @@ class FoliaPlotResetService(
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
         return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
-            "reset:${snapshot.world}:${snapshot.key}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+            "reset:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.RESET.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
         }
     }
 
@@ -40,11 +41,15 @@ class FoliaPlotResetService(
                 key = snapshot.key,
                 world = snapshot.world,
                 kind = snapshot.kind.name,
+                reason = snapshot.reason,
                 ageMillis = snapshot.ageMillis,
                 cancelRequested = snapshot.cancelRequested
             )
         }
     }
+
+    override fun activeJobInfo(worldName: String?) =
+        jobRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.RESET, defaultReason = MutationReason.RESET)
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
@@ -57,6 +62,7 @@ class FoliaPlotResetService(
             key = jobKey,
             world = region.world,
             kind = PlotJobRegistry.JobKind.RESET,
+            reason = MutationReason.RESET,
             maxConcurrentPerWorld = config.maxConcurrentResetJobsPerWorld,
             timeoutMillis = config.jobTimeoutMillis
         ) ?: run {

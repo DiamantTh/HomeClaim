@@ -2,8 +2,8 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
 import org.bukkit.Location
-import org.bukkit.Material
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
@@ -30,7 +30,7 @@ class FoliaPlotMutationService(
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
         return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION).map { snapshot ->
-            "mutation:${snapshot.world}:${snapshot.key}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+            "mutation:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.ADMIN.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
         }
     }
 
@@ -40,13 +40,17 @@ class FoliaPlotMutationService(
                 key = snapshot.key,
                 world = snapshot.world,
                 kind = snapshot.kind.name,
+                reason = snapshot.reason,
                 ageMillis = snapshot.ageMillis,
                 cancelRequested = snapshot.cancelRequested
             )
         }
     }
 
-    override fun applyRegionState(region: Region) {
+    override fun activeJobInfo(worldName: String?) =
+        jobRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION, defaultReason = MutationReason.ADMIN)
+
+    override fun applyRegionState(region: Region, reason: MutationReason) {
         val world = Bukkit.getWorld(region.world) ?: return
         val config = configStore.loadConfig(region.world) ?: return
         val visualState = PlotVisualStates.resolve(region)
@@ -57,16 +61,17 @@ class FoliaPlotMutationService(
             region.bounds,
             config,
             style,
+            reason,
             jobKey = "folia-mutation:region:${region.id.value}"
         )
     }
 
-    override fun handleRegionDeleted(region: Region) {
+    override fun handleRegionDeleted(region: Region, reason: MutationReason) {
         val unclaimedSnapshot = region.copy(owner = PlotVisualStates.UNCLAIMED_OWNER, mergeGroupId = null)
-        applyRegionState(unclaimedSnapshot)
+        applyRegionState(unclaimedSnapshot, reason)
     }
 
-    override fun handleRegionsMerged(regions: Collection<Region>) {
+    override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason) {
         if (regions.isEmpty()) return
         val worldName = regions.first().world
         val world = Bukkit.getWorld(worldName) ?: return
@@ -82,6 +87,7 @@ class FoliaPlotMutationService(
                 bounds = region.bounds,
                 config = config,
                 style = style,
+                reason = reason,
                 includeNorth = !shared.north,
                 includeSouth = !shared.south,
                 includeWest = !shared.west,
@@ -94,12 +100,21 @@ class FoliaPlotMutationService(
             fillMaterial = config.plotBlock,
             capMaterial = config.plotBlock
         )
-        repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap, jobKeyPrefix = "folia-mutation:merge-corridor") { first, second ->
-            first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
-        }
+        repaintCorridors(
+            world = world,
+            regions = regions.toList(),
+            config = config,
+            style = mergedFillStyle,
+            maxGap = maxGap,
+            jobKeyPrefix = "folia-mutation:merge-corridor",
+            predicate = { first, second ->
+                first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
+            },
+            reason = reason
+        )
     }
 
-    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean) {
+    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean, reason: MutationReason) {
         if (regions.isEmpty()) return
         val worldName = regions.first().world
         val world = Bukkit.getWorld(worldName) ?: return
@@ -108,7 +123,7 @@ class FoliaPlotMutationService(
 
         regions.forEach { region ->
             val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
-            repaintBorder(world, region.bounds, config, style, jobKey = "folia-mutation:unlink-border:${region.id.value}")
+            repaintBorder(world, region.bounds, config, style, reason, jobKey = "folia-mutation:unlink-border:${region.id.value}")
         }
 
         if (createRoads) {
@@ -116,7 +131,16 @@ class FoliaPlotMutationService(
                 fillMaterial = config.roadBlock,
                 capMaterial = config.roadBlock
             )
-            repaintCorridors(world, regions.toList(), config, roadStyle, maxGap, jobKeyPrefix = "folia-mutation:unlink-corridor") { _, _ -> true }
+            repaintCorridors(
+                world = world,
+                regions = regions.toList(),
+                config = config,
+                style = roadStyle,
+                maxGap = maxGap,
+                jobKeyPrefix = "folia-mutation:unlink-corridor",
+                predicate = { _, _ -> true },
+                reason = reason
+            )
         }
     }
 
@@ -125,6 +149,7 @@ class FoliaPlotMutationService(
         bounds: Bounds,
         config: PlotWorldConfig,
         style: PlotBorderStyle,
+        reason: MutationReason,
         includeNorth: Boolean = true,
         includeSouth: Boolean = true,
         includeWest: Boolean = true,
@@ -138,7 +163,7 @@ class FoliaPlotMutationService(
             includeWest = includeWest,
             includeEast = includeEast
         )
-        repaintColumns(world, borderColumns, config, style, jobKey)
+        repaintColumns(world, borderColumns, config, style, reason, jobKey)
     }
 
     private fun repaintColumns(
@@ -146,12 +171,14 @@ class FoliaPlotMutationService(
         columns: Collection<Pair<Int, Int>>,
         config: PlotWorldConfig,
         style: PlotBorderStyle,
+        reason: MutationReason,
         jobKey: String
     ) {
         val jobHandle = jobRegistry.tryAcquire(
             key = jobKey,
             world = world.name,
             kind = PlotJobRegistry.JobKind.MUTATION,
+            reason = reason,
             maxConcurrentPerWorld = config.maxConcurrentMutationJobsPerWorld,
             timeoutMillis = config.jobTimeoutMillis
         ) ?: run {
@@ -180,7 +207,8 @@ class FoliaPlotMutationService(
         style: PlotBorderStyle,
         maxGap: Int,
         jobKeyPrefix: String,
-        predicate: (Region, Region) -> Boolean
+        predicate: (Region, Region) -> Boolean,
+        reason: MutationReason
     ) {
         for (i in regions.indices) {
             for (j in i + 1 until regions.size) {
@@ -189,7 +217,7 @@ class FoliaPlotMutationService(
                 if (predicate(first, second)) {
                     val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
                     val orderedIds = listOf(first.id.value.toString(), second.id.value.toString()).sorted()
-                    repaintColumns(world, corridor, config, style, "$jobKeyPrefix:${orderedIds[0]}:${orderedIds[1]}")
+                    repaintColumns(world, corridor, config, style, reason, "$jobKeyPrefix:${orderedIds[0]}:${orderedIds[1]}")
                 }
             }
         }

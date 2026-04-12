@@ -142,8 +142,8 @@ class PaperServerMetricsService(
     }
     
     private fun collectWorldPlotMetrics(worldName: String): WorldPlotsMetrics {
-        val mutationJobs = plotMutationService.activeJobs(worldName)
-        val resetJobs = plotResetService.activeJobs(worldName)
+        val mutationJobs = plotMutationService.activeJobInfo(worldName)
+        val resetJobs = plotResetService.activeJobInfo(worldName)
         
         return WorldPlotsMetrics(
             worldName = worldName,
@@ -156,8 +156,8 @@ class PaperServerMetricsService(
             failedResets = 0,
             cancellingResets = resetJobs.count { it.cancelRequested },
             totalPlots = regionService.listAllRegions().count { it.world == worldName },
-            oldestMutationAgeMillis = mutationJobs.maxOfOrNull { it.ageMillis } ?: 0L,
-            oldestResetAgeMillis = resetJobs.maxOfOrNull { it.ageMillis } ?: 0L
+            oldestMutationAgeMillis = mutationJobs.maxOfOrNull { it.queuedMillis } ?: 0L,
+            oldestResetAgeMillis = resetJobs.maxOfOrNull { it.queuedMillis } ?: 0L
         )
     }
     

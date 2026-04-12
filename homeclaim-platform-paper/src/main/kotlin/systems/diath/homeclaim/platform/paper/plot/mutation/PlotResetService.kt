@@ -1,5 +1,6 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.model.Region
 
 /**
@@ -20,6 +21,8 @@ interface PlotResetService {
     fun activeJobDiagnostics(worldName: String? = null): List<String> = emptyList()
 
     fun activeJobs(worldName: String? = null): List<PlotJobSnapshot> = emptyList()
+
+    fun activeJobInfo(worldName: String? = null): List<MutationJobInfo> = emptyList()
 }
 
 object NoOpPlotResetService : PlotResetService {

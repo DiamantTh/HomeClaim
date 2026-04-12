@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
@@ -19,7 +20,7 @@ class PaperPlotMutationService(
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
 ) : PlotMutationService {
 
-    override fun applyRegionState(region: Region) {
+    override fun applyRegionState(region: Region, reason: MutationReason) {
         val world = Bukkit.getWorld(region.world) ?: return
         val config = configStore.loadConfig(region.world) ?: return
         val visualState = PlotVisualStates.resolve(region)
@@ -30,12 +31,12 @@ class PaperPlotMutationService(
         })
     }
 
-    override fun handleRegionDeleted(region: Region) {
+    override fun handleRegionDeleted(region: Region, reason: MutationReason) {
         val unclaimedSnapshot = region.copy(owner = PlotVisualStates.UNCLAIMED_OWNER, mergeGroupId = null)
-        applyRegionState(unclaimedSnapshot)
+        applyRegionState(unclaimedSnapshot, reason)
     }
 
-    override fun handleRegionsMerged(regions: Collection<Region>) {
+    override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason) {
         if (regions.isEmpty()) return
         val worldName = regions.first().world
         val world = Bukkit.getWorld(worldName) ?: return
@@ -69,7 +70,7 @@ class PaperPlotMutationService(
         })
     }
 
-    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean) {
+    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean, reason: MutationReason) {
         if (regions.isEmpty()) return
         val worldName = regions.first().world
         val world = Bukkit.getWorld(worldName) ?: return

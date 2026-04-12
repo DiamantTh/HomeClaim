@@ -1,5 +1,7 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
+import systems.diath.homeclaim.core.mutation.MutationReason
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +26,7 @@ internal class PlotJobRegistry(
     private data class JobRecord(
         val world: String,
         val kind: JobKind,
+        val reason: MutationReason?,
         val startedAt: Long,
         var cancelRequested: Boolean = false
     )
@@ -32,6 +35,7 @@ internal class PlotJobRegistry(
         val key: String,
         val world: String,
         val kind: JobKind,
+        val reason: MutationReason?,
         val ageMillis: Long,
         val cancelRequested: Boolean
     )
@@ -52,6 +56,7 @@ internal class PlotJobRegistry(
         key: String,
         world: String = "global",
         kind: JobKind = JobKind.MUTATION,
+        reason: MutationReason? = null,
         maxConcurrentPerWorld: Int = Int.MAX_VALUE,
         timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
     ): JobHandle? {
@@ -62,7 +67,7 @@ internal class PlotJobRegistry(
             val activeForWorld = inFlight.values.count { it.world == world && it.kind == kind }
             if (activeForWorld >= maxConcurrentPerWorld.coerceAtLeast(1)) return null
 
-            inFlight[key] = JobRecord(world = world, kind = kind, startedAt = nowProvider())
+            inFlight[key] = JobRecord(world = world, kind = kind, reason = reason, startedAt = nowProvider())
             return JobHandle(key)
         }
     }
@@ -140,6 +145,7 @@ internal class PlotJobRegistry(
                         key = key,
                         world = record.world,
                         kind = record.kind,
+                        reason = record.reason,
                         ageMillis = (now - record.startedAt).coerceAtLeast(0L),
                         cancelRequested = record.cancelRequested
                     )
@@ -172,6 +178,24 @@ internal class PlotJobRegistry(
             }
             
             return stats.values.toList()
+        }
+    }
+
+    fun mutationJobInfo(
+        world: String? = null,
+        kind: JobKind? = null,
+        timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+        defaultReason: MutationReason = MutationReason.ADMIN
+    ): List<MutationJobInfo> {
+        return snapshot(world = world, kind = kind, timeoutMillis = timeoutMillis).map { snapshot ->
+            MutationJobInfo(
+                ticketId = snapshot.key,
+                world = snapshot.world,
+                reason = snapshot.reason ?: defaultReason,
+                queuedMillis = snapshot.ageMillis,
+                running = true,
+                cancelRequested = snapshot.cancelRequested
+            )
         }
     }
 
