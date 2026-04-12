@@ -23,6 +23,7 @@ import systems.diath.homeclaim.platform.paper.lifecycle.ShutdownManager
 import systems.diath.homeclaim.platform.paper.lifecycle.HealthCheckService
 import systems.diath.homeclaim.platform.paper.lifecycle.DatabaseResilience
 import systems.diath.homeclaim.platform.paper.config.HomeClaimTomlConfig
+import systems.diath.homeclaim.platform.paper.clientlink.PaperClientLinkChannelListener
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
@@ -53,6 +54,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
     private var i18n: I18n = I18n()
+    private var clientLinkListener: PaperClientLinkChannelListener? = null
+    private var clientLinkChannels: Set<String> = emptySet()
     internal val homeClaimConfig = HomeClaimTomlConfig(java.io.File("config/HomeClaim.toml"), this)
 
     fun bindServices(services: PlatformServices) {
@@ -101,7 +104,54 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
         
         maybeStartRest(services)
+        setupClientLinkChannels()
         this.services = services
+    }
+
+    private fun setupClientLinkChannels() {
+        teardownClientLinkChannels()
+
+        val enabled = homeClaimConfig.getBoolean("homeclaim.clientlink.enabled", false)
+        if (!enabled) {
+            logger.info("ClientLink channels disabled (homeclaim.clientlink.enabled=false)")
+            return
+        }
+
+        val channels = homeClaimConfig.getStringList(
+            "homeclaim.clientlink.channels",
+            listOf("homeclaim:admin", "homeclaim:support")
+        ).toSet()
+
+        if (channels.isEmpty()) {
+            logger.warning("ClientLink enabled but no channels configured; skipping registration")
+            return
+        }
+
+        val listener = PaperClientLinkChannelListener(
+            plugin = this,
+            logTraffic = homeClaimConfig.getBoolean("homeclaim.clientlink.logTraffic", false)
+        )
+
+        channels.forEach { channel ->
+            server.messenger.registerIncomingPluginChannel(this, channel, listener)
+            server.messenger.registerOutgoingPluginChannel(this, channel)
+        }
+
+        clientLinkListener = listener
+        clientLinkChannels = channels
+        logger.info("ClientLink channels registered: ${channels.joinToString(", ")}")
+    }
+
+    private fun teardownClientLinkChannels() {
+        val listener = clientLinkListener
+        if (listener != null) {
+            clientLinkChannels.forEach { channel ->
+                runCatching { server.messenger.unregisterIncomingPluginChannel(this, channel, listener) }
+                runCatching { server.messenger.unregisterOutgoingPluginChannel(this, channel) }
+            }
+        }
+        clientLinkListener = null
+        clientLinkChannels = emptySet()
     }
     
     private fun initializeEconomy() {
@@ -333,6 +383,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         if (!result.success) {
             logger.warning(i18n.msg("shutdown.warnings", result.message))
         }
+
+        teardownClientLinkChannels()
         
         // Clear references
         bridge = null
@@ -381,6 +433,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                         val jdbc = svc.flagProfileService as? JdbcFlagProfileService
                         loadProfilesFromConfig(null, jdbc, clearExisting = true)
                         maybeStartRest(svc)
+                        setupClientLinkChannels()
                         sender.sendMessage(i18n.msg("storage.reload.ok"))
                     } else {
                         sender.sendMessage(i18n.msg("storage.reload.none"))

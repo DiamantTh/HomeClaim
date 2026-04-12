@@ -101,6 +101,11 @@ enabled = true
 allowNonPostgres = false
 baselineOnMigrate = true
 locations = ["classpath:db/migration"]
+
+[homeclaim.clientlink]
+enabled = false
+logTraffic = false
+channels = ["homeclaim:admin", "homeclaim:support"]
 """
     }
 }
