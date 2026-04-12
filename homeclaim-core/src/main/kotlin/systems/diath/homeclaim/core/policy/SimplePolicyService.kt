@@ -56,6 +56,16 @@ class SimplePolicyService(
         val zones = position?.let { zoneService.getZonesAt(it.world, it) } ?: emptyList()
         val effective = RegionPolicy.merge(zones, regionWithProfile)
         val role = resolveRole(regionId, playerId)
+        val actor = PolicyActorContext.from(extraContext)
+
+        if (!ModProtectionRules.isActorAllowed(regionWithProfile, actor)) {
+            return Decision(
+                allowed = false,
+                reason = DecisionReason.MOD_ACTOR_DENY,
+                detail = "actor=${actor.kind.name}${actor.actorId?.let { ":$it" } ?: ""}",
+                context = DecisionContext(playerId, regionId, action, position?.world, extraContext)
+            )
+        }
 
         val (allowed, reason, detail) = when (action) {
             Action.REGION_BUILD -> checkFlag(effective, FlagCatalog.BUILD, role)
