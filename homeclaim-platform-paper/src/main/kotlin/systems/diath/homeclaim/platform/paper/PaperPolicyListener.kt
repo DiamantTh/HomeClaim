@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper
 
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.platform.BlockEventContext
+import systems.diath.homeclaim.core.platform.ComponentTriggerRequest
 import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
 import systems.diath.homeclaim.core.platform.InteractEventContext
 import systems.diath.homeclaim.core.platform.PolicyGuard
@@ -124,7 +125,19 @@ class PaperPolicyListener(
 
         // Handle component triggers (e.g., stepping on pads).
         if (event.action.isPhysical()) {
-            val triggerResult = componentHandler.onTrigger(event.player.uniqueId, position)
+            val triggerResult = componentHandler.onTrigger(
+                ComponentTriggerRequest(
+                    playerId = event.player.uniqueId,
+                    position = position,
+                    actor = PolicyActorContext(
+                        kind = ActorKind.PLAYER,
+                        actorId = event.player.uniqueId.toString(),
+                        sourceMod = "paper"
+                    ),
+                    platform = "paper",
+                    extra = mapOf("event" to "PlayerInteractEvent")
+                )
+            )
             val componentDecision = triggerResult.decision
             if (componentDecision != null && !componentDecision.allowed) {
                 event.isCancelled = true
