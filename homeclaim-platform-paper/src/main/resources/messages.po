@@ -1168,6 +1168,9 @@ msgstr "§cComponent creation cancelled."
 msgid "plot.info_owner_unclaimed"
 msgstr "§7(Unclaimed)"
 
+msgid "plot.info_owner_redacted"
+msgstr "§7[Redacted]"
+
 msgid "audit.time.seconds"
 msgstr "§b{0}s ago§r"
 

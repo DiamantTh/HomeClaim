@@ -189,8 +189,10 @@ class PlotCommand(
         
         val ownerName = if (region.owner == UNCLAIMED_UUID) {
             i18n.msg("plot.info_owner_unclaimed")
-        } else {
+        } else if (player.hasPermission(Permissions.PLOT_INFO_OWNER_NAME) || player.isOp) {
             org.bukkit.Bukkit.getOfflinePlayer(region.owner).name ?: region.owner.toString().take(8)
+        } else {
+            i18n.msg("plot.info_owner_redacted")
         }
         
         val noneText = i18n.msg("plot.info_none")

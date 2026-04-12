@@ -1358,6 +1358,9 @@ msgstr "§cKomponentenerstellung abgebrochen."
 msgid "plot.info_owner_unclaimed"
 msgstr "§7(Frei)"
 
+msgid "plot.info_owner_redacted"
+msgstr "§7[Versteckt]"
+
 msgid "audit.time.seconds"
 msgstr "§bvor {0}s§r"
 
