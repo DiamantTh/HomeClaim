@@ -6,6 +6,7 @@ import systems.diath.homeclaim.core.model.*
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditPayloads
 import java.util.*
 import kotlin.math.abs
 
@@ -289,10 +290,13 @@ class PlotImportService(
                 targetId = regionId.value,
                 category = "IMPORT",
                 action = "PLOT_IMPORTED",
-                payload = mapOf(
-                    "source" to (external.metadata["plugin"] ?: "unknown"),
-                    "world" to external.world,
-                    "originalId" to external.id
+                    payload = AuditPayloads.worldPayload(
+                        world = external.world,
+                        platform = "paper",
+                        extra = mapOf(
+                            "source" to (external.metadata["plugin"] ?: "unknown"),
+                            "originalId" to external.id
+                        )
                 )
             )
         )

@@ -8,6 +8,7 @@ import systems.diath.homeclaim.core.platform.PolicyGuard
 import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditPayloads
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
@@ -154,11 +155,15 @@ class PaperLiftLinkListener(
                 targetId = comp.id.value,
                 category = "COMPONENT",
                 action = "ELEVATOR_USED",
-                payload = mapOf(
-                    "sourceId" to comp.id.value.toString(),
-                    "targetId" to target.id.value.toString(),
-                    "mode" to config.mode.name,
-                    "distance" to (target.position.y - pos.y)
+                payload = AuditPayloads.actionPayload(
+                    position = pos,
+                    platform = "paper",
+                    extra = mapOf(
+                        "sourceId" to comp.id.value.toString(),
+                        "targetId" to target.id.value.toString(),
+                        "mode" to config.mode.name,
+                        "distance" to (target.position.y - pos.y)
+                    )
                 )
             )
         )
@@ -239,11 +244,15 @@ class PaperLiftLinkListener(
                 targetId = comp.id.value,
                 category = "COMPONENT",
                 action = "TELEPORT_USED",
-                payload = mapOf(
-                    "sourceId" to comp.id.value.toString(),
-                    "targetId" to destComp.id.value.toString(),
-                    "linkId" to config.linkId.toString(),
-                    "scope" to config.withinScope.name
+                payload = AuditPayloads.actionPayload(
+                    position = pos,
+                    platform = "paper",
+                    extra = mapOf(
+                        "sourceId" to comp.id.value.toString(),
+                        "targetId" to destComp.id.value.toString(),
+                        "linkId" to config.linkId.toString(),
+                        "scope" to config.withinScope.name
+                    )
                 )
             )
         )
