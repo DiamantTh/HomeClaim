@@ -1,10 +1,11 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
-import org.bukkit.Material
 import org.bukkit.scheduler.BukkitTask
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
@@ -19,26 +20,27 @@ import java.util.ArrayDeque
  */
 class PaperPlotResetService(
     private val plugin: JavaPlugin,
-    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
+    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
+    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend()
 ) : PlotResetService {
-    private val jobRegistry = PlotJobRegistry()
+    private val queueRegistry = PlotJobRegistry()
 
     override fun cancelPendingJobs(worldName: String?): Int {
-        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
+        return queueRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
     }
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+        return queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
             "reset:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.RESET.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
         }
     }
 
     override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+        return queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
             PlotJobSnapshot(
                 key = snapshot.key,
                 world = snapshot.world,
-                kind = snapshot.kind.name,
+                kind = PlotJobRegistry.JobKind.RESET.name,
                 reason = snapshot.reason,
                 ageMillis = snapshot.ageMillis,
                 cancelRequested = snapshot.cancelRequested
@@ -46,8 +48,9 @@ class PaperPlotResetService(
         }
     }
 
-    override fun activeJobInfo(worldName: String?) =
-        jobRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.RESET, defaultReason = MutationReason.RESET)
+    override fun activeJobInfo(worldName: String?): List<MutationJobInfo> {
+        return queueRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.RESET, defaultReason = MutationReason.RESET)
+    }
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
@@ -56,7 +59,7 @@ class PaperPlotResetService(
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
         val jobKey = "paper-reset:${region.world}:${region.id.value}"
-        val jobHandle = jobRegistry.tryAcquire(
+        val jobHandle = queueRegistry.tryAcquire(
             key = jobKey,
             world = region.world,
             kind = PlotJobRegistry.JobKind.RESET,
@@ -64,7 +67,7 @@ class PaperPlotResetService(
             maxConcurrentPerWorld = config.maxConcurrentResetJobsPerWorld,
             timeoutMillis = config.jobTimeoutMillis
         ) ?: run {
-            val reasonText = if (jobRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
+            val reasonText = if (queueRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
             plugin.logger.fine("Skipping $reasonText Paper plot reset for ${region.id.value}")
             return false
         }
@@ -98,7 +101,7 @@ class PaperPlotResetService(
                             processed++
                         }
                         val batch = PlotMutationPlanFactory.resetBatch(
-                            id = "$jobKey:tick:${System.nanoTime()}",
+                            id = jobKey,
                             world = world.name,
                             columns = batchColumns,
                             generator = generator,
@@ -106,7 +109,7 @@ class PaperPlotResetService(
                             topY = topY,
                             clearUntil = clearUntil
                         )
-                        PlotMutationExecutor.apply(world, batch)
+                        mutationBackend.submit(batch)
                     }
                     if (columns.isEmpty()) {
                         scheduledTask?.cancel()

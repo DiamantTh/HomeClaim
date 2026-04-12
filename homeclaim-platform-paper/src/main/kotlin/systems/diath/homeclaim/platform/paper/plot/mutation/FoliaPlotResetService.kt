@@ -1,17 +1,14 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
-import org.bukkit.Location
 import org.bukkit.plugin.java.JavaPlugin
-import systems.diath.homeclaim.core.mutation.MutationBatch
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
 import systems.diath.homeclaim.platform.paper.plot.sanitized
-import java.util.ArrayDeque
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Folia-safe reset path.
@@ -21,35 +18,36 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class FoliaPlotResetService(
     private val plugin: JavaPlugin,
-    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
+    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
+    private val mutationBackend: WorldMutationBackend = FoliaRegionScheduledWorldMutationBackend(plugin)
 ) : PlotResetService {
-    private val jobRegistry = PlotJobRegistry()
-
     override fun cancelPendingJobs(worldName: String?): Int {
-        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
+        val jobs = activeJobInfo(worldName)
+        return jobs.count { mutationBackend.cancel(it.ticketId) }
     }
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
-            "reset:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.RESET.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+        return activeJobInfo(worldName).map { info ->
+            "reset:${info.world}:${info.ticketId}:reason=${info.reason.name}:age=${info.queuedMillis}ms:cancelled=${info.cancelRequested}"
         }
     }
 
     override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+        return activeJobInfo(worldName).map { info ->
             PlotJobSnapshot(
-                key = snapshot.key,
-                world = snapshot.world,
-                kind = snapshot.kind.name,
-                reason = snapshot.reason,
-                ageMillis = snapshot.ageMillis,
-                cancelRequested = snapshot.cancelRequested
+                key = info.ticketId,
+                world = info.world,
+                kind = PlotJobRegistry.JobKind.RESET.name,
+                reason = info.reason,
+                ageMillis = info.queuedMillis,
+                cancelRequested = info.cancelRequested
             )
         }
     }
 
-    override fun activeJobInfo(worldName: String?) =
-        jobRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.RESET, defaultReason = MutationReason.RESET)
+    override fun activeJobInfo(worldName: String?): List<MutationJobInfo> {
+        return mutationBackend.activeJobs(worldName).filter { it.reason == MutationReason.RESET }
+    }
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
@@ -58,25 +56,20 @@ class FoliaPlotResetService(
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
         val jobKey = "folia-reset:${region.world}:${region.id.value}"
-        val jobHandle = jobRegistry.tryAcquire(
-            key = jobKey,
-            world = region.world,
-            kind = PlotJobRegistry.JobKind.RESET,
-            reason = MutationReason.RESET,
-            maxConcurrentPerWorld = config.maxConcurrentResetJobsPerWorld,
-            timeoutMillis = config.jobTimeoutMillis
-        ) ?: run {
-            val reasonText = if (jobRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
-            plugin.logger.fine("Skipping $reasonText Folia plot reset for ${region.id.value}")
+        val activeResets = activeJobInfo(region.world)
+        val isDuplicate = activeResets.any { it.ticketId.startsWith(jobKey) }
+        if (isDuplicate) {
+            plugin.logger.fine("Skipping duplicate Folia plot reset for ${region.id.value}")
+            return false
+        }
+        if (activeResets.size >= config.maxConcurrentResetJobsPerWorld) {
+            plugin.logger.fine("Skipping world-limit Folia plot reset for ${region.id.value}")
             return false
         }
 
-        val chunkBatches = PlotChunkPlanner.batchColumnsByChunk(
-            PlotResetPlanner.interiorColumns(region.bounds),
-            config.resetBatchColumnsPerTick
-        )
+        val columns = PlotResetPlanner.interiorColumns(region.bounds)
+        val chunkBatches = PlotChunkPlanner.batchColumnsByChunk(columns, config.resetBatchColumnsPerTick)
         if (chunkBatches.isEmpty()) {
-            jobHandle.close()
             return false
         }
 
@@ -84,93 +77,31 @@ class FoliaPlotResetService(
         val minY = config.minGenHeight ?: region.bounds.minY
         val topY = (config.plotHeight - 1).coerceAtLeast(minY)
         val clearUntil = region.bounds.maxY
-        val remainingChunkQueues = AtomicInteger(chunkBatches.groupBy { it.chunk }.size)
 
-        chunkBatches.groupBy { it.chunk }.forEach { (chunk, batches) ->
-            val queue = ArrayDeque<List<Pair<Int, Int>>>(batches.map { it.columns })
-            val anchor = Location(world, (chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (chunk.z shl 4).toDouble())
-            scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, config.jobTimeoutMillis)
-        }
-
-        plugin.logger.info("Queued Folia plot reset for ${region.id.value} (${reason.name.lowercase()})")
-        return true
-    }
-
-    private fun scheduleChunkBatch(
-        anchor: Location,
-        queue: ArrayDeque<List<Pair<Int, Int>>>,
-        generator: PlotWorldChunkGenerator,
-        minY: Int,
-        topY: Int,
-        clearUntil: Int,
-        jobHandle: PlotJobRegistry.JobHandle,
-        remainingChunkQueues: AtomicInteger,
-        timeoutMillis: Long,
-        attempt: Int = 0
-    ) {
-        Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
-            if (jobHandle.isCancellationRequested(timeoutMillis)) {
-                finishChunkQueue(remainingChunkQueues, jobHandle)
-                return@run
-            }
-            val world = anchor.world
-            if (world == null) {
-                finishChunkQueue(remainingChunkQueues, jobHandle)
-                return@run
-            }
-            val batch = queue.pollFirst()
-            if (batch == null) {
-                finishChunkQueue(remainingChunkQueues, jobHandle)
-                return@run
-            }
-
-            val failure = runCatching {
-                val mutationBatch = PlotMutationPlanFactory.resetBatch(
-                    id = "${jobHandle.hashCode()}:${anchor.blockX shr 4}:${anchor.blockZ shr 4}:attempt:$attempt",
-                    world = world.name,
-                    columns = batch,
-                    generator = generator,
-                    minY = minY,
-                    topY = topY,
-                    clearUntil = clearUntil
-                )
-                PlotMutationExecutor.apply(world, mutationBatch)
-            }.exceptionOrNull()
-
-            if (failure != null) {
-                if (attempt < MAX_BATCH_RETRIES) {
-                    queue.addFirst(batch)
-                    plugin.logger.warning(
-                        "Folia plot reset batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} at ${anchor.blockX shr 4},${anchor.blockZ shr 4}: ${failure.message}"
-                    )
-                    Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                        scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, timeoutMillis, attempt + 1)
-                    }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
-                    return@run
-                }
-                plugin.logger.warning(
-                    "Folia plot reset batch failed in ${world.name} at ${anchor.blockX shr 4},${anchor.blockZ shr 4}: ${failure.message}"
-                )
-            }
-
-            if (queue.isNotEmpty()) {
-                Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                    scheduleChunkBatch(anchor, queue, generator, minY, topY, clearUntil, jobHandle, remainingChunkQueues, timeoutMillis)
-                }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
-            } else {
-                finishChunkQueue(remainingChunkQueues, jobHandle)
+        var submitted = 0
+        chunkBatches.forEach { chunkBatch ->
+            val batch = PlotMutationPlanFactory.resetBatch(
+                id = "$jobKey:chunk:${chunkBatch.chunk.x}:${chunkBatch.chunk.z}",
+                world = world.name,
+                columns = chunkBatch.columns,
+                generator = generator,
+                minY = minY,
+                topY = topY,
+                clearUntil = clearUntil
+            )
+            runCatching {
+                mutationBackend.submit(batch)
+                submitted++
+            }.onFailure { failure ->
+                plugin.logger.warning("Failed to queue Folia reset batch ${batch.id}: ${failure.message}")
             }
         }
-    }
 
-    private fun finishChunkQueue(remainingChunkQueues: AtomicInteger, jobHandle: PlotJobRegistry.JobHandle) {
-        if (remainingChunkQueues.decrementAndGet() == 0) {
-            jobHandle.close()
+        if (submitted > 0) {
+            plugin.logger.info("Queued Folia plot reset for ${region.id.value} (${reason.name.lowercase()})")
+            return true
         }
-    }
 
-    private companion object {
-        const val MAX_BATCH_RETRIES = 1
-        const val RETRY_DELAY_MS = 50L
+        return false
     }
 }

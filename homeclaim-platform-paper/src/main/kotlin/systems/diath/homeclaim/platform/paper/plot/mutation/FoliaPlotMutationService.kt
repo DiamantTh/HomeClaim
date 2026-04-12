@@ -1,16 +1,15 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
-import org.bukkit.Location
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.mutation.MutationBatch
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Folia-aware mutation path.
@@ -21,35 +20,36 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class FoliaPlotMutationService(
     private val plugin: JavaPlugin,
-    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
+    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
+    private val mutationBackend: WorldMutationBackend = FoliaRegionScheduledWorldMutationBackend(plugin)
 ) : PlotMutationService {
-    private val jobRegistry = PlotJobRegistry()
-
     override fun cancelPendingJobs(worldName: String?): Int {
-        return jobRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION)
+        val jobs = activeJobInfo(worldName)
+        return jobs.count { mutationBackend.cancel(it.ticketId) }
     }
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION).map { snapshot ->
-            "mutation:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.ADMIN.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
+        return activeJobInfo(worldName).map { info ->
+            "mutation:${info.world}:${info.ticketId}:reason=${info.reason.name}:age=${info.queuedMillis}ms:cancelled=${info.cancelRequested}"
         }
     }
 
     override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
-        return jobRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION).map { snapshot ->
+        return activeJobInfo(worldName).map { info ->
             PlotJobSnapshot(
-                key = snapshot.key,
-                world = snapshot.world,
-                kind = snapshot.kind.name,
-                reason = snapshot.reason,
-                ageMillis = snapshot.ageMillis,
-                cancelRequested = snapshot.cancelRequested
+                key = info.ticketId,
+                world = info.world,
+                kind = PlotJobRegistry.JobKind.MUTATION.name,
+                reason = info.reason,
+                ageMillis = info.queuedMillis,
+                cancelRequested = info.cancelRequested
             )
         }
     }
 
-    override fun activeJobInfo(worldName: String?) =
-        jobRegistry.mutationJobInfo(world = worldName, kind = PlotJobRegistry.JobKind.MUTATION, defaultReason = MutationReason.ADMIN)
+    override fun activeJobInfo(worldName: String?): List<MutationJobInfo> {
+        return mutationBackend.activeJobs(worldName).filter { it.reason != MutationReason.RESET }
+    }
 
     override fun applyRegionState(region: Region, reason: MutationReason) {
         val world = Bukkit.getWorld(region.world) ?: return
@@ -169,39 +169,25 @@ class FoliaPlotMutationService(
             includeWest = includeWest,
             includeEast = includeEast
         )
-        repaintBatch(world, batch, config, reason)
+        repaintBatch(world, batch, config)
     }
 
     private fun repaintBatch(
         world: org.bukkit.World,
         batch: MutationBatch,
         config: PlotWorldConfig,
-        reason: MutationReason,
     ) {
-        val jobHandle = jobRegistry.tryAcquire(
-            key = batch.id,
-            world = world.name,
-            kind = PlotJobRegistry.JobKind.MUTATION,
-            reason = reason,
-            maxConcurrentPerWorld = config.maxConcurrentMutationJobsPerWorld,
-            timeoutMillis = config.jobTimeoutMillis
-        ) ?: run {
-            val reasonText = if (jobRegistry.isActive(batch.id, config.jobTimeoutMillis)) "duplicate" else "world-limit"
-            plugin.logger.fine("Skipping $reasonText Folia plot mutation job ${batch.id}")
+        val activeForWorld = activeJobInfo(world.name)
+        if (activeForWorld.none { it.ticketId == batch.id } && activeForWorld.size >= config.maxConcurrentMutationJobsPerWorld) {
+            plugin.logger.fine("Skipping world-limit Folia plot mutation job ${batch.id}")
             return
         }
 
-        if (batch.operations.isEmpty()) {
-            jobHandle.close()
-            return
-        }
-
-        val operationsByChunk = batch.operations.groupBy { (it.x shr 4) to (it.z shr 4) }
-        val remainingBatches = AtomicInteger(operationsByChunk.size)
-        operationsByChunk.forEach { (chunk, operations) ->
-            val chunkBatch = batch.copy(id = "${batch.id}:chunk:${chunk.first}:${chunk.second}", operations = operations)
-            val anchor = Location(world, (chunk.first shl 4).toDouble(), world.minHeight.toDouble(), (chunk.second shl 4).toDouble())
-            scheduleMutationBatch(anchor, chunkBatch, world, config, jobHandle, remainingBatches)
+        runCatching {
+            mutationBackend.submit(batch)
+        }.onFailure { error ->
+            val reasonText = if (activeForWorld.any { it.ticketId == batch.id }) "duplicate" else "submit-failed"
+            plugin.logger.fine("Skipping $reasonText Folia plot mutation job ${batch.id}: ${error.message}")
         }
     }
 
@@ -230,56 +216,9 @@ class FoliaPlotMutationService(
                         style = style,
                         reason = reason
                     )
-                    repaintBatch(world, batch, config, reason)
+                    repaintBatch(world, batch, config)
                 }
             }
         }
-    }
-
-    private fun scheduleMutationBatch(
-        anchor: Location,
-        batch: MutationBatch,
-        world: org.bukkit.World,
-        config: PlotWorldConfig,
-        jobHandle: PlotJobRegistry.JobHandle,
-        remainingBatches: AtomicInteger,
-        attempt: Int = 0
-    ) {
-        Bukkit.getRegionScheduler().run(plugin, anchor) { _ ->
-            if (jobHandle.isCancellationRequested(config.jobTimeoutMillis)) {
-                if (remainingBatches.decrementAndGet() == 0) {
-                    jobHandle.close()
-                }
-                return@run
-            }
-
-            val failure = runCatching {
-                PlotMutationExecutor.apply(world, batch)
-            }.exceptionOrNull()
-
-            if (failure != null && attempt < MAX_BATCH_RETRIES) {
-                plugin.logger.warning(
-                    "Folia plot mutation batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} for ${batch.id}: ${failure.message}"
-                )
-                Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                    scheduleMutationBatch(anchor, batch, world, config, jobHandle, remainingBatches, attempt + 1)
-                }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
-                return@run
-            }
-
-            if (failure != null) {
-                plugin.logger.warning(
-                    "Folia plot mutation batch failed in ${world.name} for ${batch.id}: ${failure.message}"
-                )
-            }
-            if (remainingBatches.decrementAndGet() == 0) {
-                jobHandle.close()
-            }
-        }
-    }
-
-    private companion object {
-        const val MAX_BATCH_RETRIES = 1
-        const val RETRY_DELAY_MS = 50L
     }
 }
