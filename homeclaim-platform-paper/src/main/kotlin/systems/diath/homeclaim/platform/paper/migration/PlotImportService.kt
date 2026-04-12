@@ -3,11 +3,9 @@ package systems.diath.homeclaim.platform.paper.migration
 import org.bukkit.Bukkit
 import org.bukkit.plugin.Plugin
 import systems.diath.homeclaim.core.model.*
+import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.AuditService
-import systems.diath.homeclaim.core.service.AuditEntry
-import systems.diath.homeclaim.core.service.AuditPayloads
-import systems.diath.homeclaim.core.service.AuditTaxonomy
 import java.util.*
 import kotlin.math.abs
 
@@ -286,19 +284,13 @@ class PlotImportService(
         
         // Audit-Eintrag
         auditService?.append(
-            AuditEntry(
+            AuditEntries.plotImported(
                 actorId = external.owner,
                 targetId = regionId.value,
-                    category = AuditTaxonomy.Category.IMPORT,
-                    action = AuditTaxonomy.Action.PLOT_IMPORTED,
-                    payload = AuditPayloads.worldPayload(
-                        world = external.world,
-                        platform = "paper",
-                        extra = mapOf(
-                            "source" to (external.metadata["plugin"] ?: "unknown"),
-                            "originalId" to external.id
-                        )
-                )
+                world = external.world,
+                platform = "paper",
+                source = external.metadata["plugin"] ?: "unknown",
+                originalId = external.id
             )
         )
     }

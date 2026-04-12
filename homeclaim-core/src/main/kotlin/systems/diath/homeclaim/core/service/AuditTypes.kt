@@ -36,4 +36,29 @@ enum class AuditAction(val wire: String) {
     DELETED("DELETED"),
     UPSERT("UPSERT"),
     APPLIED("APPLIED")
+
+    ;
+
+    fun summaryLabel(): String = when (this) {
+        PLACE_DENIED, PLACE_ALLOWED -> "PLACE"
+        BREAK_DENIED, BREAK_ALLOWED -> "BREAK"
+        PVP_DENIED -> "PVP"
+        BLOCK_DENIED -> "BLOCK"
+        GRIEF_DENIED -> "GRIEF"
+        ENTER_DENIED -> "ENTER"
+        ELEVATOR_USED -> "ELEVATOR"
+        TELEPORT_USED -> "TELEPORT"
+        PLOT_IMPORTED -> "PLOT_IMPORT"
+        CREATED -> "CREATE"
+        UPDATED -> "UPDATE"
+        DELETED -> "DELETE"
+        UPSERT -> "UPSERT"
+        APPLIED -> "APPLY"
+    }
+
+    companion object {
+        private val byWire = entries.associateBy(AuditAction::wire)
+
+        fun fromWire(wire: String?): AuditAction? = wire?.let(byWire::get)
+    }
 }

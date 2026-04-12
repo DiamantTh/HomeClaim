@@ -5,6 +5,7 @@ import systems.diath.homeclaim.core.command.CommandSender
 import systems.diath.homeclaim.core.command.PlayerCommandSender
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.service.AuditAction
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditTaxonomy
@@ -113,29 +114,31 @@ class AuditCommand(
             } else "?"
             val timestamp = formatTime(entry.createdAt)
             
-            val message = when (entry.action) {
-                AuditTaxonomy.Action.PLACE_DENIED, AuditTaxonomy.Action.BREAK_DENIED -> {
+            val action = AuditAction.fromWire(entry.action)
+
+            val message = when (action) {
+                AuditAction.PLACE_DENIED, AuditAction.BREAK_DENIED -> {
                     val reason = entry.payload["reason"] ?: "unknown"
                     val block = entry.payload["block"] ?: "?"
-                    i18n.msg("audit.denied", arrayOf(playerName, entry.action.replace("_DENIED", ""), block, reason, timestamp))
+                    i18n.msg("audit.denied", arrayOf(playerName, action.summaryLabel(), block, reason, timestamp))
                 }
-                AuditTaxonomy.Action.PLACE_ALLOWED, AuditTaxonomy.Action.BREAK_ALLOWED -> {
+                AuditAction.PLACE_ALLOWED, AuditAction.BREAK_ALLOWED -> {
                     val block = entry.payload["block"] ?: "?"
-                    i18n.msg("audit.allowed", arrayOf(playerName, entry.action.replace("_ALLOWED", ""), block, timestamp))
+                    i18n.msg("audit.allowed", arrayOf(playerName, action.summaryLabel(), block, timestamp))
                 }
-                AuditTaxonomy.Action.PVP_DENIED -> {
+                AuditAction.PVP_DENIED -> {
                     val targetId = entry.targetId
                     val targetName = if (targetId != null) {
                         Bukkit.getPlayer(targetId)?.name ?: targetId.toString().take(8)
                     } else "?"
                     i18n.msg("audit.pvp.denied", arrayOf(playerName, targetName, timestamp))
                 }
-                AuditTaxonomy.Action.ENTER_DENIED -> {
+                AuditAction.ENTER_DENIED -> {
                     val vehicleType = entry.payload["vehicleType"] ?: "?"
                     i18n.msg("audit.enter.denied", arrayOf(playerName, vehicleType, timestamp))
                 }
                 else -> {
-                    i18n.msg("audit.info", arrayOf(playerName, entry.action, timestamp))
+                    i18n.msg("audit.info", arrayOf(playerName, action?.summaryLabel() ?: entry.action, timestamp))
                 }
             }
             sender.sendMessage(message)

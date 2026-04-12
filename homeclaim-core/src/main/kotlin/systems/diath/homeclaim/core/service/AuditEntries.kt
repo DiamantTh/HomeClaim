@@ -88,4 +88,42 @@ object AuditEntries {
             payload = mapOf("key" to key, "value" to value)
         )
     }
+
+    fun componentUsed(
+        actorId: PlayerId?,
+        targetId: UUID,
+        action: String,
+        position: Position,
+        platform: String,
+        extra: Map<String, Any?> = emptyMap()
+    ): AuditEntry {
+        return AuditEntry(
+            actorId = actorId,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.COMPONENT,
+            action = action,
+            payload = AuditPayloads.actionPayload(position, platform, extra)
+        )
+    }
+
+    fun plotImported(
+        actorId: PlayerId?,
+        targetId: UUID,
+        world: String,
+        platform: String,
+        source: String,
+        originalId: String
+    ): AuditEntry {
+        return AuditEntry(
+            actorId = actorId,
+            targetId = targetId,
+            category = AuditTaxonomy.Category.IMPORT,
+            action = AuditTaxonomy.Action.PLOT_IMPORTED,
+            payload = AuditPayloads.worldPayload(
+                world = world,
+                platform = platform,
+                extra = mapOf("source" to source, "originalId" to originalId)
+            )
+        )
+    }
 }

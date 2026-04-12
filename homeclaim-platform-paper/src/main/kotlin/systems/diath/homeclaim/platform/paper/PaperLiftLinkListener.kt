@@ -7,8 +7,7 @@ import systems.diath.homeclaim.core.model.ComponentId
 import systems.diath.homeclaim.core.platform.PolicyGuard
 import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.DecisionReason
-import systems.diath.homeclaim.core.service.AuditEntry
-import systems.diath.homeclaim.core.service.AuditPayloads
+import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.ComponentService
@@ -151,20 +150,17 @@ class PaperLiftLinkListener(
         }
         
         auditService?.append(
-            AuditEntry(
+            AuditEntries.componentUsed(
                 actorId = player.uniqueId,
                 targetId = comp.id.value,
-                category = AuditTaxonomy.Category.COMPONENT,
                 action = AuditTaxonomy.Action.ELEVATOR_USED,
-                payload = AuditPayloads.actionPayload(
-                    position = pos,
-                    platform = "paper",
-                    extra = mapOf(
-                        "sourceId" to comp.id.value.toString(),
-                        "targetId" to target.id.value.toString(),
-                        "mode" to config.mode.name,
-                        "distance" to (target.position.y - pos.y)
-                    )
+                position = pos,
+                platform = "paper",
+                extra = mapOf(
+                    "sourceId" to comp.id.value.toString(),
+                    "targetId" to target.id.value.toString(),
+                    "mode" to config.mode.name,
+                    "distance" to (target.position.y - pos.y)
                 )
             )
         )
@@ -240,20 +236,17 @@ class PaperLiftLinkListener(
         }
         
         auditService?.append(
-            AuditEntry(
+            AuditEntries.componentUsed(
                 actorId = player.uniqueId,
                 targetId = comp.id.value,
-                category = AuditTaxonomy.Category.COMPONENT,
                 action = AuditTaxonomy.Action.TELEPORT_USED,
-                payload = AuditPayloads.actionPayload(
-                    position = pos,
-                    platform = "paper",
-                    extra = mapOf(
-                        "sourceId" to comp.id.value.toString(),
-                        "targetId" to destComp.id.value.toString(),
-                        "linkId" to config.linkId.toString(),
-                        "scope" to config.withinScope.name
-                    )
+                position = pos,
+                platform = "paper",
+                extra = mapOf(
+                    "sourceId" to comp.id.value.toString(),
+                    "targetId" to destComp.id.value.toString(),
+                    "linkId" to config.linkId.toString(),
+                    "scope" to config.withinScope.name
                 )
             )
         )
