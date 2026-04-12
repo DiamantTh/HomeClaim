@@ -14,6 +14,7 @@ import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.store.RatingRepository
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
+import systems.diath.homeclaim.platform.paper.util.InputValidator
 import systems.diath.homeclaim.platform.paper.util.Permissions
 import systems.diath.homeclaim.platform.paper.I18n
 import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
@@ -97,6 +98,14 @@ class PlotCommand(
             "jobs", "job" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_JOBS)) return true
                 handleJobs(sender, args)
+            }
+            "alias" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_ALIAS)) return true
+                handleAlias(sender, args)
+            }
+            "desc", "description" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_DESCRIPTION)) return true
+                handleDescription(sender, args)
             }
             else -> showHelp(sender)
         }
@@ -235,13 +244,11 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.info_world", region.world))
         player.sendMessage(i18n.msg("plot.info_size", width, depth))
         player.sendMessage(i18n.msg("plot.info_biome", biome))
+        val aliasText = region.metadata["alias"] ?: noneText
+        val descriptionText = region.metadata["description"] ?: noneText
         player.sendMessage(i18n.msg("plot.info_owner", ownerName))
-        region.metadata["alias"]?.let { 
-            player.sendMessage(i18n.msg("plot.info_alias", it))
-        }
-        region.metadata["description"]?.let {
-            player.sendMessage(i18n.msg("plot.info_description", it))
-        }
+        player.sendMessage(i18n.msg("plot.info_alias", aliasText))
+        player.sendMessage(i18n.msg("plot.info_description", descriptionText))
         player.sendMessage(i18n.msg("plot.info_trusted", resolveNames(region.roles.trusted)))
         player.sendMessage(i18n.msg("plot.info_members", resolveNames(region.roles.members)))
         player.sendMessage(i18n.msg("plot.info_banned", resolveNames(region.roles.banned)))
@@ -454,6 +461,81 @@ class PlotCommand(
         }
     }
 
+    private fun handleAlias(player: Player, args: Array<out String>) {
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        if (!canEditMetadata(player, region)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+
+        val raw = args.drop(1).joinToString(" ").trim()
+        if (raw.isEmpty()) {
+            player.sendMessage(i18n.msg("plot.alias_usage"))
+            return
+        }
+
+        val updatedMetadata = if (raw.equals("clear", ignoreCase = true) || raw == "-") {
+            region.metadata - "alias"
+        } else {
+            val validation = InputValidator.validateName(raw, maxLength = 32)
+            if (!validation.valid) {
+                player.sendMessage(i18n.msg("plot.alias_invalid"))
+                return
+            }
+            region.metadata + ("alias" to validation.sanitized!!)
+        }
+
+        regionService.updateRegion(region.copy(metadata = updatedMetadata))
+        if (updatedMetadata.containsKey("alias")) {
+            player.sendMessage(i18n.msg("plot.alias_set", updatedMetadata["alias"] ?: ""))
+        } else {
+            player.sendMessage(i18n.msg("plot.alias_cleared"))
+        }
+    }
+
+    private fun handleDescription(player: Player, args: Array<out String>) {
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        if (!canEditMetadata(player, region)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+
+        val raw = args.drop(1).joinToString(" ").trim()
+        if (raw.isEmpty()) {
+            player.sendMessage(i18n.msg("plot.description_usage"))
+            return
+        }
+
+        val updatedMetadata = if (raw.equals("clear", ignoreCase = true) || raw == "-") {
+            region.metadata - "description"
+        } else {
+            if (raw.length > 120 || InputValidator.containsInjection(raw)) {
+                player.sendMessage(i18n.msg("plot.description_invalid"))
+                return
+            }
+            region.metadata + ("description" to InputValidator.sanitizeForDisplay(raw).take(120))
+        }
+
+        regionService.updateRegion(region.copy(metadata = updatedMetadata))
+        if (updatedMetadata.containsKey("description")) {
+            player.sendMessage(i18n.msg("plot.description_set", updatedMetadata["description"] ?: ""))
+        } else {
+            player.sendMessage(i18n.msg("plot.description_cleared"))
+        }
+    }
+
+    private fun canEditMetadata(player: Player, region: Region): Boolean {
+        if (Permissions.canEditAnyPlot(player)) return true
+        val role = region.roles.resolve(player.uniqueId, region.owner)
+        return role == RegionRole.OWNER || role == RegionRole.TRUSTED
+    }
+
     private fun currentRegion(player: Player): Region? {
         val loc = player.location
         val worldId: systems.diath.homeclaim.core.model.WorldId = loc.world.name
@@ -542,6 +624,8 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_merge"))
         player.sendMessage(i18n.msg("plot.help_unlink"))
         player.sendMessage(i18n.msg("plot.help_reset"))
+        player.sendMessage(i18n.msg("plot.help_alias"))
+        player.sendMessage(i18n.msg("plot.help_description"))
         player.sendMessage("§7/plot jobs cancel [world] - Cancel queued plot jobs")
     }
     
@@ -552,7 +636,7 @@ class PlotCommand(
         args: Array<out String>
     ): List<String> {
         if (args.size == 1) {
-            return listOf("claim", "auto", "home", "info", "list", "visit", "merge", "unlink", "reset", "jobs")
+            return listOf("claim", "auto", "home", "info", "list", "visit", "merge", "unlink", "reset", "jobs", "alias", "desc")
                 .filter { it.startsWith(args[0].lowercase()) }
         }
         if (args.size == 2 && args[0].lowercase() == "visit") {
@@ -576,6 +660,10 @@ class PlotCommand(
         if (args.size == 3 && args[0].lowercase() == "jobs" && args[1].lowercase() == "cancel") {
             return org.bukkit.Bukkit.getWorlds().map { it.name }
                 .filter { it.lowercase().startsWith(args[2].lowercase()) }
+        }
+        if (args.size == 2 && (args[0].lowercase() == "alias" || args[0].lowercase() == "desc" || args[0].lowercase() == "description")) {
+            return listOf("clear")
+                .filter { it.startsWith(args[1].lowercase()) }
         }
         return emptyList()
     }

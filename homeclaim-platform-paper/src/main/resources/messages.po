@@ -384,6 +384,12 @@ msgstr "§a/plot list §7- List your plots"
 
 msgid "plot.help_visit"
 msgstr "§a/plot visit <player> §7- Visit player's plot"
+
+msgid "plot.help_alias"
+msgstr "§a/plot alias <name|clear> §7- Set or clear plot alias"
+
+msgid "plot.help_description"
+msgstr "§a/plot desc <text|clear> §7- Set or clear plot description"
 msgid "plot.list_no_plots"
 msgstr "§cYou don't own any plots."
 
@@ -416,6 +422,30 @@ msgstr "§cWorld not found."
 
 msgid "plot.visit_success"
 msgstr "§a✓ Teleported to {0}''s plot!"
+
+msgid "plot.alias_usage"
+msgstr "§cUsage: /plot alias <name|clear>"
+
+msgid "plot.alias_invalid"
+msgstr "§cInvalid alias. Use 1-32 safe characters."
+
+msgid "plot.alias_set"
+msgstr "§aAlias set to: §f{0}"
+
+msgid "plot.alias_cleared"
+msgstr "§aAlias cleared."
+
+msgid "plot.description_usage"
+msgstr "§cUsage: /plot desc <text|clear>"
+
+msgid "plot.description_invalid"
+msgstr "§cInvalid description. Max 120 chars, safe text only."
+
+msgid "plot.description_set"
+msgstr "§aDescription set to: §f{0}"
+
+msgid "plot.description_cleared"
+msgstr "§aDescription cleared."
 msgid "plot.auto_searching"
 msgstr "§eAuto-Claim: Searching for free plot..."
 

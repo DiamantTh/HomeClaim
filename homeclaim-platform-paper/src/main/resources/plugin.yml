@@ -58,9 +58,18 @@ permissions:
   homeclaim.plot.reset:
     description: Allows queueing a plot reset job
     default: true
+  homeclaim.plot.alias:
+    description: Allows setting/clearing plot alias on current plot
+    default: true
+  homeclaim.plot.description:
+    description: Allows setting/clearing plot description on current plot
+    default: true
   homeclaim.plot.jobs:
     description: Allows viewing and cancelling queued plot jobs
     default: op
   homeclaim.plot.info.platform:
     description: Allows viewing owner UUID and Java/Bedrock platform in /plot info (admin/rank permission)
+    default: op
+  homeclaim.plot.info.owner.name:
+    description: Allows viewing owner player name in /plot info (otherwise redacted)
     default: op
