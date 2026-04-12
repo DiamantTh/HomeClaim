@@ -1361,6 +1361,12 @@ msgstr "§7(Frei)"
 msgid "plot.info_owner_redacted"
 msgstr "§7[Versteckt]"
 
+msgid "plot.info_alias"
+msgstr "§7Alias: §f{0}"
+
+msgid "plot.info_description"
+msgstr "§7Beschreibung: §f{0}"
+
 msgid "audit.time.seconds"
 msgstr "§bvor {0}s§r"
 

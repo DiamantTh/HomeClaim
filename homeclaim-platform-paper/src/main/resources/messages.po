@@ -1171,6 +1171,12 @@ msgstr "§7(Unclaimed)"
 msgid "plot.info_owner_redacted"
 msgstr "§7[Redacted]"
 
+msgid "plot.info_alias"
+msgstr "§7Alias: §f{0}"
+
+msgid "plot.info_description"
+msgstr "§7Description: §f{0}"
+
 msgid "audit.time.seconds"
 msgstr "§b{0}s ago§r"
 

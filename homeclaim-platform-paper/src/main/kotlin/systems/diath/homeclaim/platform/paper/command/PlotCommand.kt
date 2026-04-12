@@ -236,6 +236,12 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.info_size", width, depth))
         player.sendMessage(i18n.msg("plot.info_biome", biome))
         player.sendMessage(i18n.msg("plot.info_owner", ownerName))
+        region.metadata["alias"]?.let { 
+            player.sendMessage(i18n.msg("plot.info_alias", it))
+        }
+        region.metadata["description"]?.let {
+            player.sendMessage(i18n.msg("plot.info_description", it))
+        }
         player.sendMessage(i18n.msg("plot.info_trusted", resolveNames(region.roles.trusted)))
         player.sendMessage(i18n.msg("plot.info_members", resolveNames(region.roles.members)))
         player.sendMessage(i18n.msg("plot.info_banned", resolveNames(region.roles.banned)))
