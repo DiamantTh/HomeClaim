@@ -2,8 +2,10 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.mutation.MutationBatch
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
@@ -18,8 +20,37 @@ import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
  */
 class PaperPlotMutationService(
     private val plugin: JavaPlugin,
-    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin)
+    private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
+    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend()
 ) : PlotMutationService {
+
+    override fun cancelPendingJobs(worldName: String?): Int {
+        val jobs = activeJobInfo(worldName)
+        return jobs.count { mutationBackend.cancel(it.ticketId) }
+    }
+
+    override fun activeJobDiagnostics(worldName: String?): List<String> {
+        return activeJobInfo(worldName).map { info ->
+            "mutation:${info.world}:${info.ticketId}:reason=${info.reason.name}:age=${info.queuedMillis}ms:cancelled=${info.cancelRequested}"
+        }
+    }
+
+    override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
+        return activeJobInfo(worldName).map { info ->
+            PlotJobSnapshot(
+                key = info.ticketId,
+                world = info.world,
+                kind = PlotJobRegistry.JobKind.MUTATION.name,
+                reason = info.reason,
+                ageMillis = info.queuedMillis,
+                cancelRequested = info.cancelRequested
+            )
+        }
+    }
+
+    override fun activeJobInfo(worldName: String?): List<MutationJobInfo> {
+        return mutationBackend.activeJobs(worldName)
+    }
 
     override fun applyRegionState(region: Region, reason: MutationReason) {
         val world = Bukkit.getWorld(region.world) ?: return
@@ -127,7 +158,11 @@ class PaperPlotMutationService(
         world: org.bukkit.World,
         batch: MutationBatch
     ) {
-        PlotMutationExecutor.apply(world, batch)
+        runCatching {
+            mutationBackend.submit(batch)
+        }.onFailure { error ->
+            plugin.logger.warning("Paper plot mutation batch failed for ${batch.id}: ${error.message}")
+        }
     }
 
     private fun repaintCorridors(
