@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationBatch
 import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
@@ -156,47 +157,51 @@ class FoliaPlotMutationService(
         includeEast: Boolean = true,
         jobKey: String
     ) {
-        val borderColumns = PlotBorderPlanner.borderColumns(
-            bounds,
+        val batch = PlotMutationPlanFactory.borderBatch(
+            id = jobKey,
+            world = world.name,
+            bounds = bounds,
+            config = config,
+            style = style,
+            reason = reason,
             includeNorth = includeNorth,
             includeSouth = includeSouth,
             includeWest = includeWest,
             includeEast = includeEast
         )
-        repaintColumns(world, borderColumns, config, style, reason, jobKey)
+        repaintBatch(world, batch, config, reason)
     }
 
-    private fun repaintColumns(
+    private fun repaintBatch(
         world: org.bukkit.World,
-        columns: Collection<Pair<Int, Int>>,
+        batch: MutationBatch,
         config: PlotWorldConfig,
-        style: PlotBorderStyle,
         reason: MutationReason,
-        jobKey: String
     ) {
         val jobHandle = jobRegistry.tryAcquire(
-            key = jobKey,
+            key = batch.id,
             world = world.name,
             kind = PlotJobRegistry.JobKind.MUTATION,
             reason = reason,
             maxConcurrentPerWorld = config.maxConcurrentMutationJobsPerWorld,
             timeoutMillis = config.jobTimeoutMillis
         ) ?: run {
-            val reasonText = if (jobRegistry.isActive(jobKey, config.jobTimeoutMillis)) "duplicate" else "world-limit"
-            plugin.logger.fine("Skipping $reasonText Folia plot mutation job $jobKey")
+            val reasonText = if (jobRegistry.isActive(batch.id, config.jobTimeoutMillis)) "duplicate" else "world-limit"
+            plugin.logger.fine("Skipping $reasonText Folia plot mutation job ${batch.id}")
             return
         }
 
-        val batches = PlotChunkPlanner.batchColumnsByChunk(columns, config.mutationBatchColumnsPerTask)
-        if (batches.isEmpty()) {
+        if (batch.operations.isEmpty()) {
             jobHandle.close()
             return
         }
 
-        val remainingBatches = AtomicInteger(batches.size)
-        batches.forEach { batch ->
-            val anchor = Location(world, (batch.chunk.x shl 4).toDouble(), world.minHeight.toDouble(), (batch.chunk.z shl 4).toDouble())
-            scheduleMutationBatch(anchor, batch, world, config, style, jobHandle, remainingBatches)
+        val operationsByChunk = batch.operations.groupBy { (it.x shr 4) to (it.z shr 4) }
+        val remainingBatches = AtomicInteger(operationsByChunk.size)
+        operationsByChunk.forEach { (chunk, operations) ->
+            val chunkBatch = batch.copy(id = "${batch.id}:chunk:${chunk.first}:${chunk.second}", operations = operations)
+            val anchor = Location(world, (chunk.first shl 4).toDouble(), world.minHeight.toDouble(), (chunk.second shl 4).toDouble())
+            scheduleMutationBatch(anchor, chunkBatch, world, config, jobHandle, remainingBatches)
         }
     }
 
@@ -217,7 +222,15 @@ class FoliaPlotMutationService(
                 if (predicate(first, second)) {
                     val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
                     val orderedIds = listOf(first.id.value.toString(), second.id.value.toString()).sorted()
-                    repaintColumns(world, corridor, config, style, reason, "$jobKeyPrefix:${orderedIds[0]}:${orderedIds[1]}")
+                    val batch = PlotMutationPlanFactory.corridorBatch(
+                        id = "$jobKeyPrefix:${orderedIds[0]}:${orderedIds[1]}",
+                        world = world.name,
+                        columns = corridor,
+                        config = config,
+                        style = style,
+                        reason = reason
+                    )
+                    repaintBatch(world, batch, config, reason)
                 }
             }
         }
@@ -225,10 +238,9 @@ class FoliaPlotMutationService(
 
     private fun scheduleMutationBatch(
         anchor: Location,
-        batch: PlotChunkPlanner.ChunkBatch,
+        batch: MutationBatch,
         world: org.bukkit.World,
         config: PlotWorldConfig,
-        style: PlotBorderStyle,
         jobHandle: PlotJobRegistry.JobHandle,
         remainingBatches: AtomicInteger,
         attempt: Int = 0
@@ -242,22 +254,22 @@ class FoliaPlotMutationService(
             }
 
             val failure = runCatching {
-                PlotMutationSupport.repaintColumns(world, batch.columns, config, style)
+                PlotMutationExecutor.apply(world, batch)
             }.exceptionOrNull()
 
             if (failure != null && attempt < MAX_BATCH_RETRIES) {
                 plugin.logger.warning(
-                    "Folia plot mutation batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${failure.message}"
+                    "Folia plot mutation batch retry ${attempt + 1}/${MAX_BATCH_RETRIES} in ${world.name} for ${batch.id}: ${failure.message}"
                 )
                 Bukkit.getAsyncScheduler().runDelayed(plugin, { _ ->
-                    scheduleMutationBatch(anchor, batch, world, config, style, jobHandle, remainingBatches, attempt + 1)
+                    scheduleMutationBatch(anchor, batch, world, config, jobHandle, remainingBatches, attempt + 1)
                 }, RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
                 return@run
             }
 
             if (failure != null) {
                 plugin.logger.warning(
-                    "Folia plot mutation batch failed in ${world.name} chunk ${batch.chunk.x},${batch.chunk.z}: ${failure.message}"
+                    "Folia plot mutation batch failed in ${world.name} for ${batch.id}: ${failure.message}"
                 )
             }
             if (remainingBatches.decrementAndGet() == 0) {

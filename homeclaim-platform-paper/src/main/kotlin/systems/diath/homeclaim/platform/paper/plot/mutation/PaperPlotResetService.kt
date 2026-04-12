@@ -92,14 +92,21 @@ class PaperPlotResetService(
                 runCatching {
                     var processed = 0
                     while (processed < columnsPerTick && columns.isNotEmpty()) {
-                        val (x, z) = columns.removeFirst()
-                        for (y in minY..topY) {
-                            world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
+                        val batchColumns = ArrayList<Pair<Int, Int>>(columnsPerTick)
+                        while (processed < columnsPerTick && columns.isNotEmpty()) {
+                            batchColumns += columns.removeFirst()
+                            processed++
                         }
-                        for (y in (topY + 1)..clearUntil) {
-                            world.getBlockAt(x, y, z).setType(Material.AIR, false)
-                        }
-                        processed++
+                        val batch = PlotMutationPlanFactory.resetBatch(
+                            id = "$jobKey:tick:${System.nanoTime()}",
+                            world = world.name,
+                            columns = batchColumns,
+                            generator = generator,
+                            minY = minY,
+                            topY = topY,
+                            clearUntil = clearUntil
+                        )
+                        PlotMutationExecutor.apply(world, batch)
                     }
                     if (columns.isEmpty()) {
                         scheduledTask?.cancel()

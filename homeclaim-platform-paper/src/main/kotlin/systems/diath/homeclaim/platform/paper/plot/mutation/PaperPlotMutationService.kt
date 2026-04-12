@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import org.bukkit.Bukkit
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.mutation.MutationReason
+import systems.diath.homeclaim.core.mutation.MutationBatch
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
@@ -27,7 +28,7 @@ class PaperPlotMutationService(
         val style = PlotMutationSupport.styleFor(region, config, visualState)
 
         Bukkit.getScheduler().runTask(plugin, Runnable {
-            repaintBorder(world, region.bounds, config, style)
+            repaintBorder(world, region.bounds, config, style, reason, "paper-mutation:region:${region.id.value}")
         })
     }
 
@@ -53,6 +54,8 @@ class PaperPlotMutationService(
                     bounds = region.bounds,
                     config = config,
                     style = style,
+                    reason = reason,
+                    batchId = "paper-mutation:merge-border:${region.id.value}",
                     includeNorth = !shared.north,
                     includeSouth = !shared.south,
                     includeWest = !shared.west,
@@ -64,7 +67,7 @@ class PaperPlotMutationService(
                 fillMaterial = config.plotBlock,
                 capMaterial = config.plotBlock
             )
-            repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap) { first, second ->
+                repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap, reason) { first, second ->
                 first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
             }
         })
@@ -80,7 +83,7 @@ class PaperPlotMutationService(
         Bukkit.getScheduler().runTask(plugin, Runnable {
             regions.forEach { region ->
                 val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
-                repaintBorder(world, region.bounds, config, style)
+                repaintBorder(world, region.bounds, config, style, reason, "paper-mutation:unlink-border:${region.id.value}")
             }
 
             if (createRoads) {
@@ -88,7 +91,7 @@ class PaperPlotMutationService(
                     fillMaterial = config.roadBlock,
                     capMaterial = config.roadBlock
                 )
-                repaintCorridors(world, regions.toList(), config, roadStyle, maxGap) { _, _ -> true }
+                repaintCorridors(world, regions.toList(), config, roadStyle, maxGap, reason) { _, _ -> true }
             }
         })
     }
@@ -98,28 +101,33 @@ class PaperPlotMutationService(
         bounds: Bounds,
         config: PlotWorldConfig,
         style: PlotBorderStyle,
+        reason: MutationReason,
+        batchId: String,
         includeNorth: Boolean = true,
         includeSouth: Boolean = true,
         includeWest: Boolean = true,
         includeEast: Boolean = true
     ) {
-        val borderColumns = PlotBorderPlanner.borderColumns(
-            bounds,
+        val batch = PlotMutationPlanFactory.borderBatch(
+            id = batchId,
+            world = world.name,
+            bounds = bounds,
+            config = config,
+            style = style,
+            reason = reason,
             includeNorth = includeNorth,
             includeSouth = includeSouth,
             includeWest = includeWest,
             includeEast = includeEast
         )
-        repaintColumns(world, borderColumns, config, style)
+        applyBatch(world, batch)
     }
 
-    private fun repaintColumns(
+    private fun applyBatch(
         world: org.bukkit.World,
-        columns: Collection<Pair<Int, Int>>,
-        config: PlotWorldConfig,
-        style: PlotBorderStyle
+        batch: MutationBatch
     ) {
-        PlotMutationSupport.repaintColumns(world, columns, config, style)
+        PlotMutationExecutor.apply(world, batch)
     }
 
     private fun repaintCorridors(
@@ -128,6 +136,7 @@ class PaperPlotMutationService(
         config: PlotWorldConfig,
         style: PlotBorderStyle,
         maxGap: Int,
+        reason: MutationReason,
         predicate: (Region, Region) -> Boolean
     ) {
         for (i in regions.indices) {
@@ -136,7 +145,16 @@ class PaperPlotMutationService(
                 val second = regions[j]
                 if (predicate(first, second)) {
                     val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
-                    repaintColumns(world, corridor, config, style)
+                    val orderedIds = listOf(first.id.value.toString(), second.id.value.toString()).sorted()
+                    val batch = PlotMutationPlanFactory.corridorBatch(
+                        id = "paper-mutation:corridor:${orderedIds[0]}:${orderedIds[1]}",
+                        world = world.name,
+                        columns = corridor,
+                        config = config,
+                        style = style,
+                        reason = reason
+                    )
+                    applyBatch(world, batch)
                 }
             }
         }

@@ -2,8 +2,8 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
 import org.bukkit.Location
-import org.bukkit.Material
 import org.bukkit.plugin.java.JavaPlugin
+import systems.diath.homeclaim.core.mutation.MutationBatch
 import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
@@ -125,14 +125,16 @@ class FoliaPlotResetService(
             }
 
             val failure = runCatching {
-                for ((x, z) in batch) {
-                    for (y in minY..topY) {
-                        world.getBlockAt(x, y, z).setType(generator.getBlockAt(x, y, z), false)
-                    }
-                    for (y in (topY + 1)..clearUntil) {
-                        world.getBlockAt(x, y, z).setType(Material.AIR, false)
-                    }
-                }
+                val mutationBatch = PlotMutationPlanFactory.resetBatch(
+                    id = "${jobHandle.hashCode()}:${anchor.blockX shr 4}:${anchor.blockZ shr 4}:attempt:$attempt",
+                    world = world.name,
+                    columns = batch,
+                    generator = generator,
+                    minY = minY,
+                    topY = topY,
+                    clearUntil = clearUntil
+                )
+                PlotMutationExecutor.apply(world, mutationBatch)
             }.exceptionOrNull()
 
             if (failure != null) {
