@@ -986,6 +986,9 @@ msgstr "Höhere Rolle erforderlich."
 msgid "policy.reason.redstone_deny"
 msgstr "Redstone ist hier deaktiviert."
 
+msgid "policy.reason.mod_actor_deny"
+msgstr "Mod-/Automations-Akteur ist hier nicht erlaubt."
+
 msgid "policy.reason.unknown"
 msgstr "Aktion verweigert."
 

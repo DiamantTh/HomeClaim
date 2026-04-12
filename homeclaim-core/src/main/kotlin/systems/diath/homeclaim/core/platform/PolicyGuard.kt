@@ -7,6 +7,7 @@ import systems.diath.homeclaim.core.policy.ActorKind
 import systems.diath.homeclaim.core.policy.Decision
 import systems.diath.homeclaim.core.policy.DecisionContext
 import systems.diath.homeclaim.core.policy.DecisionReason
+import systems.diath.homeclaim.core.policy.PolicyActionRequest
 import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
@@ -16,16 +17,21 @@ class PolicyGuard(
     private val policyService: PolicyService,
     private val regionService: RegionService
     ) {
-    fun check(action: Action, position: Position, extra: Map<String, Any?> = emptyMap()): Decision {
-        val regionId = resolveRegion(position)
-        val actor = PolicyActorContext.from(extra)
-        val playerId = extra["playerId"] as? UUID ?: when (actor.kind) {
+    fun check(request: PolicyActionRequest): Decision {
+        val mergedExtra = request.extra + mapOf(
+            "platform" to request.platform,
+            PolicyActorContext.EXTRA_KIND to request.actor.kind.name,
+            PolicyActorContext.EXTRA_ID to request.actor.actorId,
+            PolicyActorContext.EXTRA_SOURCE_MOD to request.actor.sourceMod
+        )
+        val regionId = resolveRegion(request.position)
+        val playerId = request.playerId ?: when (request.actor.kind) {
             ActorKind.PLAYER -> {
                 return Decision(
                     allowed = false,
                     reason = DecisionReason.NO_PERMISSION,
                     detail = "Missing playerId for PLAYER actor",
-                    context = DecisionContext(SYSTEM_ACTOR, regionId, action, position.world, extra)
+                    context = DecisionContext(SYSTEM_ACTOR, regionId, request.action, request.position.world, mergedExtra)
                 )
             }
             else -> SYSTEM_ACTOR
@@ -33,10 +39,23 @@ class PolicyGuard(
 
         return policyService.evaluateWithActor(
             playerId = playerId,
-            action = action,
-            position = position,
-            actor = actor,
-            extraContext = extra + ("regionId" to regionId)
+            action = request.action,
+            position = request.position,
+            actor = request.actor,
+            extraContext = mergedExtra + ("regionId" to regionId)
+        )
+    }
+
+    fun check(action: Action, position: Position, extra: Map<String, Any?> = emptyMap()): Decision {
+        return check(
+            PolicyActionRequest(
+                action = action,
+                position = position,
+                actor = PolicyActorContext.from(extra),
+                playerId = extra["playerId"] as? UUID,
+                platform = extra["platform"]?.toString() ?: "unknown",
+                extra = extra
+            )
         )
     }
 

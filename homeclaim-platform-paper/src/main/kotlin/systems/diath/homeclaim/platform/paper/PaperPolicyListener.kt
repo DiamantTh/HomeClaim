@@ -5,8 +5,10 @@ import systems.diath.homeclaim.core.platform.BlockEventContext
 import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
 import systems.diath.homeclaim.core.platform.InteractEventContext
 import systems.diath.homeclaim.core.platform.PolicyGuard
+import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.ActorKind
 import systems.diath.homeclaim.core.policy.DecisionReason
+import systems.diath.homeclaim.core.policy.PolicyActionRequest
 import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
@@ -137,13 +139,13 @@ class PaperPolicyListener(
         val actor = event.player?.uniqueId ?: event.ignitingEntity?.uniqueId ?: return@handle
         val actorKind = if (event.player != null) ActorKind.PLAYER else ActorKind.ENTITY
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_FIRE,
-            position = pos,
-            extra = mapOf(
-                "playerId" to actor,
-                PolicyActorContext.EXTRA_KIND to actorKind.name,
-                PolicyActorContext.EXTRA_ID to actor.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_FIRE,
+                position = pos,
+                actor = PolicyActorContext(kind = actorKind, actorId = actor.toString(), sourceMod = "paper"),
+                playerId = actor,
+                platform = "paper",
+                extra = mapOf("event" to "BlockIgniteEvent")
             )
         )
         if (!decision.allowed) {
@@ -162,13 +164,13 @@ class PaperPolicyListener(
             (event.entity as? Projectile)?.shooter is Player
         ) ActorKind.PLAYER else ActorKind.ENTITY
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_EXPLOSION,
-            position = pos,
-            extra = mapOf(
-                "playerId" to actor,
-                PolicyActorContext.EXTRA_KIND to actorKind.name,
-                PolicyActorContext.EXTRA_ID to actor.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_EXPLOSION,
+                position = pos,
+                actor = PolicyActorContext(kind = actorKind, actorId = actor.toString(), sourceMod = "paper"),
+                playerId = actor,
+                platform = "paper",
+                extra = mapOf("event" to "EntityExplodeEvent")
             )
         )
         if (!decision.allowed) {
@@ -193,13 +195,17 @@ class PaperPolicyListener(
         val loc = victim.location
         val position = systems.diath.homeclaim.core.model.Position(loc.world?.name ?: "unknown", loc.blockX, loc.blockY, loc.blockZ)
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_PVP,
-            position = position,
-            extra = mapOf(
-                "playerId" to damagerPlayer.uniqueId,
-                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
-                PolicyActorContext.EXTRA_ID to damagerPlayer.uniqueId.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_PVP,
+                position = position,
+                actor = PolicyActorContext(
+                    kind = ActorKind.PLAYER,
+                    actorId = damagerPlayer.uniqueId.toString(),
+                    sourceMod = "paper"
+                ),
+                playerId = damagerPlayer.uniqueId,
+                platform = "paper",
+                extra = mapOf("event" to "EntityDamageByEntityEvent")
             )
         )
         if (!decision.allowed) {
@@ -232,14 +238,17 @@ class PaperPolicyListener(
         val loc = entity.location
         val position = Position(loc.world?.name ?: "unknown", loc.blockX, loc.blockY, loc.blockZ)
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_ENTITY_DAMAGE,
-            position = position,
-            extra = mapOf(
-                "playerId" to entity.uniqueId,
-                "cause" to event.cause.name,
-                PolicyActorContext.EXTRA_KIND to ActorKind.ENTITY.name,
-                PolicyActorContext.EXTRA_ID to entity.uniqueId.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_ENTITY_DAMAGE,
+                position = position,
+                actor = PolicyActorContext(
+                    kind = ActorKind.ENTITY,
+                    actorId = entity.uniqueId.toString(),
+                    sourceMod = "paper"
+                ),
+                playerId = entity.uniqueId,
+                platform = "paper",
+                extra = mapOf("cause" to event.cause.name, "event" to "EntityDamageEvent")
             )
         )
         if (!decision.allowed) {
@@ -254,14 +263,16 @@ class PaperPolicyListener(
         
         val pos = event.block.position()
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_REDSTONE,
-            position = pos,
-            extra = mapOf(
-                "oldCurrent" to event.oldCurrent,
-                "newCurrent" to event.newCurrent,
-                PolicyActorContext.EXTRA_KIND to ActorKind.AUTOMATION.name,
-                PolicyActorContext.EXTRA_ID to "redstone",
-                PolicyActorContext.EXTRA_SOURCE_MOD to "minecraft:redstone"
+            PolicyActionRequest(
+                action = Action.REGION_REDSTONE,
+                position = pos,
+                actor = PolicyActorContext(
+                    kind = ActorKind.AUTOMATION,
+                    actorId = "redstone",
+                    sourceMod = "minecraft:redstone"
+                ),
+                platform = "paper",
+                extra = mapOf("oldCurrent" to event.oldCurrent, "newCurrent" to event.newCurrent, "event" to "BlockRedstoneEvent")
             )
         )
         if (!decision.allowed) {
@@ -295,15 +306,17 @@ class PaperPolicyListener(
         
         val pos = event.block.position()
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_MOB_GRIEF,
-            position = pos,
-            extra = mapOf(
-                "entityType" to entity.type.name,
-                "to" to event.to.name,
-                "playerId" to entity.uniqueId,
-                PolicyActorContext.EXTRA_KIND to ActorKind.ENTITY.name,
-                PolicyActorContext.EXTRA_ID to entity.uniqueId.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "minecraft:mob"
+            PolicyActionRequest(
+                action = Action.REGION_MOB_GRIEF,
+                position = pos,
+                actor = PolicyActorContext(
+                    kind = ActorKind.ENTITY,
+                    actorId = entity.uniqueId.toString(),
+                    sourceMod = "minecraft:mob"
+                ),
+                playerId = entity.uniqueId,
+                platform = "paper",
+                extra = mapOf("entityType" to entity.type.name, "to" to event.to.name, "event" to "EntityChangeBlockEvent")
             )
         )
         if (!decision.allowed) {
@@ -336,14 +349,17 @@ class PaperPolicyListener(
         val loc = event.vehicle.location
         val position = Position(loc.world?.name ?: "unknown", loc.blockX, loc.blockY, loc.blockZ)
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_VEHICLE_USE,
-            position = position,
-            extra = mapOf(
-                "playerId" to player.uniqueId,
-                "vehicleType" to event.vehicle.type.name,
-                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
-                PolicyActorContext.EXTRA_ID to player.uniqueId.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_VEHICLE_USE,
+                position = position,
+                actor = PolicyActorContext(
+                    kind = ActorKind.PLAYER,
+                    actorId = player.uniqueId.toString(),
+                    sourceMod = "paper"
+                ),
+                playerId = player.uniqueId,
+                platform = "paper",
+                extra = mapOf("vehicleType" to event.vehicle.type.name, "event" to "VehicleEnterEvent")
             )
         )
         if (!decision.allowed) {
@@ -374,15 +390,17 @@ class PaperPolicyListener(
         val loc = event.vehicle.location
         val position = Position(loc.world?.name ?: "unknown", loc.blockX, loc.blockY, loc.blockZ)
         val decision = policyGuard.check(
-            action = systems.diath.homeclaim.core.policy.Action.REGION_VEHICLE_USE,
-            position = position,
-            extra = mapOf(
-                "playerId" to player.uniqueId,
-                "vehicleType" to event.vehicle.type.name,
-                "action" to "damage",
-                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
-                PolicyActorContext.EXTRA_ID to player.uniqueId.toString(),
-                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            PolicyActionRequest(
+                action = Action.REGION_VEHICLE_USE,
+                position = position,
+                actor = PolicyActorContext(
+                    kind = ActorKind.PLAYER,
+                    actorId = player.uniqueId.toString(),
+                    sourceMod = "paper"
+                ),
+                playerId = player.uniqueId,
+                platform = "paper",
+                extra = mapOf("vehicleType" to event.vehicle.type.name, "action" to "damage", "event" to "VehicleDamageEvent")
             )
         )
         if (!decision.allowed) {
@@ -423,6 +441,7 @@ private fun policyReasonMessage(reason: String): String = when (reason) {
     DecisionReason.COOLDOWN_ACTIVE -> policyI18n.msg("policy.reason.cooldown_active")
     DecisionReason.ROLE_REQUIRED -> policyI18n.msg("policy.reason.role_required")
     DecisionReason.REDSTONE_DENY -> policyI18n.msg("policy.reason.redstone_deny")
+    DecisionReason.MOD_ACTOR_DENY -> policyI18n.msg("policy.reason.mod_actor_deny")
     else -> policyI18n.msg("policy.reason.unknown")
 }
 

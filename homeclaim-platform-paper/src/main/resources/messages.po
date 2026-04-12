@@ -796,6 +796,9 @@ msgstr "Higher role required."
 msgid "policy.reason.redstone_deny"
 msgstr "Redstone is disabled here."
 
+msgid "policy.reason.mod_actor_deny"
+msgstr "Mod/automation actor is not allowed here."
+
 msgid "policy.reason.unknown"
 msgstr "Action denied."
 
