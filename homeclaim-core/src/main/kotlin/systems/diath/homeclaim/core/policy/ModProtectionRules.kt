@@ -13,11 +13,15 @@ object ModProtectionRules {
     const val META_ALLOW_AUTOMATION = "mod.allow_automation"
     const val META_ALLOWED_ACTOR_IDS = "mod.allowed_actor_ids"
 
-    fun isActorAllowed(region: Region, actor: PolicyActorContext): Boolean {
+    fun isActorAllowed(
+        region: Region,
+        actor: PolicyActorContext,
+        defaults: ModPolicyDefaults = ModPolicyDefaults()
+    ): Boolean {
         if (actor.kind == ActorKind.PLAYER) return true
 
-        val allowFake = region.metadata[META_ALLOW_FAKE_PLAYERS].asBool(default = false)
-        val allowAutomation = region.metadata[META_ALLOW_AUTOMATION].asBool(default = false)
+        val allowFake = region.metadata[META_ALLOW_FAKE_PLAYERS].asBool(default = defaults.allowFakePlayers)
+        val allowAutomation = region.metadata[META_ALLOW_AUTOMATION].asBool(default = defaults.allowAutomation)
         val allowList = region.metadata[META_ALLOWED_ACTOR_IDS]
             ?.split(',')
             ?.map { it.trim() }
@@ -30,8 +34,8 @@ object ModProtectionRules {
         return when (actor.kind) {
             ActorKind.FAKE_PLAYER -> allowFake || actorInAllowList
             ActorKind.AUTOMATION -> allowAutomation || actorInAllowList
-            ActorKind.SERVER_TASK -> false
-            ActorKind.ENTITY -> false
+            ActorKind.SERVER_TASK -> defaults.allowServerTasks || actorInAllowList
+            ActorKind.ENTITY -> defaults.allowEntities || actorInAllowList
             ActorKind.PLAYER -> true
         }
     }

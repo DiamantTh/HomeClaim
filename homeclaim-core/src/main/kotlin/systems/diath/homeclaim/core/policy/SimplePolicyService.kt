@@ -57,8 +57,9 @@ class SimplePolicyService(
         val effective = RegionPolicy.merge(zones, regionWithProfile)
         val role = resolveRole(regionId, playerId)
         val actor = PolicyActorContext.from(extraContext)
+        val defaults = ModPolicyDefaults.from(extraContext)
 
-        if (!ModProtectionRules.isActorAllowed(regionWithProfile, actor)) {
+        if (!ModProtectionRules.isActorAllowed(regionWithProfile, actor, defaults)) {
             return Decision(
                 allowed = false,
                 reason = DecisionReason.MOD_ACTOR_DENY,

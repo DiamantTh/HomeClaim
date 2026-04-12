@@ -5,7 +5,9 @@ import systems.diath.homeclaim.core.platform.BlockEventContext
 import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
 import systems.diath.homeclaim.core.platform.InteractEventContext
 import systems.diath.homeclaim.core.platform.PolicyGuard
+import systems.diath.homeclaim.core.policy.ActorKind
 import systems.diath.homeclaim.core.policy.DecisionReason
+import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
@@ -133,10 +135,16 @@ class PaperPolicyListener(
     fun onIgnite(event: BlockIgniteEvent) = SafeEventHandler.handle(event, "onIgnite") {
         val pos = event.block.position()
         val actor = event.player?.uniqueId ?: event.ignitingEntity?.uniqueId ?: return@handle
+        val actorKind = if (event.player != null) ActorKind.PLAYER else ActorKind.ENTITY
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_FIRE,
             position = pos,
-            extra = mapOf("playerId" to actor)
+            extra = mapOf(
+                "playerId" to actor,
+                PolicyActorContext.EXTRA_KIND to actorKind.name,
+                PolicyActorContext.EXTRA_ID to actor.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -150,10 +158,18 @@ class PaperPolicyListener(
         val actor = (event.entity as? org.bukkit.entity.TNTPrimed)?.source?.uniqueId
             ?: (event.entity as? Projectile)?.shooter?.let { it as? Player }?.uniqueId
             ?: event.entity.uniqueId
+        val actorKind = if ((event.entity as? org.bukkit.entity.TNTPrimed)?.source is Player ||
+            (event.entity as? Projectile)?.shooter is Player
+        ) ActorKind.PLAYER else ActorKind.ENTITY
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_EXPLOSION,
             position = pos,
-            extra = mapOf("playerId" to actor)
+            extra = mapOf(
+                "playerId" to actor,
+                PolicyActorContext.EXTRA_KIND to actorKind.name,
+                PolicyActorContext.EXTRA_ID to actor.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -179,7 +195,12 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_PVP,
             position = position,
-            extra = mapOf("playerId" to damagerPlayer.uniqueId)
+            extra = mapOf(
+                "playerId" to damagerPlayer.uniqueId,
+                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
+                PolicyActorContext.EXTRA_ID to damagerPlayer.uniqueId.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -213,7 +234,13 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_ENTITY_DAMAGE,
             position = position,
-            extra = mapOf("playerId" to entity.uniqueId, "cause" to event.cause.name)
+            extra = mapOf(
+                "playerId" to entity.uniqueId,
+                "cause" to event.cause.name,
+                PolicyActorContext.EXTRA_KIND to ActorKind.ENTITY.name,
+                PolicyActorContext.EXTRA_ID to entity.uniqueId.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -229,7 +256,13 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_REDSTONE,
             position = pos,
-            extra = mapOf("oldCurrent" to event.oldCurrent, "newCurrent" to event.newCurrent)
+            extra = mapOf(
+                "oldCurrent" to event.oldCurrent,
+                "newCurrent" to event.newCurrent,
+                PolicyActorContext.EXTRA_KIND to ActorKind.AUTOMATION.name,
+                PolicyActorContext.EXTRA_ID to "redstone",
+                PolicyActorContext.EXTRA_SOURCE_MOD to "minecraft:redstone"
+            )
         )
         if (!decision.allowed) {
             event.newCurrent = 0
@@ -264,7 +297,14 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_MOB_GRIEF,
             position = pos,
-            extra = mapOf("entityType" to entity.type.name, "to" to event.to.name)
+            extra = mapOf(
+                "entityType" to entity.type.name,
+                "to" to event.to.name,
+                "playerId" to entity.uniqueId,
+                PolicyActorContext.EXTRA_KIND to ActorKind.ENTITY.name,
+                PolicyActorContext.EXTRA_ID to entity.uniqueId.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "minecraft:mob"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -298,7 +338,13 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_VEHICLE_USE,
             position = position,
-            extra = mapOf("playerId" to player.uniqueId, "vehicleType" to event.vehicle.type.name)
+            extra = mapOf(
+                "playerId" to player.uniqueId,
+                "vehicleType" to event.vehicle.type.name,
+                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
+                PolicyActorContext.EXTRA_ID to player.uniqueId.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
@@ -330,7 +376,14 @@ class PaperPolicyListener(
         val decision = policyGuard.check(
             action = systems.diath.homeclaim.core.policy.Action.REGION_VEHICLE_USE,
             position = position,
-            extra = mapOf("playerId" to player.uniqueId, "vehicleType" to event.vehicle.type.name, "action" to "damage")
+            extra = mapOf(
+                "playerId" to player.uniqueId,
+                "vehicleType" to event.vehicle.type.name,
+                "action" to "damage",
+                PolicyActorContext.EXTRA_KIND to ActorKind.PLAYER.name,
+                PolicyActorContext.EXTRA_ID to player.uniqueId.toString(),
+                PolicyActorContext.EXTRA_SOURCE_MOD to "paper"
+            )
         )
         if (!decision.allowed) {
             event.isCancelled = true
