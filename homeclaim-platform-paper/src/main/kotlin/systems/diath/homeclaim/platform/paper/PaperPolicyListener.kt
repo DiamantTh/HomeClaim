@@ -14,6 +14,7 @@ import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditPayloads
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
 import org.bukkit.block.Container
 import org.bukkit.entity.Player
@@ -59,8 +60,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = event.player.uniqueId,
                     targetId = null,
-                    category = "BLOCK",
-                    action = "PLACE_DENIED",
+                    category = AuditTaxonomy.Category.BLOCK,
+                    action = AuditTaxonomy.Action.PLACE_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(
                         position = position,
                         decision = decision,
@@ -88,8 +89,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = event.player.uniqueId,
                     targetId = null,
-                    category = "BLOCK",
-                    action = "BREAK_DENIED",
+                    category = AuditTaxonomy.Category.BLOCK,
+                    action = AuditTaxonomy.Action.BREAK_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(
                         position = position,
                         decision = decision,
@@ -223,8 +224,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = damagerPlayer.uniqueId,
                     targetId = victim.uniqueId,
-                    category = "PVP",
-                    action = "PVP_DENIED",
+                    category = AuditTaxonomy.Category.PVP,
+                    action = AuditTaxonomy.Action.PVP_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(position, decision)
                 )
             )
@@ -284,8 +285,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = null,  // Redstone is a system action
                     targetId = null,
-                    category = "REDSTONE",
-                    action = "BLOCK_DENIED",
+                    category = AuditTaxonomy.Category.REDSTONE,
+                    action = AuditTaxonomy.Action.BLOCK_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(
                         position = pos,
                         decision = decision,
@@ -325,8 +326,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = null,  // Mob action, no player
                     targetId = null,
-                    category = "MOB",
-                    action = "GRIEF_DENIED",
+                    category = AuditTaxonomy.Category.MOB,
+                    action = AuditTaxonomy.Action.GRIEF_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(
                         position = pos,
                         decision = decision,
@@ -367,8 +368,8 @@ class PaperPolicyListener(
                 AuditEntry(
                     actorId = player.uniqueId,
                     targetId = null,
-                    category = "VEHICLE",
-                    action = "ENTER_DENIED",
+                    category = AuditTaxonomy.Category.VEHICLE,
+                    action = AuditTaxonomy.Action.ENTER_DENIED,
                     payload = AuditPayloads.deniedPolicyPayload(
                         position = position,
                         decision = decision,

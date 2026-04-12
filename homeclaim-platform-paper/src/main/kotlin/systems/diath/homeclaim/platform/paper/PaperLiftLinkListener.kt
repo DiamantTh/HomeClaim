@@ -10,6 +10,7 @@ import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditPayloads
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.liftlink.LiftLinkPlanner
@@ -153,8 +154,8 @@ class PaperLiftLinkListener(
             AuditEntry(
                 actorId = player.uniqueId,
                 targetId = comp.id.value,
-                category = "COMPONENT",
-                action = "ELEVATOR_USED",
+                category = AuditTaxonomy.Category.COMPONENT,
+                action = AuditTaxonomy.Action.ELEVATOR_USED,
                 payload = AuditPayloads.actionPayload(
                     position = pos,
                     platform = "paper",
@@ -242,8 +243,8 @@ class PaperLiftLinkListener(
             AuditEntry(
                 actorId = player.uniqueId,
                 targetId = comp.id.value,
-                category = "COMPONENT",
-                action = "TELEPORT_USED",
+                category = AuditTaxonomy.Category.COMPONENT,
+                action = AuditTaxonomy.Action.TELEPORT_USED,
                 payload = AuditPayloads.actionPayload(
                     position = pos,
                     platform = "paper",

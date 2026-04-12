@@ -7,6 +7,7 @@ import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.platform.paper.I18n
 import org.bukkit.Bukkit
@@ -113,23 +114,23 @@ class AuditCommand(
             val timestamp = formatTime(entry.createdAt)
             
             val message = when (entry.action) {
-                "PLACE_DENIED", "BREAK_DENIED" -> {
+                AuditTaxonomy.Action.PLACE_DENIED, AuditTaxonomy.Action.BREAK_DENIED -> {
                     val reason = entry.payload["reason"] ?: "unknown"
                     val block = entry.payload["block"] ?: "?"
                     i18n.msg("audit.denied", arrayOf(playerName, entry.action.replace("_DENIED", ""), block, reason, timestamp))
                 }
-                "PLACE_ALLOWED", "BREAK_ALLOWED" -> {
+                AuditTaxonomy.Action.PLACE_ALLOWED, AuditTaxonomy.Action.BREAK_ALLOWED -> {
                     val block = entry.payload["block"] ?: "?"
                     i18n.msg("audit.allowed", arrayOf(playerName, entry.action.replace("_ALLOWED", ""), block, timestamp))
                 }
-                "PVP_DENIED" -> {
+                AuditTaxonomy.Action.PVP_DENIED -> {
                     val targetId = entry.targetId
                     val targetName = if (targetId != null) {
                         Bukkit.getPlayer(targetId)?.name ?: targetId.toString().take(8)
                     } else "?"
                     i18n.msg("audit.pvp.denied", arrayOf(playerName, targetName, timestamp))
                 }
-                "ENTER_DENIED" -> {
+                AuditTaxonomy.Action.ENTER_DENIED -> {
                     val vehicleType = entry.payload["vehicleType"] ?: "?"
                     i18n.msg("audit.enter.denied", arrayOf(playerName, vehicleType, timestamp))
                 }

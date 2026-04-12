@@ -7,6 +7,7 @@ import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditPayloads
+import systems.diath.homeclaim.core.service.AuditTaxonomy
 import java.util.*
 import kotlin.math.abs
 
@@ -288,8 +289,8 @@ class PlotImportService(
             AuditEntry(
                 actorId = external.owner,
                 targetId = regionId.value,
-                category = "IMPORT",
-                action = "PLOT_IMPORTED",
+                    category = AuditTaxonomy.Category.IMPORT,
+                    action = AuditTaxonomy.Action.PLOT_IMPORTED,
                     payload = AuditPayloads.worldPayload(
                         world = external.world,
                         platform = "paper",
