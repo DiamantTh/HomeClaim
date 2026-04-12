@@ -679,7 +679,8 @@ class PlotRestServer(
                         mapOf("name" to "owner", "in" to "query", "schema" to mapOf("type" to "string", "format" to "uuid")),
                         mapOf("name" to "available", "in" to "query", "schema" to mapOf("type" to "boolean")),
                         mapOf("name" to "limit", "in" to "query", "schema" to mapOf("type" to "integer", "default" to 100)),
-                        mapOf("name" to "offset", "in" to "query", "schema" to mapOf("type" to "integer", "default" to 0))
+                        mapOf("name" to "offset", "in" to "query", "schema" to mapOf("type" to "integer", "default" to 0)),
+                        mapOf("name" to "includeOwnerMeta", "in" to "query", "schema" to mapOf("type" to "boolean", "default" to false), "description" to "Include owner UUID and platform metadata")
                     ),
                     "responses" to mapOf("200" to mapOf("description" to "List of plots"))
                 )
@@ -692,7 +693,8 @@ class PlotRestServer(
                         mapOf("name" to "world", "in" to "query", "required" to true, "schema" to mapOf("type" to "string")),
                         mapOf("name" to "x", "in" to "query", "required" to true, "schema" to mapOf("type" to "integer")),
                         mapOf("name" to "y", "in" to "query", "schema" to mapOf("type" to "integer", "default" to 64)),
-                        mapOf("name" to "z", "in" to "query", "required" to true, "schema" to mapOf("type" to "integer"))
+                        mapOf("name" to "z", "in" to "query", "required" to true, "schema" to mapOf("type" to "integer")),
+                        mapOf("name" to "includeOwnerMeta", "in" to "query", "schema" to mapOf("type" to "boolean", "default" to false), "description" to "Include owner UUID and platform metadata")
                     ),
                     "responses" to mapOf(
                         "200" to mapOf("description" to "Plot found"),
@@ -705,7 +707,8 @@ class PlotRestServer(
                     "summary" to "Get plot by ID",
                     "tags" to listOf("Plots"),
                     "parameters" to listOf(
-                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid")),
+                        mapOf("name" to "includeOwnerMeta", "in" to "query", "schema" to mapOf("type" to "boolean", "default" to false), "description" to "Include owner UUID and platform metadata")
                     ),
                     "responses" to mapOf(
                         "200" to mapOf("description" to "Plot details"),
@@ -738,7 +741,8 @@ class PlotRestServer(
                     "summary" to "List player's plots",
                     "tags" to listOf("Players"),
                     "parameters" to listOf(
-                        mapOf("name" to "uuid", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                        mapOf("name" to "uuid", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid")),
+                        mapOf("name" to "includeOwnerMeta", "in" to "query", "schema" to mapOf("type" to "boolean", "default" to false), "description" to "Include owner UUID and platform metadata")
                     ),
                     "responses" to mapOf("200" to mapOf("description" to "List of player's plots"))
                 )
