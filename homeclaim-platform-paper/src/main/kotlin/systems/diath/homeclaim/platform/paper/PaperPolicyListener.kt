@@ -12,7 +12,7 @@ import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.PolicyActionRequest
 import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntry
-import systems.diath.homeclaim.core.service.AuditPayloads
+import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
@@ -57,16 +57,13 @@ class PaperPolicyListener(
             event.isCancelled = true
             event.player.deny(decision.reason, decision.detail)
             auditService?.append(
-                AuditEntry(
+                AuditEntries.denied(
                     actorId = event.player.uniqueId,
-                    targetId = null,
                     category = AuditTaxonomy.Category.BLOCK,
                     action = AuditTaxonomy.Action.PLACE_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(
-                        position = position,
-                        decision = decision,
-                        extra = mapOf("block" to event.blockPlaced.type.name)
-                    )
+                    position = position,
+                    decision = decision,
+                    extra = mapOf("block" to event.blockPlaced.type.name)
                 )
             )
         }
@@ -86,16 +83,13 @@ class PaperPolicyListener(
             event.isCancelled = true
             event.player.deny(decision.reason, decision.detail)
             auditService?.append(
-                AuditEntry(
+                AuditEntries.denied(
                     actorId = event.player.uniqueId,
-                    targetId = null,
                     category = AuditTaxonomy.Category.BLOCK,
                     action = AuditTaxonomy.Action.BREAK_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(
-                        position = position,
-                        decision = decision,
-                        extra = mapOf("block" to event.block.type.name)
-                    )
+                    position = position,
+                    decision = decision,
+                    extra = mapOf("block" to event.block.type.name)
                 )
             )
         }
@@ -221,12 +215,13 @@ class PaperPolicyListener(
             event.isCancelled = true
             damagerPlayer.deny(decision.reason, decision.detail)
             auditService?.append(
-                AuditEntry(
+                AuditEntries.denied(
                     actorId = damagerPlayer.uniqueId,
                     targetId = victim.uniqueId,
                     category = AuditTaxonomy.Category.PVP,
                     action = AuditTaxonomy.Action.PVP_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(position, decision)
+                    position = position,
+                    decision = decision
                 )
             )
         }
@@ -282,16 +277,13 @@ class PaperPolicyListener(
             event.newCurrent = 0
             // Log redstone block (system action, no specific actor)
             auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Redstone is a system action
-                    targetId = null,
+                AuditEntries.denied(
+                    actorId = null,
                     category = AuditTaxonomy.Category.REDSTONE,
                     action = AuditTaxonomy.Action.BLOCK_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(
-                        position = pos,
-                        decision = decision,
-                        extra = mapOf("block" to event.block.type.name)
-                    )
+                    position = pos,
+                    decision = decision,
+                    extra = mapOf("block" to event.block.type.name)
                 )
             )
         }
@@ -323,19 +315,16 @@ class PaperPolicyListener(
             event.isCancelled = true
             // Log mob grief block
             auditService?.append(
-                AuditEntry(
-                    actorId = null,  // Mob action, no player
-                    targetId = null,
+                AuditEntries.denied(
+                    actorId = null,
                     category = AuditTaxonomy.Category.MOB,
                     action = AuditTaxonomy.Action.GRIEF_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(
-                        position = pos,
-                        decision = decision,
-                        extra = mapOf(
-                            "entityType" to entity.type.name,
-                            "block" to event.block.type.name,
-                            "to" to event.to.name
-                        )
+                    position = pos,
+                    decision = decision,
+                    extra = mapOf(
+                        "entityType" to entity.type.name,
+                        "block" to event.block.type.name,
+                        "to" to event.to.name
                     )
                 )
             )
@@ -365,16 +354,13 @@ class PaperPolicyListener(
             event.isCancelled = true
             player.deny(decision.reason, decision.detail)
             auditService?.append(
-                AuditEntry(
+                AuditEntries.denied(
                     actorId = player.uniqueId,
-                    targetId = null,
                     category = AuditTaxonomy.Category.VEHICLE,
                     action = AuditTaxonomy.Action.ENTER_DENIED,
-                    payload = AuditPayloads.deniedPolicyPayload(
-                        position = position,
-                        decision = decision,
-                        extra = mapOf("vehicleType" to event.vehicle.type.name)
-                    )
+                    position = position,
+                    decision = decision,
+                    extra = mapOf("vehicleType" to event.vehicle.type.name)
                 )
             )
         }
