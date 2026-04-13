@@ -364,6 +364,38 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
     }
 
+    private fun savePlotMutationJobs() {
+        try {
+            val jobsFile = java.io.File(dataFolder, "plot-mutation-jobs.json")
+            // Try to export job snapshots if backend is available
+            val mutationBackend = plotMutationBackend as? systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend
+                ?: plotMutationBackend as? systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend
+            
+            if (mutationBackend != null) {
+                val registry = (mutationBackend as? Any)?.let {
+                    try {
+                        it::class.java.getMethod("getJobRegistry").invoke(it)
+                            as systems.diath.homeclaim.platform.paper.plot.mutation.PlotJobRegistry
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                
+                if (registry != null) {
+                    val json = registry.toPersistedFormat()
+                    jobsFile.parentFile?.mkdirs()
+                    jobsFile.writeText(json)
+                    val snapshots = registry.snapshot()
+                    if (snapshots.isNotEmpty()) {
+                        logger.info("Saved ${snapshots.size} active plot mutation jobs for recovery on reload")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.fine("Could not save plot mutation jobs: ${e.message}")
+        }
+    }
+
     private fun registerShutdownHooks(services: PlatformServices) {
         // Player cleanup first
         ShutdownManager.registerHook("PlayerCleanup", priority = 10) {
@@ -395,6 +427,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        // Save active plot mutation jobs before shutdown
+        savePlotMutationJobs()
+        
         // Execute graceful shutdown with all registered hooks
         val result = ShutdownManager.shutdown()
         if (!result.success) {

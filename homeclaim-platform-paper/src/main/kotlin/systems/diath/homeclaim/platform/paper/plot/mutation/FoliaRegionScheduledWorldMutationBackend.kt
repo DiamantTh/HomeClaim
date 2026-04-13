@@ -18,6 +18,9 @@ internal class FoliaRegionScheduledWorldMutationBackend(
     private val maxConcurrentMutationsForWorld: (worldName: String) -> Int = { Int.MAX_VALUE }
 ) : WorldMutationBackend {
     override val backendId: String = "folia-region-scheduler"
+    
+    // Expose registry for persistence operations
+    internal fun getJobRegistry(): PlotJobRegistry = jobRegistry
 
     override fun capabilities(): MutationCapabilities {
         return MutationCapabilities(

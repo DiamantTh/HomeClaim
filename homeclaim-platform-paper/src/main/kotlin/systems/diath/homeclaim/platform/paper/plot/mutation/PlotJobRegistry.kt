@@ -2,6 +2,8 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.core.type.TypeReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -248,5 +250,50 @@ internal class PlotJobRegistry(
 
     private companion object {
         const val DEFAULT_TIMEOUT_MILLIS = 120_000L
+    }
+
+    /**
+     * Serialize all active jobs to JSON format for persistence.
+     * Useful for saving state before shutdown.
+     */
+    fun toPersistedFormat(): String {
+        val jobs = snapshot()
+        return try {
+            ObjectMapper().writeValueAsString(jobs)
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    /**
+     * Restore jobs from previously persisted JSON format.
+     * Returns the number of jobs successfully restored.
+     * Skips any jobs that already exist in-flight.
+     */
+    fun fromPersistedFormat(json: String, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): Int {
+        return try {
+            val jobs = ObjectMapper().readValue(json, object: TypeReference<List<JobSnapshot>>() {})
+            synchronized(lock) {
+                cleanupExpiredLocked(timeoutMillis)
+                var loaded = 0
+                jobs.forEach { snap ->
+                    if (!inFlight.containsKey(snap.key)) {
+                        // Reconstruct startedAt from age: assume age is age at snapshot time
+                        val estimatedStart = nowProvider() - snap.ageMillis
+                        inFlight[snap.key] = JobRecord(
+                            world = snap.world,
+                            kind = snap.kind,
+                            reason = snap.reason,
+                            startedAt = estimatedStart,
+                            cancelRequested = snap.cancelRequested
+                        )
+                        loaded++
+                    }
+                }
+                loaded
+            }
+        } catch (e: Exception) {
+            0
+        }
     }
 }

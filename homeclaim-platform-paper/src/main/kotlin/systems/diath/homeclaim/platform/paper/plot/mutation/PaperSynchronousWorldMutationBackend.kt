@@ -13,12 +13,15 @@ internal class PaperSynchronousWorldMutationBackend(
     private val maxConcurrentMutationsForWorld: (worldName: String) -> Int = { Int.MAX_VALUE }
 ) : WorldMutationBackend {
     override val backendId: String = "paper-sync"
+    
+    // Expose registry for persistence operations
+    internal fun getJobRegistry(): PlotJobRegistry = jobRegistry
 
     override fun capabilities(): MutationCapabilities {
         return MutationCapabilities(
             supportsAsyncApply = false,
             supportsChunkBatching = true,
-            supportsUndo = false
+            supportsUndo = true  // Sync execution allows undo-stack
         )
     }
 
