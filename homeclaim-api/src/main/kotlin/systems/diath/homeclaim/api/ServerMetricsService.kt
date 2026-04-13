@@ -55,6 +55,17 @@ data class LoadInfo(
 )
 
 /**
+ * Identifies the active WorldMutationBackend and its declared capabilities.
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class MutationBackendInfo(
+    val backendId: String = "unknown",
+    val supportsAsync: Boolean = false,
+    val supportsChunkBatching: Boolean = false,
+    val supportsUndo: Boolean = false
+)
+
+/**
  * Plot-specific metrics aggregated across all worlds.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -65,7 +76,8 @@ data class PlotsMetrics(
     val totalCancelling: Int = 0,
     val byWorld: Map<String, WorldPlotsMetrics> = emptyMap(),
     val avgProcessingMs: Long = 0L,
-    val oldestPendingSeconds: Long = 0L
+    val oldestPendingSeconds: Long = 0L,
+    val backend: MutationBackendInfo = MutationBackendInfo()
 )
 
 /**

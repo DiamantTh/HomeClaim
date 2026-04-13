@@ -50,6 +50,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
     private var plotResetService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService =
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
+    private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
@@ -86,7 +87,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 plotResetService,
                 plotMutationService,
                 ratingRepository,
-                i18n
+                i18n,
+                plotMutationBackend
             )
             cmd.setExecutor(executor)
             cmd.tabCompleter = executor
@@ -309,15 +311,21 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         if (plotMutationHooksRegistered) return
 
         val dispatcher = services.eventDispatcher ?: eventDispatcher ?: return
-        plotMutationService = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this)
+        val backend: systems.diath.homeclaim.core.mutation.WorldMutationBackend = if (isFoliaRuntime()) {
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend(this)
         } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this)
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend()
+        }
+        plotMutationBackend = backend
+        plotMutationService = if (isFoliaRuntime()) {
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this, mutationBackend = backend)
+        } else {
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this, mutationBackend = backend)
         }
         plotResetService = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotResetService(this)
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotResetService(this, mutationBackend = backend)
         } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(this)
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(this, mutationBackend = backend)
         }
 
         dispatcher.registerListener(
@@ -667,7 +675,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             pluginMeta.version,
             services.regionService,
             plotMutationService,
-            plotResetService
+            plotResetService,
+            plotMutationBackend
         )
         val ownerMetadataResolver = systems.diath.homeclaim.platform.paper.PaperOwnerMetadataResolver()
         restServer = PlotRestServer(

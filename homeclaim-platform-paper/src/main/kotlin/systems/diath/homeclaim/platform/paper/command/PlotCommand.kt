@@ -22,6 +22,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 
 /**
  * Command handler for /plot commands (P2-style).
@@ -40,7 +41,8 @@ class PlotCommand(
     private val plotResetService: PlotResetService = NoOpPlotResetService,
     private val plotMutationService: PlotMutationService = NoOpPlotMutationService,
     private val ratingRepository: RatingRepository? = null,
-    private val i18n: I18n = I18n()
+    private val i18n: I18n = I18n(),
+    private val mutationBackend: WorldMutationBackend? = null
 ) : CommandExecutor, TabCompleter {
     
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
@@ -447,9 +449,18 @@ class PlotCommand(
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
             else -> {
+                val backendLine = mutationBackend?.let { b ->
+                    val caps = b.capabilities()
+                    val flags = buildList {
+                        if (caps.supportsAsyncApply) add("async")
+                        if (caps.supportsChunkBatching) add("chunk-batching")
+                        if (caps.supportsUndo) add("undo")
+                    }.joinToString(", ").ifEmpty { "none" }
+                    "\u00a77Backend: \u00a7e${b.backendId}\u00a77  caps: \u00a7f$flags"
+                } ?: "\u00a77Backend: \u00a7cunknown"
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
                 player.sendMessage("\u00a7aPlot Jobs Manager")
-                player.sendMessage("\u00a77Status: Check server metrics at REST API")
+                player.sendMessage(backendLine)
                 player.sendMessage("\u00a79Usage:")
                 player.sendMessage("\u00a7f  /plot jobs cancel [world]\u00a77 - Cancel queued jobs")
                 player.sendMessage("\u00a79API:")

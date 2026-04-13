@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper
 
 import org.bukkit.Bukkit
 import systems.diath.homeclaim.api.*
+import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
@@ -14,7 +15,8 @@ class PaperServerMetricsService(
     private val homeClaimVersion: String,
     private val regionService: RegionService,
     private val plotMutationService: PlotMutationService,
-    private val plotResetService: PlotResetService
+    private val plotResetService: PlotResetService,
+    private val mutationBackend: WorldMutationBackend? = null
 ) : ServerMetricsService {
     private val startupTime = System.currentTimeMillis()
     
@@ -117,6 +119,15 @@ class PaperServerMetricsService(
                 .forEach(averageAges::add)
         }
         
+        val backendInfo = mutationBackend?.let { b ->
+            val caps = b.capabilities()
+            MutationBackendInfo(
+                backendId = b.backendId,
+                supportsAsync = caps.supportsAsyncApply,
+                supportsChunkBatching = caps.supportsChunkBatching,
+                supportsUndo = caps.supportsUndo
+            )
+        } ?: MutationBackendInfo()
         return PlotsMetrics(
             totalActive = totalActive,
             totalQueued = totalQueued,
@@ -124,7 +135,8 @@ class PaperServerMetricsService(
             totalCancelling = totalCancelling,
             byWorld = byWorld,
             avgProcessingMs = averageAges.average().takeIf { !it.isNaN() }?.toLong() ?: 0L,
-            oldestPendingSeconds = (oldestPendingMillis.maxOrNull() ?: 0L) / 1000L
+            oldestPendingSeconds = (oldestPendingMillis.maxOrNull() ?: 0L) / 1000L,
+            backend = backendInfo
         )
     }
     
