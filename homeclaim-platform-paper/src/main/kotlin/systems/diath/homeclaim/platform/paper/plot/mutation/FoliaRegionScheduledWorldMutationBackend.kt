@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 internal class FoliaRegionScheduledWorldMutationBackend(
     private val plugin: JavaPlugin,
-    private val jobRegistry: PlotJobRegistry = PlotJobRegistry()
+    private val jobRegistry: PlotJobRegistry = PlotJobRegistry(),
+    private val maxConcurrentMutationsForWorld: (worldName: String) -> Int = { Int.MAX_VALUE }
 ) : WorldMutationBackend {
     override val backendId: String = "folia-region-scheduler"
 
@@ -28,13 +29,15 @@ internal class FoliaRegionScheduledWorldMutationBackend(
 
     override fun submit(batch: MutationBatch): MutationTicket {
         val kind = if (batch.reason == MutationReason.RESET) PlotJobRegistry.JobKind.RESET else PlotJobRegistry.JobKind.MUTATION
+        val limit = if (kind == PlotJobRegistry.JobKind.MUTATION) maxConcurrentMutationsForWorld(batch.world) else Int.MAX_VALUE
         val handle = jobRegistry.tryAcquire(
             key = batch.id,
             world = batch.world,
             kind = kind,
             reason = batch.reason,
+            maxConcurrentPerWorld = limit,
             timeoutMillis = DEFAULT_TIMEOUT_MILLIS
-        ) ?: throw IllegalStateException("Mutation batch already in progress: ${batch.id}")
+        ) ?: throw IllegalStateException("submit rejected for batch ${batch.id} (duplicate or world limit reached)")
 
         val world = Bukkit.getWorld(batch.world)
             ?: run {

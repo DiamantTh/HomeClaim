@@ -175,19 +175,12 @@ class FoliaPlotMutationService(
     private fun repaintBatch(
         world: org.bukkit.World,
         batch: MutationBatch,
-        config: PlotWorldConfig,
+        @Suppress("UNUSED_PARAMETER") config: PlotWorldConfig,
     ) {
-        val activeForWorld = activeJobInfo(world.name)
-        if (activeForWorld.none { it.ticketId == batch.id } && activeForWorld.size >= config.maxConcurrentMutationJobsPerWorld) {
-            plugin.logger.fine("Skipping world-limit Folia plot mutation job ${batch.id}")
-            return
-        }
-
         runCatching {
             mutationBackend.submit(batch)
         }.onFailure { error ->
-            val reasonText = if (activeForWorld.any { it.ticketId == batch.id }) "duplicate" else "submit-failed"
-            plugin.logger.fine("Skipping $reasonText Folia plot mutation job ${batch.id}: ${error.message}")
+            plugin.logger.fine("Folia plot mutation submit rejected for ${batch.id}: ${error.message}")
         }
     }
 

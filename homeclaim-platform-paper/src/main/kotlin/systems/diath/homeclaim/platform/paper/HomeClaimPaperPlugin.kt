@@ -311,10 +311,18 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         if (plotMutationHooksRegistered) return
 
         val dispatcher = services.eventDispatcher ?: eventDispatcher ?: return
+        val configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this)
+        val mutationLimitForWorld: (String) -> Int = { world ->
+            configStore.loadConfig(world)?.maxConcurrentMutationJobsPerWorld ?: Int.MAX_VALUE
+        }
         val backend: systems.diath.homeclaim.core.mutation.WorldMutationBackend = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend(this)
+            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend(
+                this, maxConcurrentMutationsForWorld = mutationLimitForWorld
+            )
         } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend()
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend(
+                maxConcurrentMutationsForWorld = mutationLimitForWorld
+            )
         }
         plotMutationBackend = backend
         plotMutationService = if (isFoliaRuntime()) {
