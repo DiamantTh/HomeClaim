@@ -155,7 +155,7 @@ class PaperPlotMutationService(
     }
 
     private fun applyBatch(
-        world: org.bukkit.World,
+        @Suppress("UNUSED_PARAMETER") world: org.bukkit.World,
         batch: MutationBatch
     ) {
         runCatching {

@@ -41,6 +41,13 @@ data class PlotWorldConfig(
     val schema: String = "default"                               // "default" | "copper" | "deepslate" (P2)
 ) {
     fun gridSize(): Int = plotSize + roadWidth
+
+    fun plotAreaMinCoordinate(): Int = if (plotsPerSide <= 0) 0 else -(plotsPerSide / 2) * gridSize()
+
+    fun plotAreaMaxExclusive(): Int = if (plotsPerSide <= 0) 0 else plotAreaMinCoordinate() + (plotsPerSide * gridSize())
+
+    fun plotAreaCenterCoordinate(): Double =
+        if (plotsPerSide <= 0) 0.0 else (plotAreaMinCoordinate() + plotAreaMaxExclusive()) / 2.0
 }
 
 /**
@@ -156,9 +163,9 @@ object PlotSchemas {
 
 fun PlotWorldConfig.sanitized(): PlotWorldConfig {
     return copy(
-        plotSize = plotSize.coerceAtLeast(4),
+        plotSize = plotSize.coerceIn(16, 512),
         roadWidth = roadWidth.coerceAtLeast(1),
-        plotHeight = plotHeight.coerceAtLeast(1),
+        plotHeight = plotHeight.coerceIn(1, 319),
         plotsPerSide = plotsPerSide.coerceAtLeast(0),
         unclaimedBorderBlock = unclaimedBorderBlock,
         claimedBorderBlock = claimedBorderBlock,

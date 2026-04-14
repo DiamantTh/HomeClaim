@@ -83,7 +83,8 @@ class PlotWorldInitializer(
         }
         
         val plotsPerSide = cfg.plotsPerSide
-        val halfPlots = plotsPerSide / 2
+        val startIndex = -(plotsPerSide / 2)
+        val endExclusive = startIndex + plotsPerSide
         
         // Determine Y bounds (full height coverage)
         val minY = cfg.minGenHeight ?: -64
@@ -94,8 +95,8 @@ class PlotWorldInitializer(
         var lastProgress = 0.0
         
         // Create plots in a grid pattern
-        for (pz in -halfPlots until halfPlots) {
-            for (px in -halfPlots until halfPlots) {
+        for (pz in startIndex until endExclusive) {
+            for (px in startIndex until endExclusive) {
                 // Calculate world coordinates for this plot
                 val worldX = px * grid
                 val worldZ = pz * grid

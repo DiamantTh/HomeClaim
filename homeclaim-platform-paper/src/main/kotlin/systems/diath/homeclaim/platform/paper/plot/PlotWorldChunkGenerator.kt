@@ -35,10 +35,11 @@ class PlotWorldChunkGenerator(
 
         // Check if outside plot boundaries (if plotsPerSide is configured)
         if (cfg.plotsPerSide > 0) {
-            val halfGrid = (cfg.plotsPerSide * grid) / 2
-            if (worldX < -halfGrid || worldX >= halfGrid || worldZ < -halfGrid || worldZ >= halfGrid) {
+            val minCoord = cfg.plotAreaMinCoordinate()
+            val maxCoordExclusive = cfg.plotAreaMaxExclusive()
+            if (worldX < minCoord || worldX >= maxCoordExclusive || worldZ < minCoord || worldZ >= maxCoordExclusive) {
                 // Outside plot area: return bedrock at bottom, air above
-                return if (worldY < minY + 1) Material.BEDROCK else Material.AIR
+                return if (worldY <= minY) Material.BEDROCK else Material.AIR
             }
         }
 
@@ -91,15 +92,16 @@ class PlotWorldChunkGenerator(
         val startZ = chunkZ shl 4
 
         // Check if chunk is outside plot boundaries (if plotsPerSide is configured)
-        val halfGrid = if (cfg.plotsPerSide > 0) (cfg.plotsPerSide * grid) / 2 else Int.MAX_VALUE
-        
+        val minCoord = if (cfg.plotsPerSide > 0) cfg.plotAreaMinCoordinate() else Int.MIN_VALUE
+        val maxCoordExclusive = if (cfg.plotsPerSide > 0) cfg.plotAreaMaxExclusive() else Int.MAX_VALUE
+
         for (x in 0 until 16) {
             for (z in 0 until 16) {
                 val worldX = startX + x
                 val worldZ = startZ + z
 
                 // Check if outside plot area
-                val isOutside = worldX < -halfGrid || worldX >= halfGrid || worldZ < -halfGrid || worldZ >= halfGrid
+                val isOutside = worldX < minCoord || worldX >= maxCoordExclusive || worldZ < minCoord || worldZ >= maxCoordExclusive
                 
                 if (isOutside) {
                     // Outside plot area: just bedrock at bottom

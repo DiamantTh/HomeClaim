@@ -225,13 +225,43 @@ object ConfigValidator {
                     message = "Road width must be at least 1"
                 ))
             }
-            
+            if (roadWidth > plotSize) {
+                warnings.add(ConfigWarning(
+                    path = "plot-worlds.$worldKey.road-width",
+                    message = "Road width $roadWidth is larger than plot size $plotSize"
+                ))
+            }
+
             // Plot height
             val plotHeight = world.getInt("plot-height", 64)
             if (plotHeight < 1 || plotHeight > 319) {
                 errors.add(ConfigError(
                     path = "plot-worlds.$worldKey.plot-height",
                     message = "Plot height $plotHeight is out of range (1-319)"
+                ))
+            }
+
+            // Plot count per side
+            val plotsPerSide = when {
+                world.contains("plots-per-side") -> world.getInt("plots-per-side", 128)
+                else -> world.getInt("plotsPerSide", 128)
+            }
+            if (plotsPerSide < 0) {
+                errors.add(ConfigError(
+                    path = "plot-worlds.$worldKey.plots-per-side",
+                    message = "plots-per-side cannot be negative"
+                ))
+            }
+            if (plotsPerSide == 1) {
+                warnings.add(ConfigWarning(
+                    path = "plot-worlds.$worldKey.plots-per-side",
+                    message = "plots-per-side = 1 is not recommended; use 0 or at least 2"
+                ))
+            }
+            if (plotsPerSide > 512) {
+                warnings.add(ConfigWarning(
+                    path = "plot-worlds.$worldKey.plots-per-side",
+                    message = "plots-per-side $plotsPerSide is very large and may create an impractical world"
                 ))
             }
         }

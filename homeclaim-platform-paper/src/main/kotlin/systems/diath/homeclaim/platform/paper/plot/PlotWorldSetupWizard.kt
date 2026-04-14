@@ -26,7 +26,7 @@ class PlotWorldSetupWizard(
     private val regionServiceProvider: () -> systems.diath.homeclaim.core.service.RegionService? = { null }
 ) {
     private val sessions = mutableMapOf<UUID, Session>()
-    private val maxPlotsPerSide = 10000
+    private val maxPlotsPerSide = 512
     private val bulkBlockSetter = BulkBlockSetter(plugin)
 
     fun handle(sender: CommandSender, args: List<String>): Boolean {
@@ -250,7 +250,8 @@ class PlotWorldSetupWizard(
             // Set world border
             if (cfg.plotsPerSide > 0) {
                 val size = (cfg.gridSize() * cfg.plotsPerSide).toDouble()
-                world.worldBorder.center = org.bukkit.Location(world, 0.0, 0.0, 0.0)
+                val center = cfg.plotAreaCenterCoordinate()
+                world.worldBorder.center = org.bukkit.Location(world, center, 0.0, center)
                 world.worldBorder.size = size
             }
             
@@ -399,6 +400,9 @@ class PlotWorldSetupWizard(
                 Step.PLOT_SIZE -> {
                     if (input.isNotEmpty()) {
                         val v = input.toIntOrNull() ?: return Result(false, i18n.msg("setup.invalid_number"))
+                        if (v !in 16..512) {
+                            return Result(false, "§cPlotgröße muss zwischen 16 und 512 liegen.")
+                        }
                         plotSize = v
                     }
                     step = Step.ROAD_WIDTH
@@ -407,6 +411,12 @@ class PlotWorldSetupWizard(
                 Step.ROAD_WIDTH -> {
                     if (input.isNotEmpty()) {
                         val v = input.toIntOrNull() ?: return Result(false, i18n.msg("setup.invalid_number"))
+                        if (v !in 1..128) {
+                            return Result(false, "§cStraßenbreite muss zwischen 1 und 128 liegen.")
+                        }
+                        if (v > plotSize) {
+                            return Result(false, "§cDie Straßenbreite sollte nicht größer als die Plotgröße sein.")
+                        }
                         roadWidth = v
                     }
                     step = Step.PLOT_HEIGHT
@@ -415,6 +425,9 @@ class PlotWorldSetupWizard(
                 Step.PLOT_HEIGHT -> {
                     if (input.isNotEmpty()) {
                         val v = input.toIntOrNull() ?: return Result(false, i18n.msg("setup.invalid_number"))
+                        if (v !in 1..319) {
+                            return Result(false, "§cPlot-Höhe muss zwischen 1 und 319 liegen.")
+                        }
                         plotHeight = v
                     }
                     step = Step.PLOT_BLOCK
@@ -453,6 +466,9 @@ class PlotWorldSetupWizard(
                         if (v < 0 || v > maxPlotsPerSide) {
                             return Result(false, i18n.msg("setup.invalid_plots_per_side", maxPlotsPerSide.toString()))
                         }
+                        if (v == 1) {
+                            return Result(false, "§cMindestens 2 Plots pro Seite oder 0 für unbegrenzt verwenden.")
+                        }
                         if (foliaMode && v > 256) {
                             return Result(false, "§cFür Folia sind mehr als 256 Plots pro Seite im Ingame-Setup nicht empfohlen. Nutze für größere Layouts bitte später eine manuelle Server-Konfiguration.")
                         }
@@ -474,10 +490,10 @@ class PlotWorldSetupWizard(
                 plotBlock = plotBlock,
                 roadBlock = roadBlock,
                 wallBlock = wallBlock,
-                accentBlock = accentBlock,                  // Added
+                accentBlock = accentBlock,
                 plotsPerSide = plotsPerSide,
                 schema = schema
-            )
+            ).sanitized()
         }
     }
 }
@@ -578,18 +594,19 @@ class PlotWorldConfigStore(
      * @param onComplete callback with result (needed because Folia runs async on GlobalRegionScheduler)
      */
     fun persistAndCreateWorld(cfg: PlotWorldConfig, onComplete: (WorldCreateResult) -> Unit) {
-        persistConfig(cfg)
+        val sanitizedCfg = cfg.sanitized()
+        persistConfig(sanitizedCfg)
 
-        if (Bukkit.getWorld(cfg.worldName) != null) {
+        if (Bukkit.getWorld(sanitizedCfg.worldName) != null) {
             onComplete(WorldCreateResult.ALREADY_EXISTS)
             return
         }
-        
+
         // Register generator in bukkit.yml (backup for next restart)
-        registerGeneratorInBukkitYml(cfg)
-        
-        val creator = WorldCreator(cfg.worldName)
-        creator.generator(PlotWorldChunkGenerator(cfg))
+        registerGeneratorInBukkitYml(sanitizedCfg)
+
+        val creator = WorldCreator(sanitizedCfg.worldName)
+        creator.generator(PlotWorldChunkGenerator(sanitizedCfg))
         
         if (isFolia()) {
             // Folia: Use GlobalRegionScheduler + WorldCreator.createWorld()
@@ -598,7 +615,7 @@ class PlotWorldConfigStore(
                 try {
                     val world = creator.createWorld()
                     if (world != null) {
-                        applyWorldBorder(world, cfg)
+                        applyWorldBorder(world, sanitizedCfg)
                         onComplete(WorldCreateResult.CREATED)
                     } else {
                         onComplete(WorldCreateResult.CREATE_FAILED)
@@ -615,7 +632,7 @@ class PlotWorldConfigStore(
                     onComplete(WorldCreateResult.CREATE_FAILED)
                     return
                 }
-                applyWorldBorder(world, cfg)
+                applyWorldBorder(world, sanitizedCfg)
                 onComplete(WorldCreateResult.CREATED)
             } catch (e: UnsupportedOperationException) {
                 onComplete(WorldCreateResult.FOLIA_RESTART_REQUIRED)
@@ -629,7 +646,8 @@ class PlotWorldConfigStore(
     private fun applyWorldBorder(world: org.bukkit.World, cfg: PlotWorldConfig) {
         if (cfg.plotsPerSide > 0) {
             val size = (cfg.gridSize() * cfg.plotsPerSide).toDouble()
-            world.worldBorder.center = org.bukkit.Location(world, 0.0, 0.0, 0.0)
+            val center = cfg.plotAreaCenterCoordinate()
+            world.worldBorder.center = org.bukkit.Location(world, center, 0.0, center)
             world.worldBorder.size = size
         }
     }

@@ -173,7 +173,7 @@ class FoliaPlotMutationService(
     }
 
     private fun repaintBatch(
-        world: org.bukkit.World,
+        @Suppress("UNUSED_PARAMETER") world: org.bukkit.World,
         batch: MutationBatch,
         @Suppress("UNUSED_PARAMETER") config: PlotWorldConfig,
     ) {
