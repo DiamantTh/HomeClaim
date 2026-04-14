@@ -49,6 +49,11 @@ internal class PlotJobRegistry(
         val failed: Int = 0
     )
 
+    private data class PersistedJobs(
+        val capturedAtMillis: Long,
+        val jobs: List<JobSnapshot>
+    )
+
     private val lock = Any()
     private val inFlight = ConcurrentHashMap<String, JobRecord>()
     // Track failures per world+kind key
@@ -248,20 +253,19 @@ internal class PlotJobRegistry(
         }
     }
 
-    private companion object {
-        const val DEFAULT_TIMEOUT_MILLIS = 120_000L
-    }
-
     /**
      * Serialize all active jobs to JSON format for persistence.
      * Useful for saving state before shutdown.
      */
     fun toPersistedFormat(): String {
-        val jobs = snapshot()
+        val payload = PersistedJobs(
+            capturedAtMillis = nowProvider(),
+            jobs = snapshot()
+        )
         return try {
-            ObjectMapper().writeValueAsString(jobs)
+            JSON_MAPPER.writeValueAsString(payload)
         } catch (e: Exception) {
-            "{}"
+            "[]"
         }
     }
 
@@ -271,23 +275,39 @@ internal class PlotJobRegistry(
      * Skips any jobs that already exist in-flight.
      */
     fun fromPersistedFormat(json: String, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): Int {
+        val payload = json.trim()
+        if (payload.isBlank() || payload == "{}" || payload == "[]") {
+            return 0
+        }
+
         return try {
-            val jobs = ObjectMapper().readValue(json, object: TypeReference<List<JobSnapshot>>() {})
+            val persisted = if (payload.startsWith("[")) {
+                PersistedJobs(
+                    capturedAtMillis = nowProvider(),
+                    jobs = JSON_MAPPER.readValue(payload, object: TypeReference<List<JobSnapshot>>() {})
+                )
+            } else {
+                JSON_MAPPER.readValue(payload, PersistedJobs::class.java)
+            }
+
             synchronized(lock) {
                 cleanupExpiredLocked(timeoutMillis)
                 var loaded = 0
-                jobs.forEach { snap ->
+                val now = nowProvider()
+                persisted.jobs.forEach { snap ->
                     if (!inFlight.containsKey(snap.key)) {
-                        // Reconstruct startedAt from age: assume age is age at snapshot time
-                        val estimatedStart = nowProvider() - snap.ageMillis
-                        inFlight[snap.key] = JobRecord(
-                            world = snap.world,
-                            kind = snap.kind,
-                            reason = snap.reason,
-                            startedAt = estimatedStart,
-                            cancelRequested = snap.cancelRequested
-                        )
-                        loaded++
+                        val estimatedStart = persisted.capturedAtMillis - snap.ageMillis
+                        val expired = timeoutMillis > 0L && (now - estimatedStart) >= timeoutMillis
+                        if (!expired) {
+                            inFlight[snap.key] = JobRecord(
+                                world = snap.world,
+                                kind = snap.kind,
+                                reason = snap.reason,
+                                startedAt = estimatedStart,
+                                cancelRequested = snap.cancelRequested
+                            )
+                            loaded++
+                        }
                     }
                 }
                 loaded
@@ -295,5 +315,10 @@ internal class PlotJobRegistry(
         } catch (e: Exception) {
             0
         }
+    }
+
+    private companion object {
+        const val DEFAULT_TIMEOUT_MILLIS = 120_000L
+        val JSON_MAPPER: ObjectMapper = ObjectMapper().findAndRegisterModules()
     }
 }
