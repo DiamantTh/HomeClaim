@@ -29,15 +29,23 @@ class PlotMutationEventListener(
     fun onPostRegionUpdateEvent(event: PostRegionUpdateEvent) {
         if (event.changes.isEmpty()) return
         val region = regionService.getRegionById(event.regionId) ?: return
-        plotMutationService.applyRegionState(region, MutationReason.ADMIN)
+
         if ("owner" in event.changes && PlotVisualStates.resolve(region) == PlotVisualState.UNCLAIMED) {
-            plotResetService.queueReset(region, PlotResetReason.UNCLAIM)
+            val resetQueued = plotResetService.queueReset(region, PlotResetReason.UNCLAIM)
+            if (!resetQueued) {
+                plotMutationService.applyRegionState(region, MutationReason.UNCLAIM)
+            }
+            return
         }
+
+        plotMutationService.applyRegionState(region, MutationReason.ADMIN)
     }
 
     fun onPostRegionDeleteEvent(event: PostRegionDeleteEvent) {
-        plotMutationService.handleRegionDeleted(event.regionSnapshot, MutationReason.UNCLAIM)
-        plotResetService.queueReset(event.regionSnapshot, PlotResetReason.DELETE)
+        val resetQueued = plotResetService.queueReset(event.regionSnapshot, PlotResetReason.DELETE)
+        if (!resetQueued) {
+            plotMutationService.handleRegionDeleted(event.regionSnapshot, MutationReason.UNCLAIM)
+        }
     }
 
     fun onPostRegionMergeEvent(event: PostRegionMergeEvent) {

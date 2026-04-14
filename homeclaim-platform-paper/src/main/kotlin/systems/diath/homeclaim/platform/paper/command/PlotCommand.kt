@@ -181,8 +181,15 @@ class PlotCommand(
         val centerZ = (nextPlot.bounds.minZ + nextPlot.bounds.maxZ) / 2.0
         val y = player.world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
 
-        player.teleportAsync(org.bukkit.Location(player.world, centerX, y, centerZ)).thenRun {
-            handleClaim(player)
+        player.teleportAsync(org.bukkit.Location(player.world, centerX, y, centerZ)).thenAccept { success ->
+            if (!success) {
+                player.sendMessage("§cTeleport to the selected plot failed.")
+                return@thenAccept
+            }
+            org.bukkit.Bukkit.getScheduler().runTask(
+                org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java),
+                Runnable { handleClaim(player) }
+            )
         }
     }
     
