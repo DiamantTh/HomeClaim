@@ -39,19 +39,35 @@ class PlotWorldInitializer(
         config: PlotWorldConfig,
         progressCallback: ((Double) -> Unit)? = null
     ): java.util.concurrent.CompletableFuture<Int> {
+        return initializePlots(world.name, config, progressCallback)
+    }
+
+    fun initializePlots(
+        worldName: String,
+        config: PlotWorldConfig,
+        progressCallback: ((Double) -> Unit)? = null
+    ): java.util.concurrent.CompletableFuture<Int> {
         val future = java.util.concurrent.CompletableFuture<Int>()
-        
+
         // Run async to avoid blocking the main thread and to stay Folia-compatible.
         taskScheduler.runAsyncTask(0) {
             try {
-                val count = createPlotRegions(world.name, config, progressCallback)
+                val count = initializePlotsSync(worldName, config, progressCallback)
                 future.complete(count)
             } catch (e: Exception) {
                 future.completeExceptionally(e)
             }
         }
-        
+
         return future
+    }
+
+    fun initializePlotsSync(
+        worldName: String,
+        config: PlotWorldConfig,
+        progressCallback: ((Double) -> Unit)? = null
+    ): Int {
+        return createPlotRegions(worldName, config, progressCallback)
     }
     
     /**
@@ -93,6 +109,11 @@ class PlotWorldInitializer(
         var count = 0
         val totalPlots = plotsPerSide * plotsPerSide
         var lastProgress = 0.0
+        val existingBounds = regionService.listAllRegions()
+            .asSequence()
+            .filter { it.world == worldName }
+            .map { boundsKey(it.bounds) }
+            .toMutableSet()
         
         // Create plots in a grid pattern
         for (pz in startIndex until endExclusive) {
@@ -121,6 +142,11 @@ class PlotWorldInitializer(
                     maxZ = maxZ
                 )
                 
+                val signature = boundsKey(bounds)
+                if (existingBounds.contains(signature)) {
+                    continue
+                }
+
                 // Create region for this plot
                 val region = Region(
                     id = RegionId(UUID.randomUUID()),
@@ -131,12 +157,13 @@ class PlotWorldInitializer(
                     roles = systems.diath.homeclaim.core.model.RegionRoles(),
                     flags = emptyMap(),
                     limits = emptyMap(),
-                    metadata = emptyMap(),
+                    metadata = mapOf("plotWorld" to "true"),
                     mergeGroupId = null,
                     price = 0.0  // Free to claim initially
                 )
-                
+
                 regionService.createRegion(region, bounds)
+                existingBounds.add(signature)
                 count++
                 
                 // Report progress every 5%
@@ -152,5 +179,16 @@ class PlotWorldInitializer(
         progressCallback?.invoke(1.0)
         
         return count
+    }
+
+    private fun boundsKey(bounds: Bounds): String {
+        return listOf(
+            bounds.minX,
+            bounds.maxX,
+            bounds.minY,
+            bounds.maxY,
+            bounds.minZ,
+            bounds.maxZ
+        ).joinToString(":")
     }
 }

@@ -108,6 +108,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         maybeStartRest(services)
         setupClientLinkChannels()
         this.services = services
+        recoverPendingPlotWorlds(services.regionService)
     }
 
     private fun setupClientLinkChannels() {
@@ -514,6 +515,13 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 }
                 return plotSetupWizard.handle(sender, args.drop(1))
             }
+            "plot" -> {
+                if (!sender.hasPermission("homeclaim.admin.setup")) {
+                    sender.sendMessage(i18n.msg("cmd.no.perm"))
+                    return true
+                }
+                return handlePlotAdminCommand(sender, args.drop(1))
+            }
             "audit" -> {
                 if (!sender.hasPermission("homeclaim.audit.view")) {
                     sender.sendMessage(i18n.msg("cmd.no.perm"))
@@ -536,6 +544,74 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             }
         }
         return true
+    }
+
+    private fun handlePlotAdminCommand(sender: CommandSender, args: List<String>): Boolean {
+        when (args.getOrNull(0)?.lowercase()) {
+            "init", "initialize", "recover" -> {
+                val worldName = args.getOrNull(1)?.trim()?.lowercase()
+                if (worldName.isNullOrBlank()) {
+                    sender.sendMessage("§eUsage: /homeclaim plot init <world>")
+                    return true
+                }
+
+                val svc = services?.regionService
+                if (svc == null) {
+                    sender.sendMessage("§cRegionService is not available right now.")
+                    return true
+                }
+
+                val world = server.getWorld(worldName)
+                if (world == null) {
+                    sender.sendMessage("§cWorld '$worldName' is not loaded.")
+                    return true
+                }
+
+                val cfg = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this).loadConfig(worldName)
+                if (cfg == null) {
+                    sender.sendMessage("§cNo plot world config found for '$worldName'.")
+                    return true
+                }
+
+                sender.sendMessage("§eInitializing plot regions for '$worldName'...")
+                val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(svc, this)
+                initializer.initializePlots(worldName, cfg).thenAccept { created ->
+                    sender.sendMessage("§a✓ Plot initialization finished for '$worldName' ($created new regions).")
+                }.exceptionally { ex ->
+                    sender.sendMessage("§cPlot initialization failed for '$worldName': ${ex.message}")
+                    null
+                }
+                return true
+            }
+            else -> {
+                sender.sendMessage("§eUsage: /homeclaim plot init <world>")
+                return true
+            }
+        }
+    }
+
+    private fun recoverPendingPlotWorlds(regionService: systems.diath.homeclaim.core.service.RegionService) {
+        val configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this)
+        val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(regionService, this)
+
+        server.worlds.forEach { world ->
+            val cfg = configStore.loadConfig(world.name) ?: return@forEach
+            if (cfg.plotsPerSide <= 0) return@forEach
+
+            val expected = cfg.plotsPerSide * cfg.plotsPerSide
+            val existing = regionService.listAllRegions().count { it.world == world.name }
+            if (existing >= expected) return@forEach
+
+            logger.info("Recovering plot regions for world '${world.name}' ($existing/$expected present)")
+            initializer.initializePlots(world.name, cfg).thenAccept { created ->
+                if (created > 0) {
+                    logger.info("Recovered $created missing plot regions for world '${world.name}'")
+                }
+            }.exceptionally { ex ->
+                logger.warning("Failed to recover plot regions for '${world.name}': ${ex.message}")
+                null
+            }
+        }
     }
 
     private fun createJdbcServices(config: StorageConfig): PlatformServices {
