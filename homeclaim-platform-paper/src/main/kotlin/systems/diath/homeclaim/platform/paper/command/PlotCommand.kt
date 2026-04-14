@@ -7,6 +7,7 @@ import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.economy.EconService
+import systems.diath.homeclaim.core.economy.SimpleEconService
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
@@ -137,17 +138,14 @@ class PlotCommand(
             return
         }
         
-        // Claim the plot
+        // Claim the plot. Free plot claiming should still work even if no real economy backend is wired.
         val playerId: PlayerId = player.uniqueId
-        if (econService != null) {
-            val success = regionService.claimRegion(regionId, playerId, 0.0, econService)
-            if (success) {
-                player.sendMessage(i18n.msg("plot.claim_success"))
-            } else {
-                player.sendMessage(i18n.msg("plot.claim_failed"))
-            }
+        val effectiveEconService = econService ?: SimpleEconService()
+        val success = regionService.claimRegion(regionId, playerId, 0.0, effectiveEconService)
+        if (success) {
+            player.sendMessage(i18n.msg("plot.claim_success"))
         } else {
-            player.sendMessage(i18n.msg("plot.economy_unavailable"))
+            player.sendMessage(i18n.msg("plot.claim_failed"))
         }
     }
     
@@ -214,8 +212,12 @@ class PlotCommand(
         val centerZ = (firstPlot.bounds.minZ + firstPlot.bounds.maxZ) / 2.0
         val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
         
-        player.teleportAsync(org.bukkit.Location(world, centerX, y, centerZ))
-        player.sendMessage(i18n.msg("plot.teleported"))
+        teleportWithFeedback(
+            player,
+            org.bukkit.Location(world, centerX, y, centerZ),
+            i18n.msg("plot.teleported"),
+            "§cTeleport to your plot failed."
+        )
     }
     
     private fun handleInfo(player: Player) {
@@ -362,8 +364,12 @@ class PlotCommand(
         val centerZ = (firstPlot.bounds.minZ + firstPlot.bounds.maxZ) / 2.0
         val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
         
-        player.teleportAsync(org.bukkit.Location(world, centerX, y, centerZ))
-        player.sendMessage(i18n.msg("plot.visit_success", target.name ?: "unknown"))
+        teleportWithFeedback(
+            player,
+            org.bukkit.Location(world, centerX, y, centerZ),
+            i18n.msg("plot.visit_success", target.name ?: "unknown"),
+            "§cTeleport to ${target.name ?: "unknown"}'s plot failed."
+        )
     }
     
     private fun handleMerge(player: Player, directionArg: String?) {
@@ -499,6 +505,25 @@ class PlotCommand(
                 player.sendMessage("\u00a77Cancelled: \u00a7e$cancelled job(s) in \u00a7f$scope")
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
+            "status" -> {
+                val worldName = args.getOrNull(2)
+                val scope = worldName ?: "all worlds"
+                val diagnostics = buildList {
+                    addAll(plotMutationService.activeJobDiagnostics(worldName))
+                    addAll(plotResetService.activeJobDiagnostics(worldName))
+                }
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
+                player.sendMessage("\u00a7aPlot Jobs Status")
+                player.sendMessage("\u00a77Scope: \u00a7f$scope")
+                if (diagnostics.isEmpty()) {
+                    player.sendMessage("\u00a77No active plot jobs.")
+                } else {
+                    diagnostics.forEach { line ->
+                        player.sendMessage("\u00a77- \u00a7f$line")
+                    }
+                }
+                player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
+            }
             else -> {
                 val backendLine = mutationBackend?.let { b ->
                     val caps = b.capabilities()
@@ -513,6 +538,7 @@ class PlotCommand(
                 player.sendMessage("\u00a7aPlot Jobs Manager")
                 player.sendMessage(backendLine)
                 player.sendMessage("\u00a79Usage:")
+                player.sendMessage("\u00a7f  /plot jobs status [world]\u00a77 - Show active queued jobs")
                 player.sendMessage("\u00a7f  /plot jobs cancel [world]\u00a77 - Cancel queued jobs")
                 player.sendMessage("\u00a79API:")
                 player.sendMessage("\u00a7f  GET /api/v1/metrics\u00a77 - Full server metrics")
@@ -605,6 +631,16 @@ class PlotCommand(
         return regionService.getRegionById(regionId)
     }
 
+    private fun teleportWithFeedback(player: Player, location: org.bukkit.Location, successMessage: String, failureMessage: String) {
+        player.teleportAsync(location).thenAccept { success ->
+            if (success) {
+                player.sendMessage(successMessage)
+            } else {
+                player.sendMessage(failureMessage)
+            }
+        }
+    }
+
     private fun collectMergeTargets(current: Region, candidates: List<Region>, direction: MergeDirection): List<Region> {
         return when (direction) {
             MergeDirection.ALL -> {
@@ -688,6 +724,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_reset"))
         player.sendMessage(i18n.msg("plot.help_alias"))
         player.sendMessage(i18n.msg("plot.help_description"))
+        player.sendMessage("§7/plot jobs status [world] - Show queued plot jobs")
         player.sendMessage("§7/plot jobs cancel [world] - Cancel queued plot jobs")
     }
     
