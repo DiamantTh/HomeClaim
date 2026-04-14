@@ -6,7 +6,7 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
-import systems.diath.homeclaim.core.event.PostRegionUpdateEvent
+import systems.diath.homeclaim.core.event.PostRegionDeleteEvent
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
@@ -15,22 +15,21 @@ import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.service.RegionService
 import java.util.UUID
 
-class PlotMutationEventListenerTest {
+class PlotMutationEventListenerDeleteTest {
 
     @Test
-    fun `unclaim update queues reset without duplicate repaint when reset was accepted`() {
+    fun `delete event skips extra repaint when reset was accepted`() {
         val regionService = mock(RegionService::class.java)
         val mutationService = mock(PlotMutationService::class.java)
         val resetService = mock(PlotResetService::class.java)
         val listener = PlotMutationEventListener(regionService, mutationService, resetService)
 
-        val regionId = RegionId(UUID.randomUUID())
         val region = Region(
-            id = regionId,
+            id = RegionId(UUID.randomUUID()),
             world = "plots",
             shape = RegionShape.CUBOID,
             bounds = Bounds(0, 15, 0, 319, 0, 15),
-            owner = PlotVisualStates.UNCLAIMED_OWNER,
+            owner = UUID.randomUUID(),
             roles = RegionRoles(),
             flags = emptyMap(),
             limits = emptyMap(),
@@ -38,14 +37,13 @@ class PlotMutationEventListenerTest {
             mergeGroupId = null,
             price = 0.0
         )
-        val event = PostRegionUpdateEvent(regionId, UUID.randomUUID(), mapOf("owner" to "changed"))
+        val event = PostRegionDeleteEvent(region.id, UUID.randomUUID(), "plots", region)
 
-        doReturn(region).`when`(regionService).getRegionById(regionId)
-        doReturn(true).`when`(resetService).queueReset(region, PlotResetReason.UNCLAIM)
+        doReturn(true).`when`(resetService).queueReset(region, PlotResetReason.DELETE)
 
-        listener.onPostRegionUpdateEvent(event)
+        listener.onPostRegionDeleteEvent(event)
 
-        verify(resetService, times(1)).queueReset(region, PlotResetReason.UNCLAIM)
+        verify(resetService, times(1)).queueReset(region, PlotResetReason.DELETE)
         verifyNoInteractions(mutationService)
     }
 }

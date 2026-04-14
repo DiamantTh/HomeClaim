@@ -400,8 +400,13 @@ class PlotCommand(
             sameOwnerRegions.filter { it.mergeGroupId != null && it.mergeGroupId in groupIds }
         }
         val mergedIds = (listOf(region) + selected + expanded).map { it.id }.toSet()
-        val mergeId = regionService.mergeRegions(mergedIds)
-        player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+        runCatching {
+            regionService.mergeRegions(mergedIds)
+        }.onSuccess { mergeId ->
+            player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+        }.onFailure {
+            player.sendMessage("§cPlot merge failed: ${it.message ?: "unknown error"}")
+        }
     }
 
     private fun handleUnlink(player: Player, createRoadsArg: String?) {
@@ -439,14 +444,19 @@ class PlotCommand(
             return
         }
 
-        val updatedRegions = groupedRegions.map { grouped ->
-            val updated = grouped.copy(mergeGroupId = null)
-            regionService.updateRegion(updated)
-            updated
+        runCatching {
+            val updatedRegions = groupedRegions.map { grouped ->
+                val updated = grouped.copy(mergeGroupId = null)
+                regionService.updateRegion(updated)
+                updated
+            }
+            plotMutationService.handleRegionsUnlinked(updatedRegions, createRoads)
+            updatedRegions
+        }.onSuccess { updatedRegions ->
+            player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
+        }.onFailure {
+            player.sendMessage("§cPlot unlink failed: ${it.message ?: "unknown error"}")
         }
-
-        plotMutationService.handleRegionsUnlinked(updatedRegions, createRoads)
-        player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
     }
 
     private fun handleReset(player: Player) {
@@ -463,7 +473,12 @@ class PlotCommand(
             return
         }
 
-        val queued = plotResetService.queueReset(region, PlotResetReason.MANUAL)
+        val queued = runCatching {
+            plotResetService.queueReset(region, PlotResetReason.MANUAL)
+        }.getOrElse {
+            player.sendMessage("§cPlot reset failed: ${it.message ?: "unknown error"}")
+            return
+        }
         if (queued) {
             player.sendMessage(i18n.msg("plot.reset_queued"))
         } else {
