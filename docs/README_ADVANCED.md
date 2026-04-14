@@ -80,6 +80,17 @@ Ingame Setup:
 
 - Paper: Welt erstellen + Konvertierung mit FAWE moeglich.
 - Folia: Welt erstellen unterstuetzt, Konvertierung deaktiviert.
+- Setup-Grenzen im Wizard: Plotgroesse 16 bis 512, Strassenbreite 1 bis 128 und nicht groesser als die Plotgroesse, Hoehe 1 bis 319.
+
+Manuelle Recovery bei einem unterbrochenen Erststart:
+
+```text
+/homeclaim plot init <welt>
+```
+
+- fuehrt die Plot-Initialisierung erneut aus
+- ist idempotent ausgelegt
+- fehlende Plot-Regionen werden beim Plugin-Start ebenfalls automatisch erkannt und nachgezogen
 
 ## Datenbank und Dialekte
 

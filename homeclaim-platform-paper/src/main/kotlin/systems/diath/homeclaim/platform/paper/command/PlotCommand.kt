@@ -152,9 +152,38 @@ class PlotCommand(
     }
     
     private fun handleAuto(player: Player) {
-        // TODO: Find next unclaimed plot and teleport + claim
         player.sendMessage(i18n.msg("plot.auto_searching"))
-        player.sendMessage(i18n.msg("plot.auto_not_implemented"))
+
+        val current = currentRegion(player)
+        if (current != null && current.owner == UNCLAIMED_UUID) {
+            handleClaim(player)
+            return
+        }
+
+        val worldName = player.world.name
+        val nextPlot = regionService.listAllRegions()
+            .asSequence()
+            .filter { it.world == worldName && it.owner == UNCLAIMED_UUID }
+            .minByOrNull { region ->
+                val centerX = (region.bounds.minX + region.bounds.maxX) / 2.0
+                val centerZ = (region.bounds.minZ + region.bounds.maxZ) / 2.0
+                val dx = player.location.x - centerX
+                val dz = player.location.z - centerZ
+                (dx * dx) + (dz * dz)
+            }
+
+        if (nextPlot == null) {
+            player.sendMessage("§cNo unclaimed plot was found in this world.")
+            return
+        }
+
+        val centerX = (nextPlot.bounds.minX + nextPlot.bounds.maxX) / 2.0
+        val centerZ = (nextPlot.bounds.minZ + nextPlot.bounds.maxZ) / 2.0
+        val y = player.world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
+
+        player.teleportAsync(org.bukkit.Location(player.world, centerX, y, centerZ)).thenRun {
+            handleClaim(player)
+        }
     }
     
     private fun handleHome(player: Player) {

@@ -37,6 +37,17 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 
 - Paper: Welt erstellen; Konvertierung mit FAWE moeglich.
 - Folia: Welt erstellen unterstuetzt; Konvertierung deaktiviert.
+- Sichere Setup-Grenzen: Plotgroesse 16 bis 512, Strassenbreite 1 bis 128, Hoehe 1 bis 319.
+
+### Recovery bei unvollstaendigem Erststart
+
+```text
+/homeclaim plot init <welt>
+```
+
+- initialisiert fehlende Plot-Regionen erneut
+- ist retry-sicher und erzeugt keine doppelten Regionen
+- beim Plugin-Start wird eine unvollstaendige Plotwelt zusaetzlich automatisch nachgezogen
 
 ## Wichtige Links
 
