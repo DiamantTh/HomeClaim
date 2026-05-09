@@ -30,18 +30,88 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityExplodeEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.player.PlayerMoveEvent
+import org.bukkit.event.player.PlayerTeleportEvent
 import org.bukkit.event.vehicle.VehicleEnterEvent
 import org.bukkit.event.vehicle.VehicleDamageEvent
 import net.kyori.adventure.text.Component
 import org.bukkit.Material
 import org.bukkit.entity.Animals
 import org.bukkit.entity.Monster
+import systems.diath.homeclaim.platform.paper.util.Permissions
 
 class PaperPolicyListener(
     private val policyGuard: PolicyGuard,
     private val componentHandler: ComponentTriggerHandler,
     private val auditService: AuditService? = null
 ) : Listener {
+
+    @EventHandler(ignoreCancelled = true)
+    fun onTeleport(event: PlayerTeleportEvent) = SafeEventHandler.handle(event, "onTeleport") {
+        val to = event.to ?: return@handle
+        val player = event.player
+        val position = to.position()
+        val decision = policyGuard.onRegionEnter(
+            playerId = player.uniqueId,
+            position = position,
+            playerName = player.name,
+            teleport = true,
+            entryBypass = Permissions.canBypassDeniedEntry(player),
+            extra = mapOf("event" to "PlayerTeleportEvent", "cause" to event.cause.name)
+        )
+        if (!decision.allowed && decision.reason != DecisionReason.NO_REGION) {
+            event.isCancelled = true
+            player.deny(decision.reason, decision.detail)
+            auditService?.append(
+                AuditEntries.denied(
+                    actorId = player.uniqueId,
+                    category = AuditTaxonomy.Category.REGION,
+                    action = AuditTaxonomy.Action.ENTER_DENIED,
+                    position = position,
+                    decision = decision,
+                    extra = mapOf("cause" to event.cause.name, "transport" to "teleport")
+                )
+            )
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onMove(event: PlayerMoveEvent) = SafeEventHandler.handle(event, "onMove") {
+        val from = event.from
+        val to = event.to ?: return@handle
+        if (from.world == to.world &&
+            from.blockX == to.blockX &&
+            from.blockY == to.blockY &&
+            from.blockZ == to.blockZ
+        ) {
+            return@handle
+        }
+
+        val player = event.player
+        val position = to.position()
+        val decision = policyGuard.onRegionEnter(
+            playerId = player.uniqueId,
+            position = position,
+            playerName = player.name,
+            teleport = false,
+            entryBypass = Permissions.canBypassDeniedEntry(player),
+            extra = mapOf("event" to "PlayerMoveEvent")
+        )
+        if (!decision.allowed && decision.reason != DecisionReason.NO_REGION) {
+            event.to = from
+            player.deny(decision.reason, decision.detail)
+            auditService?.append(
+                AuditEntries.denied(
+                    actorId = player.uniqueId,
+                    category = AuditTaxonomy.Category.REGION,
+                    action = AuditTaxonomy.Action.ENTER_DENIED,
+                    position = position,
+                    decision = decision,
+                    extra = mapOf("transport" to "move")
+                )
+            )
+        }
+    }
 
     @EventHandler(ignoreCancelled = true)
     fun onBlockPlace(event: BlockPlaceEvent) = SafeEventHandler.handle(event, "onBlockPlace") {
@@ -402,6 +472,15 @@ private fun org.bukkit.block.Block.position(): Position {
     )
 }
 
+private fun org.bukkit.Location.position(): Position {
+    return Position(
+        world = world?.name ?: "unknown",
+        x = blockX,
+        y = blockY,
+        z = blockZ
+    )
+}
+
 private fun Player.deny(reason: String, detail: String? = null) {
     val reasonMessage = policyReasonMessage(reason)
     val message = if (detail != null) {
@@ -424,6 +503,7 @@ private fun policyReasonMessage(reason: String): String = when (reason) {
     DecisionReason.ROLE_REQUIRED -> policyI18n.msg("policy.reason.role_required")
     DecisionReason.REDSTONE_DENY -> policyI18n.msg("policy.reason.redstone_deny")
     DecisionReason.MOD_ACTOR_DENY -> policyI18n.msg("policy.reason.mod_actor_deny")
+    DecisionReason.ENTRY_DENY -> policyI18n.msg("policy.reason.entry_deny")
     else -> policyI18n.msg("policy.reason.unknown")
 }
 

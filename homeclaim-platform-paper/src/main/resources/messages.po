@@ -790,6 +790,9 @@ msgstr "You are banned in this region."
 msgid "policy.reason.cooldown_active"
 msgstr "Cooldown active."
 
+msgid "policy.reason.entry_deny"
+msgstr "Entry denied."
+
 msgid "policy.reason.role_required"
 msgstr "Higher role required."
 

@@ -10,4 +10,5 @@ object DecisionReason {
     const val ROLE_REQUIRED = "ROLE_REQUIRED"
     const val REDSTONE_DENY = "REDSTONE_DENY"
     const val MOD_ACTOR_DENY = "MOD_ACTOR_DENY"
+    const val ENTRY_DENY = "ENTRY_DENY"
 }

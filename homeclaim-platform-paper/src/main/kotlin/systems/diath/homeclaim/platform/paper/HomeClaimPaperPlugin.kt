@@ -628,6 +628,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val regionRepo = JdbcRegionRepository(dataSource, eventDispatcher, auditService)
         val componentRepo = JdbcComponentRepository(dataSource)
         val zoneRepo = JdbcZoneRepository(dataSource)
+        val entryDenyRepo = systems.diath.homeclaim.core.store.JdbcEntryDenyRepository(dataSource)
         val profileService = JdbcFlagProfileService(dataSource)
         val flagLimitRepo = JdbcFlagLimitRepository(dataSource)
         val policy: PolicyService = SimplePolicyService(
@@ -637,7 +638,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 val region = regionRepo.getRegionById(regionId) ?: return@SimplePolicyService RegionRole.VISITOR
                 region.roles.resolve(playerId, region.owner)
             },
-            flagProfileService = profileService
+            flagProfileService = profileService,
+            entryDenyService = entryDenyRepo
         )
         loadProfilesFromConfig(null, profileService)
         val admin = RegionAdminServiceImpl(
@@ -653,6 +655,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             plotMemberService = null, // TODO: Implement PlotMemberService
             componentService = componentRepo,
             zoneService = zoneRepo,
+            entryDenyService = entryDenyRepo,
             adminService = admin,
             flagProfileService = profileService,
             auditService = auditService,
@@ -803,6 +806,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             plotMemberService = services.plotMemberService,
             zoneService = services.zoneService,
             componentService = services.componentService,
+            entryDenyService = services.entryDenyService,
             adminService = adminService,
             auditService = services.auditService,
             metricsService = metricsService,
@@ -813,7 +817,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             healthInfo = healthInfo,
             allowedHosts = allowedHosts,
             allowLocalhost = allowLocalhost,
-            enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false)
+            enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false),
+            entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) }
         ).start()
         logger.info(
             i18n.msg(
@@ -828,6 +833,28 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private fun loadI18n(): I18n {
         val tag = homeClaimConfig.getString("homeclaim.locale", "en")
         return I18n(localeTag = tag, loader = this::class.java.classLoader)
+    }
+
+    private fun kickPlayersDeniedByEntryRule(
+        services: PlatformServices,
+        rule: systems.diath.homeclaim.core.model.EntryDenyRule
+    ) {
+        val region = services.regionService.getRegionById(rule.regionId) ?: return
+        val world = server.getWorld(region.world) ?: return
+        val spawn = world.spawnLocation
+        server.onlinePlayers.forEach { player ->
+            if (player.world.name != region.world) return@forEach
+            val loc = player.location
+            val inside = loc.blockX in region.bounds.minX..region.bounds.maxX &&
+                loc.blockY in region.bounds.minY..region.bounds.maxY &&
+                loc.blockZ in region.bounds.minZ..region.bounds.maxZ
+            if (!inside) return@forEach
+            if (systems.diath.homeclaim.platform.paper.util.Permissions.canBypassDeniedEntry(player)) return@forEach
+            if (region.roles.resolve(player.uniqueId, region.owner) == RegionRole.OWNER) return@forEach
+            if (!rule.matches(player.uniqueId, player.name)) return@forEach
+            player.sendMessage(i18n.msg("policy.denied.detail", i18n.msg("policy.reason.entry_deny"), "entry_deny_id=${rule.id.value};reason=${rule.reason}"))
+            player.teleport(spawn)
+        }
     }
 }
 

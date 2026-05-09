@@ -5,6 +5,8 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.WorldId
 
 enum class Action {
+    REGION_ENTER,
+    REGION_TELEPORT_ENTER,
     REGION_BUILD,
     REGION_BREAK,
     REGION_INTERACT_BLOCK,

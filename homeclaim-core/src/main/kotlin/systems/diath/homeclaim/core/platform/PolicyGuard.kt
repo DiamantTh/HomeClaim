@@ -102,6 +102,28 @@ class PolicyGuard(
         )
     }
 
+    fun onRegionEnter(
+        playerId: UUID,
+        position: Position,
+        playerName: String? = null,
+        teleport: Boolean = false,
+        entryBypass: Boolean = false,
+        extra: Map<String, Any?> = emptyMap()
+    ): Decision {
+        val regionId = resolveRegion(position)
+        return policyService.evaluateWithActor(
+            playerId = playerId,
+            action = if (teleport) Action.REGION_TELEPORT_ENTER else Action.REGION_ENTER,
+            position = position,
+            actor = PolicyActorContext(kind = ActorKind.PLAYER, actorId = playerId.toString(), sourceMod = "paper"),
+            extraContext = extra + mapOf(
+                "regionId" to regionId,
+                "playerName" to playerName,
+                "entryBypass" to entryBypass
+            )
+        )
+    }
+
     private fun resolveRegion(position: Position): RegionId? {
         return regionService.getRegionAt(position.world, position.x, position.y, position.z)
     }

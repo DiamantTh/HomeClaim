@@ -37,6 +37,12 @@ permissions:
   homeclaim.admin.components:
     description: Allows managing components in any region (Owner/Trusted bypass this)
     default: false
+  homeclaim.admin.entry.denied:
+    description: Allows entering plots despite HomeClaim entry deny rules
+    default: op
+  homeclaim.admin.entry.force:
+    description: Allows force-entry workflows that intentionally bypass entry deny rules for other players
+    default: op
   homeclaim.audit.view:
     description: Allows viewing audit logs of player actions in regions (requires LuckPerms/permission plugin)
     default: false

@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper
 import systems.diath.homeclaim.core.event.EventDispatcher
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.ComponentService
+import systems.diath.homeclaim.core.service.EntryDenyService
 import systems.diath.homeclaim.core.service.FlagProfileService
 import systems.diath.homeclaim.core.service.PlotMemberService
 import systems.diath.homeclaim.core.service.RegionAdminService
@@ -21,6 +22,7 @@ data class PlatformServices(
     val plotMemberService: PlotMemberService?,
     val componentService: ComponentService,
     val zoneService: ZoneService,
+    val entryDenyService: EntryDenyService? = null,
     val adminService: RegionAdminService? = null,
     val flagProfileService: FlagProfileService? = null,
     val auditService: AuditService? = null,
@@ -31,4 +33,3 @@ data class PlatformServices(
     val componentCreationService: ComponentCreationService? = null,
     val liftEventDispatcher: LiftEventDispatcher? = null
 )
-

@@ -5,6 +5,7 @@ import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.PolicyValue
+import systems.diath.homeclaim.core.service.EntryDenyService
 import systems.diath.homeclaim.core.service.FlagProfileService
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
@@ -19,7 +20,8 @@ class SimplePolicyService(
     private val regionService: RegionService,
     private val zoneService: ZoneService,
     private val roleResolver: (RegionId, PlayerId) -> RegionRole,
-    private val flagProfileService: FlagProfileService? = null
+    private val flagProfileService: FlagProfileService? = null,
+    private val entryDenyService: EntryDenyService? = null
 ) : PolicyService {
     private val componentCooldowns = ConcurrentHashMap<Pair<RegionId, Pair<systems.diath.homeclaim.core.model.ComponentId, PlayerId>>, Instant>()
 
@@ -69,6 +71,8 @@ class SimplePolicyService(
         }
 
         val (allowed, reason, detail) = when (action) {
+            Action.REGION_ENTER -> checkEntry(regionId, playerId, role, extraContext)
+            Action.REGION_TELEPORT_ENTER -> checkEntry(regionId, playerId, role, extraContext)
             Action.REGION_BUILD -> checkFlag(effective, FlagCatalog.BUILD, role)
             Action.REGION_BREAK -> checkFlag(effective, FlagCatalog.BREAK, role)
             Action.REGION_INTERACT_BLOCK -> checkFlag(effective, FlagCatalog.INTERACT_BLOCK, role)
@@ -145,6 +149,35 @@ class SimplePolicyService(
             else -> "requires_role=${minimalAllowedRole(flag)}"
         }
         return Triple(allowed, reason, detail)
+    }
+
+    private fun checkEntry(
+        regionId: RegionId,
+        playerId: PlayerId,
+        role: RegionRole,
+        extraContext: Map<String, Any?>
+    ): Triple<Boolean, String, String?> {
+        if (extraContext["entryBypass"] == true) {
+            return Triple(true, DecisionReason.ALLOWED, null)
+        }
+        if (role == RegionRole.OWNER) {
+            return Triple(true, DecisionReason.ALLOWED, null)
+        }
+        if (role == RegionRole.BANNED) {
+            return Triple(false, DecisionReason.ROLE_BANNED, null)
+        }
+
+        val playerName = extraContext["playerName"]?.toString()
+        val rule = entryDenyService?.findActiveDeny(regionId, playerId, playerName)
+        if (rule != null) {
+            return Triple(
+                false,
+                DecisionReason.ENTRY_DENY,
+                "entry_deny_id=${rule.id.value};reason=${rule.reason}"
+            )
+        }
+
+        return Triple(true, DecisionReason.ALLOWED, null)
     }
 
     private fun minimalAllowedRole(flag: systems.diath.homeclaim.core.model.FlagKey): String {

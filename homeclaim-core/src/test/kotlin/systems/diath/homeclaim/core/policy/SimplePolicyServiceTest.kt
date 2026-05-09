@@ -14,7 +14,9 @@ import systems.diath.homeclaim.core.model.ZoneDefaults
 import systems.diath.homeclaim.core.store.InMemoryRegionStore
 import systems.diath.homeclaim.core.store.InMemoryZoneStore
 import systems.diath.homeclaim.core.model.ComponentId
+import systems.diath.homeclaim.core.model.EntryDenyTargetType
 import systems.diath.homeclaim.core.policy.FlagProfile
+import systems.diath.homeclaim.core.store.InMemoryEntryDenyService
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -149,5 +151,55 @@ class SimplePolicyServiceTest {
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position(world, 5, 5, 5), extraContext = mapOf("flagProfile" to profile, "regionId" to regionId))
         assertFalse(decision.allowed)
         assertEquals(DecisionReason.FLAG_DENY, decision.reason)
+    }
+
+    @Test
+    fun `entry deny rule blocks plot entry`() {
+        val regionStore = InMemoryRegionStore().also { it.createRegion(region.copy(flags = emptyMap()), region.bounds) }
+        val zoneStore = InMemoryZoneStore()
+        val entryDenyService = InMemoryEntryDenyService().also {
+            it.createRule(
+                regionId = regionId,
+                targetType = EntryDenyTargetType.PLAYER,
+                targetValue = visitor.toString(),
+                reason = "abuse report",
+                createdBy = owner,
+                expiresAt = null
+            )
+        }
+        val service = SimplePolicyService(
+            regionStore,
+            zoneStore,
+            roleResolver = { _, player -> if (player == owner) RegionRole.OWNER else RegionRole.VISITOR },
+            entryDenyService = entryDenyService
+        )
+
+        val decision = service.evaluate(visitor, Action.REGION_ENTER, Position(world, 5, 5, 5), extraContext = mapOf("regionId" to regionId))
+
+        assertFalse(decision.allowed)
+        assertEquals(DecisionReason.ENTRY_DENY, decision.reason)
+        assertTrue(decision.detail?.contains("entry_deny_id=") == true)
+    }
+
+    @Test
+    fun `entry bypass allows denied entry`() {
+        val regionStore = InMemoryRegionStore().also {
+            it.createRegion(region.copy(roles = RegionRoles(banned = setOf(visitor)), flags = emptyMap()), region.bounds)
+        }
+        val zoneStore = InMemoryZoneStore()
+        val service = SimplePolicyService(
+            regionStore,
+            zoneStore,
+            roleResolver = { _, player -> if (player == visitor) RegionRole.BANNED else RegionRole.VISITOR }
+        )
+
+        val decision = service.evaluate(
+            visitor,
+            Action.REGION_TELEPORT_ENTER,
+            Position(world, 5, 5, 5),
+            extraContext = mapOf("regionId" to regionId, "entryBypass" to true)
+        )
+
+        assertTrue(decision.allowed)
     }
 }

@@ -27,6 +27,8 @@ object Permissions {
     const val ADMIN_BYPASS_RATELIMIT = "homeclaim.admin.bypass.ratelimit"
     const val ADMIN_BYPASS_CLAIM_LIMIT = "homeclaim.admin.bypass.claimlimit"
     const val ADMIN_BYPASS_PROTECTION = "homeclaim.admin.bypass.protection"
+    const val ADMIN_ENTRY_DENIED = "homeclaim.admin.entry.denied"
+    const val ADMIN_ENTRY_FORCE = "homeclaim.admin.entry.force"
     const val ADMIN_DELETE_ANY = "homeclaim.admin.delete.any"
     const val ADMIN_EDIT_ANY = "homeclaim.admin.edit.any"
     
@@ -92,6 +94,10 @@ object Permissions {
      */
     fun canBypassProtection(player: Player): Boolean {
         return player.hasPermission(ADMIN_BYPASS_PROTECTION) || player.hasPermission(ADMIN_ALL)
+    }
+
+    fun canBypassDeniedEntry(player: Player): Boolean {
+        return player.hasPermission(ADMIN_ENTRY_DENIED) || player.hasPermission(ADMIN_ALL)
     }
     
     /**

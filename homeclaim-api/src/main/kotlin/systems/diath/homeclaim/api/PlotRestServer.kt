@@ -3,6 +3,7 @@ package systems.diath.homeclaim.api
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.SerializationFeature
 import systems.diath.homeclaim.core.model.*
+import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.FlagProfile
 import systems.diath.homeclaim.core.service.*
 import systems.diath.homeclaim.api.license.*
@@ -77,6 +78,7 @@ class PlotRestServer(
     private val plotMemberService: PlotMemberService?,
     private val zoneService: ZoneService?,
     private val componentService: ComponentService?,
+    private val entryDenyService: EntryDenyService? = null,
     private val adminService: RegionAdminService?,
     private val auditService: AuditService? = null,
     private val metricsService: ServerMetricsService? = null,
@@ -87,7 +89,8 @@ class PlotRestServer(
     private val healthInfo: HealthInfo? = null,
     private val allowedHosts: Set<String> = emptySet(),
     private val allowLocalhost: Boolean = true,
-    private val enableCors: Boolean = false
+    private val enableCors: Boolean = false,
+    private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null
 ) {
     fun start(): ApplicationEngine = embeddedServer(Netty, port = port) {
         configurePlugins()
@@ -185,6 +188,7 @@ class PlotRestServer(
                         version = "1.0.0",
                         endpoints = listOf(
                             "/health", "/info", "/plots", "/plots/{id}", "/plots/at",
+                            "/plots/entry-check", "/plots/{id}/entry-denies", "/plots/{id}/entry-check",
                             "/players/{uuid}/plots", "/zones", "/profiles", "/admin/stats",
                             "/metrics", "/metrics/plots", "/metrics/worlds/{name}"
                         )
@@ -290,6 +294,7 @@ class PlotRestServer(
                     get {
                         if (!auth.check(call)) return@get
                         val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
+                        val includeEntryDenies = call.request.queryParameters["includeEntryDenies"]?.toBoolean() == true
                         val worldFilter = call.request.queryParameters["world"]
                         val owner = call.request.queryParameters["owner"]?.toUuidOrNull()
                         val available = call.request.queryParameters["available"]?.toBoolean()
@@ -316,7 +321,13 @@ class PlotRestServer(
                         plots = plots.drop(offset).take(limit)
                         
                         call.respond(PaginatedResponse(
-                            data = plots.map { it.toDto(includeOwnerMeta, ownerMetadataResolver) },
+                            data = plots.map {
+                                it.toDto(
+                                    includeOwnerMeta,
+                                    ownerMetadataResolver,
+                                    entryDenies = entryDeniesFor(it, includeEntryDenies)
+                                )
+                            },
                             total = total,
                             limit = limit,
                             offset = offset
@@ -327,6 +338,7 @@ class PlotRestServer(
                     get("/at") {
                         if (!auth.check(call)) return@get
                         val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
+                        val includeEntryDenies = call.request.queryParameters["includeEntryDenies"]?.toBoolean() == true
                         val world = call.request.queryParameters["world"]
                             ?: throw IllegalArgumentException("Missing 'world' parameter")
                         val x = call.request.queryParameters["x"]?.toIntOrNull()
@@ -341,7 +353,13 @@ class PlotRestServer(
                         } else {
                             val region = regionService.getRegionById(regionId)
                             if (region != null) {
-                                call.respond(region.toDto(includeOwnerMeta, ownerMetadataResolver))
+                                call.respond(
+                                    region.toDto(
+                                        includeOwnerMeta,
+                                        ownerMetadataResolver,
+                                        entryDenies = entryDeniesFor(region, includeEntryDenies)
+                                    )
+                                )
                             } else {
                                 call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Plot not found"))
                             }
@@ -352,11 +370,32 @@ class PlotRestServer(
                     get("/{id}") {
                         if (!auth.check(call)) return@get
                         val includeOwnerMeta = call.request.queryParameters["includeOwnerMeta"]?.toBoolean() == true
+                        val includeEntryDenies = call.request.queryParameters["includeEntryDenies"]?.toBoolean() == true
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val region = regionService.getRegionById(id)
                             ?: throw NoSuchElementException("Plot not found")
-                        call.respond(region.toDto(includeOwnerMeta, ownerMetadataResolver))
+                        call.respond(
+                            region.toDto(
+                                includeOwnerMeta,
+                                ownerMetadataResolver,
+                                entryDenies = entryDeniesFor(region, includeEntryDenies)
+                            )
+                        )
+                    }
+
+                    // POST /plots/entry-check
+                    post("/entry-check") {
+                        if (!auth.check(call)) return@post
+                        val req = call.receive<EntryCheckByPositionRequest>()
+                        val regionId = regionService.getRegionAt(req.world, req.x, req.y, req.z)
+                        if (regionId == null) {
+                            call.respond(EntryCheckResponse(allowed = true, reason = "NO_REGION"))
+                            return@post
+                        }
+                        val region = regionService.getRegionById(regionId)
+                            ?: throw NoSuchElementException("Plot not found")
+                        call.respond(checkEntry(region, req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId"), req.playerName, req.bypass))
                     }
                     
                     // POST /plots/{id}/buy
@@ -425,6 +464,102 @@ class PlotRestServer(
                             ?: throw IllegalStateException("Admin service not available")
                         
                         call.respond(ApiSuccess("limit_updated"))
+                    }
+
+                    // GET /plots/{id}/entry-denies
+                    get("/{id}/entry-denies") {
+                        if (!auth.check(call)) return@get
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
+                        val includeInactive = call.request.queryParameters["includeInactive"]?.toBoolean() == true
+                        val rules = entryDenyService?.listRules(id, includeInactive) ?: emptyList()
+                        call.respond(rules.map { it.toDto() })
+                    }
+
+                    // POST /plots/{id}/entry-denies
+                    post("/{id}/entry-denies") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val req = call.receive<EntryDenyCreateRequest>()
+                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
+                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
+                        val createdBy = req.createdBy.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid createdBy UUID")
+                        val rule = service.createRule(
+                            regionId = id,
+                            targetType = EntryDenyTargetType.valueOf(req.targetType.uppercase()),
+                            targetValue = req.targetValue,
+                            reason = req.reason,
+                            createdBy = createdBy,
+                            expiresAt = req.expiresAt?.let(Instant::parse)
+                        )
+                        auditService?.append(
+                            AuditEntry(
+                                actorId = createdBy,
+                                targetId = id.value,
+                                category = AuditTaxonomy.Category.REGION,
+                                action = AuditTaxonomy.Action.UPSERT,
+                                payload = mapOf(
+                                    "entryDenyId" to rule.id.value.toString(),
+                                    "targetType" to rule.targetType.name,
+                                    "targetValue" to rule.targetValue,
+                                    "reason" to rule.reason
+                                )
+                            )
+                        )
+                        entryDenyCreatedHandler?.invoke(rule)
+                        call.respond(rule.toDto())
+                    }
+
+                    // POST /plots/{id}/entry-check
+                    post("/{id}/entry-check") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val req = call.receive<EntryCheckRequest>()
+                        val region = regionService.getRegionById(id)
+                            ?: throw NoSuchElementException("Plot not found")
+                        val playerId = req.playerId.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid playerId")
+                        call.respond(checkEntry(region, playerId, req.playerName, req.bypass))
+                    }
+
+                    // POST /plots/{id}/entry-denies/{denyId}/report
+                    post("/{id}/entry-denies/{denyId}/report") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val denyId = call.parameters["denyId"]?.toEntryDenyId()
+                            ?: throw IllegalArgumentException("Invalid entry deny ID")
+                        val req = call.receive<EntryDenyReportRequest>()
+                        val reportedBy = req.reportedBy.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid reportedBy UUID")
+                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
+                        val rule = service.getRule(denyId) ?: throw NoSuchElementException("Entry deny not found")
+                        if (rule.regionId != id) throw NoSuchElementException("Entry deny not found")
+                        val ok = service.reportRule(denyId, reportedBy, req.reason)
+                        if (!ok) throw NoSuchElementException("Entry deny not found")
+                        call.respond(ApiSuccess("entry_deny_reported"))
+                    }
+
+                    // POST /plots/{id}/entry-denies/{denyId}/revoke
+                    post("/{id}/entry-denies/{denyId}/revoke") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val denyId = call.parameters["denyId"]?.toEntryDenyId()
+                            ?: throw IllegalArgumentException("Invalid entry deny ID")
+                        val req = call.receive<EntryDenyRevokeRequest>()
+                        val revokedBy = req.revokedBy.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid revokedBy UUID")
+                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
+                        val rule = service.getRule(denyId) ?: throw NoSuchElementException("Entry deny not found")
+                        if (rule.regionId != id) throw NoSuchElementException("Entry deny not found")
+                        val ok = service.revokeRule(denyId, revokedBy, req.reason)
+                        if (!ok) throw NoSuchElementException("Entry deny not found")
+                        call.respond(ApiSuccess("entry_deny_revoked"))
                     }
                     
                     // POST /plots/{id}/trust
@@ -642,6 +777,54 @@ class PlotRestServer(
             }
         }
     }
+
+    private fun entryDeniesFor(region: Region, include: Boolean): List<EntryDenyRuleDto> {
+        if (!include) return emptyList()
+        return entryDenyService?.listRules(region.id, includeInactive = true)?.map { it.toDto() } ?: emptyList()
+    }
+
+    private fun checkEntry(region: Region, playerId: UUID, playerName: String?, bypass: Boolean): EntryCheckResponse {
+        if (bypass) {
+            return EntryCheckResponse(
+                allowed = true,
+                reason = "BYPASS",
+                regionId = region.id.value.toString()
+            )
+        }
+
+        val role = region.roles.resolve(playerId, region.owner)
+        if (role == RegionRole.OWNER) {
+            return EntryCheckResponse(
+                allowed = true,
+                reason = "OWNER",
+                regionId = region.id.value.toString()
+            )
+        }
+        if (role == RegionRole.BANNED) {
+            return EntryCheckResponse(
+                allowed = false,
+                reason = DecisionReason.ROLE_BANNED,
+                regionId = region.id.value.toString()
+            )
+        }
+
+        val rule = entryDenyService?.findActiveDeny(region.id, playerId, playerName)
+        if (rule != null) {
+            return EntryCheckResponse(
+                allowed = false,
+                reason = DecisionReason.ENTRY_DENY,
+                regionId = region.id.value.toString(),
+                entryDenyId = rule.id.value.toString(),
+                detail = rule.reason
+            )
+        }
+
+        return EntryCheckResponse(
+            allowed = true,
+            reason = DecisionReason.ALLOWED,
+            regionId = region.id.value.toString()
+        )
+    }
     
     // ============================================
     // OpenAPI Specification
@@ -753,6 +936,41 @@ class PlotRestServer(
                         "200" to mapOf("description" to "Plot details"),
                         "404" to mapOf("description" to "Plot not found")
                     )
+                )
+            ),
+            "/plots/entry-check" to mapOf(
+                "post" to mapOf(
+                    "summary" to "Check whether a player may enter coordinates",
+                    "tags" to listOf("Entry"),
+                    "responses" to mapOf("200" to mapOf("description" to "Entry decision"))
+                )
+            ),
+            "/plots/{id}/entry-check" to mapOf(
+                "post" to mapOf(
+                    "summary" to "Check whether a player may enter a plot",
+                    "tags" to listOf("Entry"),
+                    "parameters" to listOf(
+                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                    ),
+                    "responses" to mapOf("200" to mapOf("description" to "Entry decision"))
+                )
+            ),
+            "/plots/{id}/entry-denies" to mapOf(
+                "get" to mapOf(
+                    "summary" to "List plot entry deny rules",
+                    "tags" to listOf("Entry"),
+                    "parameters" to listOf(
+                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                    ),
+                    "responses" to mapOf("200" to mapOf("description" to "Entry deny rules"))
+                ),
+                "post" to mapOf(
+                    "summary" to "Create a plot entry deny rule",
+                    "tags" to listOf("Entry"),
+                    "parameters" to listOf(
+                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                    ),
+                    "responses" to mapOf("200" to mapOf("description" to "Created entry deny rule"))
                 )
             ),
             "/plots/{id}/buy" to mapOf(
@@ -920,7 +1138,26 @@ data class PlotDto(
     val limits: Map<String, Any>,
     val trusted: List<String>,
     val members: List<String>,
-    val banned: List<String>
+    val banned: List<String>,
+    val entryDenies: List<EntryDenyRuleDto> = emptyList()
+)
+
+data class EntryDenyRuleDto(
+    val id: String,
+    val regionId: String,
+    val targetType: String,
+    val targetValue: String,
+    val reason: String,
+    val createdBy: String,
+    val createdAt: String,
+    val expiresAt: String? = null,
+    val status: String,
+    val reportedBy: String? = null,
+    val reportedAt: String? = null,
+    val reportReason: String? = null,
+    val revokedBy: String? = null,
+    val revokedAt: String? = null,
+    val revokeReason: String? = null
 )
 
 data class OwnerMetadataDto(
@@ -984,6 +1221,36 @@ data class BuyRequest(val buyerId: String)
 data class SellRequest(val price: Double)
 data class FlagUpdateRequest(val key: String, val value: Any?)
 data class PlayerActionRequest(val playerId: String)
+data class EntryDenyCreateRequest(
+    val targetType: String,
+    val targetValue: String,
+    val reason: String,
+    val createdBy: String,
+    val expiresAt: String? = null
+)
+data class EntryDenyReportRequest(val reportedBy: String, val reason: String)
+data class EntryDenyRevokeRequest(val revokedBy: String, val reason: String = "")
+data class EntryCheckRequest(
+    val playerId: String,
+    val playerName: String? = null,
+    val bypass: Boolean = false
+)
+data class EntryCheckByPositionRequest(
+    val world: String,
+    val x: Int,
+    val y: Int,
+    val z: Int,
+    val playerId: String,
+    val playerName: String? = null,
+    val bypass: Boolean = false
+)
+data class EntryCheckResponse(
+    val allowed: Boolean,
+    val reason: String,
+    val regionId: String? = null,
+    val entryDenyId: String? = null,
+    val detail: String? = null
+)
 data class ApplyProfileRequest(val profile: String)
 data class ProfileCreateRequest(
     val name: String,
@@ -1045,7 +1312,11 @@ data class ProjectLicenseScore(
 // Extension Functions
 // ============================================
 
-private fun Region.toDto(includeOwnerMeta: Boolean = false, ownerMetadataResolver: OwnerMetadataResolver? = null) = PlotDto(
+private fun Region.toDto(
+    includeOwnerMeta: Boolean = false,
+    ownerMetadataResolver: OwnerMetadataResolver? = null,
+    entryDenies: List<EntryDenyRuleDto> = emptyList()
+) = PlotDto(
     id = id.value.toString(),
     world = world,
     owner = owner.toString(),
@@ -1066,7 +1337,26 @@ private fun Region.toDto(includeOwnerMeta: Boolean = false, ownerMetadataResolve
     limits = limits.mapKeys { it.key.value }.mapValues { it.value.toAny() },
     trusted = roles.trusted.map { it.toString() },
     members = roles.members.map { it.toString() },
-    banned = roles.banned.map { it.toString() }
+    banned = roles.banned.map { it.toString() },
+    entryDenies = entryDenies
+)
+
+private fun EntryDenyRule.toDto() = EntryDenyRuleDto(
+    id = id.value.toString(),
+    regionId = regionId.value.toString(),
+    targetType = targetType.name,
+    targetValue = targetValue,
+    reason = reason,
+    createdBy = createdBy.toString(),
+    createdAt = createdAt.toString(),
+    expiresAt = expiresAt?.toString(),
+    status = status.name,
+    reportedBy = reportedBy?.toString(),
+    reportedAt = reportedAt?.toString(),
+    reportReason = reportReason,
+    revokedBy = revokedBy?.toString(),
+    revokedAt = revokedAt?.toString(),
+    revokeReason = revokeReason
 )
 
 private fun Component.toDto() = ComponentDto(
@@ -1101,6 +1391,7 @@ private fun Any?.toPolicyValue(): PolicyValue = when (this) {
 private fun String.toUuidOrNull(): UUID? = try { UUID.fromString(this) } catch (_: Exception) { null }
 private fun String.toRegionId(): RegionId? = toUuidOrNull()?.let { RegionId(it) }
 private fun String.toZoneId(): ZoneId? = toUuidOrNull()?.let { ZoneId(it) }
+private fun String.toEntryDenyId(): EntryDenyId? = toUuidOrNull()?.let { EntryDenyId(it) }
 
 // ============================================
 // License Analysis Functions

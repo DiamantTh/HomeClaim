@@ -980,6 +980,9 @@ msgstr "Du bist in dieser Region gebannt."
 msgid "policy.reason.cooldown_active"
 msgstr "Cooldown aktiv."
 
+msgid "policy.reason.entry_deny"
+msgstr "Betreten verweigert."
+
 msgid "policy.reason.role_required"
 msgstr "Höhere Rolle erforderlich."
 

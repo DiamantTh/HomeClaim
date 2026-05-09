@@ -1071,6 +1071,9 @@ msgstr "Redstone is hier deactivated."
 msgid "policy.reason.role_banned"
 msgstr "You bist in This Region gebannt."
 
+msgid "policy.reason.entry_deny"
+msgstr "Entry denied."
+
 msgid "policy.reason.role_required"
 msgstr "Höhere Role erforderlich."
 
@@ -1384,4 +1387,3 @@ msgstr "§8§m──────────────────────
 
 msgid "zone.usage"
 msgstr "§cVerwendung: /zone info"
-
