@@ -16,9 +16,8 @@ softdepend:
 commands:
   homeclaim:
     description: HomeClaim Admin-Kommandos
-    usage: /homeclaim setup
+    usage: /homeclaim [setup|plot|entryforce|audit|reload|migrate]
     aliases: [hc]
-    permission: homeclaim.admin
   plot:
     description: Plot Verwaltung (P2-Style)
     usage: /plot [claim|auto|home|info|list|visit|merge|unlink|reset|jobs]

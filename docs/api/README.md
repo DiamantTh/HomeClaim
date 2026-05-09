@@ -58,6 +58,13 @@ When the server is running, access the Swagger UI:
 | POST | `/plots/{id}/sell` | List plot for sale |
 | POST | `/plots/{id}/flags` | Update plot flag |
 | POST | `/plots/{id}/limits` | Update plot limit |
+| POST | `/plots/entry-check` | Check entry at coordinates |
+| POST | `/plots/{id}/entry-check` | Check entry for a plot |
+| GET | `/plots/{id}/entry-denies` | List entry deny rules |
+| POST | `/plots/{id}/entry-denies` | Create a reasoned entry deny rule |
+| POST | `/plots/{id}/entry-denies/{denyId}/report` | Report a contradictory/abusive deny rule |
+| POST | `/plots/{id}/entry-denies/{denyId}/revoke` | Revoke an entry deny rule |
+| POST | `/plots/{id}/entry-force` | Grant short-lived force-entry for one player |
 | POST | `/plots/{id}/trust` | Trust a player |
 | POST | `/plots/{id}/untrust` | Untrust a player |
 | GET | `/plots/{id}/components` | List plot components |
@@ -105,6 +112,43 @@ curl -X POST -H "X-Admin-Token: your-token" \
   -H "Content-Type: application/json" \
   -d '{"key": "pvp", "value": false}' \
   "http://localhost:8080/api/v1/plots/123e4567-e89b-12d3-a456-426614174000/flags"
+```
+
+### Create an entry deny rule
+
+```bash
+curl -X POST -H "X-Admin-Token: your-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetType": "WILDCARD",
+    "targetValue": "bot-*",
+    "reason": "automated grief pattern",
+    "createdBy": "550e8400-e29b-41d4-a716-446655440000"
+  }' \
+  "http://localhost:8080/api/v1/plots/123e4567-e89b-12d3-a456-426614174000/entry-denies"
+```
+
+### Check whether a player may enter
+
+```bash
+curl -X POST -H "X-Admin-Token: your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"playerId": "550e8400-e29b-41d4-a716-446655440000", "playerName": "Steve"}' \
+  "http://localhost:8080/api/v1/plots/123e4567-e89b-12d3-a456-426614174000/entry-check"
+```
+
+### Grant temporary force-entry
+
+```bash
+curl -X POST -H "X-Admin-Token: your-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playerId": "550e8400-e29b-41d4-a716-446655440000",
+    "grantedBy": "11111111-1111-1111-1111-111111111111",
+    "reason": "staff teleport for support case",
+    "ttlSeconds": 30
+  }' \
+  "http://localhost:8080/api/v1/plots/123e4567-e89b-12d3-a456-426614174000/entry-force"
 ```
 
 ### Create a flag profile

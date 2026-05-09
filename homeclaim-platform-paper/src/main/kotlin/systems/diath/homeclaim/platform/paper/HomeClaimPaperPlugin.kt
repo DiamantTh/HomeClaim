@@ -1,7 +1,12 @@
 package systems.diath.homeclaim.platform.paper
 
+import systems.diath.homeclaim.api.EntryForceGrantDto
+import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.policy.SimplePolicyService
+import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionAdminServiceImpl
 import systems.diath.homeclaim.core.store.JdbcAuditService
@@ -24,13 +29,20 @@ import systems.diath.homeclaim.platform.paper.lifecycle.HealthCheckService
 import systems.diath.homeclaim.platform.paper.lifecycle.DatabaseResilience
 import systems.diath.homeclaim.platform.paper.config.HomeClaimTomlConfig
 import systems.diath.homeclaim.platform.paper.clientlink.PaperClientLinkChannelListener
+import systems.diath.homeclaim.platform.paper.util.Permissions
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
+import org.bukkit.entity.Player
 import org.bukkit.event.HandlerList
+import java.util.UUID
 import javax.sql.DataSource
 
 class HomeClaimPaperPlugin : JavaPlugin() {
+    private companion object {
+        val SYSTEM_ACTOR_ID: UUID = UUID(0L, 0L)
+    }
+
     private val plotSetupWizard by lazy {
         systems.diath.homeclaim.platform.paper.plot.PlotWorldSetupWizard(
             configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this),
@@ -522,6 +534,13 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 }
                 return handlePlotAdminCommand(sender, args.drop(1))
             }
+            "entryforce", "forceentry", "entry-force" -> {
+                if (!sender.hasPermission(Permissions.ADMIN_ENTRY_FORCE)) {
+                    sender.sendMessage(i18n.msg("cmd.no.perm"))
+                    return true
+                }
+                return handleEntryForceCommand(sender, args.drop(1))
+            }
             "audit" -> {
                 if (!sender.hasPermission("homeclaim.audit.view")) {
                     sender.sendMessage(i18n.msg("cmd.no.perm"))
@@ -544,6 +563,105 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             }
         }
         return true
+    }
+
+    private fun handleEntryForceCommand(sender: CommandSender, args: List<String>): Boolean {
+        if (args.size < 3) {
+            sender.sendMessage("§eUsage: /homeclaim entryforce <player|uuid> <here|any|regionUuid> <reason...>")
+            return true
+        }
+
+        val target = resolveOnlinePlayer(args[0])
+        if (target == null) {
+            sender.sendMessage("§cTarget player must be online for a temporary entry force grant.")
+            return true
+        }
+
+        val scope = resolveEntryForceScope(sender, args[1]) ?: return true
+        val regionId = scope.regionId
+        val reason = args.drop(2).joinToString(" ").trim()
+        if (reason.isBlank()) {
+            sender.sendMessage("§cA reason is required.")
+            return true
+        }
+
+        val grantedBy = (sender as? Player)?.uniqueId ?: SYSTEM_ACTOR_ID
+        val grant = EntryForceRegistry.grant(
+            playerId = target.uniqueId,
+            regionId = regionId,
+            grantedBy = grantedBy,
+            reason = reason
+        )
+        auditEntryForceGrant(grant)
+        sender.sendMessage(
+            "§aEntry force grant ${grant.id.toString().take(8)} active for ${target.name} " +
+                "(${regionId?.value ?: "any denied plot"}, expires ${grant.expiresAt})."
+        )
+        target.sendMessage("§eTemporary HomeClaim entry override granted. Reason: $reason")
+        return true
+    }
+
+    private fun resolveOnlinePlayer(input: String): Player? {
+        server.getPlayerExact(input)?.let { return it }
+        val uuid = runCatching { UUID.fromString(input) }.getOrNull() ?: return null
+        return server.getPlayer(uuid)
+    }
+
+    private data class EntryForceScope(val regionId: RegionId?)
+
+    private fun resolveEntryForceScope(sender: CommandSender, scope: String): EntryForceScope? {
+        return when {
+            scope.equals("any", ignoreCase = true) -> EntryForceScope(null)
+            scope.equals("here", ignoreCase = true) -> {
+                val player = sender as? Player
+                if (player == null) {
+                    sender.sendMessage("§cScope 'here' can only be used by an in-game player.")
+                    return null
+                }
+                val location = player.location
+                val regionId = services?.regionService?.getRegionAt(
+                    location.world.name,
+                    location.blockX,
+                    location.blockY,
+                    location.blockZ
+                )
+                if (regionId == null) {
+                    sender.sendMessage("§cNo HomeClaim plot found at your current position.")
+                    return null
+                }
+                EntryForceScope(regionId)
+            }
+            else -> {
+                val regionId = runCatching { RegionId(UUID.fromString(scope)) }.getOrNull()
+                if (regionId == null) {
+                    sender.sendMessage("§cScope must be 'here', 'any', or a region UUID.")
+                    return null
+                }
+                if (services?.regionService?.getRegionById(regionId) == null) {
+                    sender.sendMessage("§cPlot not found for region UUID ${regionId.value}.")
+                    return null
+                }
+                EntryForceScope(regionId)
+            }
+        }
+    }
+
+    private fun auditEntryForceGrant(grant: EntryForceGrant, auditService: AuditService? = services?.auditService) {
+        auditService?.append(
+            AuditEntry(
+                actorId = grant.grantedBy,
+                targetId = grant.regionId?.value,
+                category = AuditTaxonomy.Category.REGION,
+                action = AuditTaxonomy.Action.ENTRY_FORCE_GRANTED,
+                payload = mapOf(
+                    "grantId" to grant.id.toString(),
+                    "playerId" to grant.playerId.toString(),
+                    "regionId" to grant.regionId?.value?.toString(),
+                    "reason" to grant.reason,
+                    "expiresAt" to grant.expiresAt.toString()
+                )
+            )
+        )
     }
 
     private fun handlePlotAdminCommand(sender: CommandSender, args: List<String>): Boolean {
@@ -818,7 +936,19 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             allowedHosts = allowedHosts,
             allowLocalhost = allowLocalhost,
             enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false),
-            entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) }
+            entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) },
+            entryForceHandler = { regionId, playerId, grantedBy, reason, ttlSeconds ->
+                val grant = EntryForceRegistry.grant(playerId, regionId, grantedBy, reason, ttlSeconds)
+                auditEntryForceGrant(grant, services.auditService)
+                EntryForceGrantDto(
+                    id = grant.id.toString(),
+                    playerId = grant.playerId.toString(),
+                    regionId = grant.regionId?.value?.toString(),
+                    grantedBy = grant.grantedBy.toString(),
+                    reason = grant.reason,
+                    expiresAt = grant.expiresAt.toString()
+                )
+            }
         ).start()
         logger.info(
             i18n.msg(

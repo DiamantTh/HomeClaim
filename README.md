@@ -49,6 +49,13 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 - ist retry-sicher und erzeugt keine doppelten Regionen
 - beim Plugin-Start wird eine unvollstaendige Plotwelt zusaetzlich automatisch nachgezogen
 
+### Entry-Deny und Staff-Override
+
+- Entry-Deny-Regeln sperren Betreten und Teleports auf ein Plot zielgerichtet fuer UUID, Name oder Wildcard und verlangen einen Grund.
+- API-Checks liefern Deny-ID und Grund, damit Web-/Abuse-Systeme widerspruechliche Regeln melden koennen.
+- Staff kann mit `/homeclaim entryforce <player|uuid> <here|any|regionUuid> <reason...>` einen kurzlebigen Override fuer Support-/Admin-Teleports vergeben.
+- Dauerhafte Bypass-Rolle: `homeclaim.admin.entry.denied`; begruendeter Force-Grant: `homeclaim.admin.entry.force`.
+
 ## Wichtige Links
 
 - Erweiterte Architektur-, Config- und Betriebsdoku: `docs/README_ADVANCED.md`

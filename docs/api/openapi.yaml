@@ -28,6 +28,8 @@ tags:
     description: Server health and info endpoints
   - name: Plots
     description: Plot (Region) management
+  - name: Entry
+    description: Entry deny checks, deny rules, reports, and temporary force-entry grants
   - name: Players
     description: Player-related operations
   - name: Zones
@@ -302,6 +304,144 @@ paths:
         "200":
           description: Limit updated
 
+  /plots/entry-check:
+    post:
+      summary: Check entry at coordinates
+      description: Evaluates whether a player may enter the plot at the provided coordinates.
+      tags: [Entry]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryCheckByPositionRequest"
+      responses:
+        "200":
+          description: Entry decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntryCheckResponse"
+
+  /plots/{id}/entry-check:
+    post:
+      summary: Check plot entry
+      description: Evaluates whether a player may enter a specific plot.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryCheckRequest"
+      responses:
+        "200":
+          description: Entry decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntryCheckResponse"
+
+  /plots/{id}/entry-denies:
+    get:
+      summary: List entry deny rules
+      description: Returns active entry deny rules by default. Use includeInactive=true for reported/revoked/expired rules.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+        - name: includeInactive
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Entry deny rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EntryDenyRule"
+    post:
+      summary: Create entry deny rule
+      description: Creates a reasoned entry deny rule for one player, a name, or a wildcard target.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryDenyCreateRequest"
+      responses:
+        "200":
+          description: Created entry deny rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntryDenyRule"
+
+  /plots/{id}/entry-denies/{denyId}/report:
+    post:
+      summary: Report entry deny rule
+      description: Marks a deny rule as reported for staff review.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+        - $ref: "#/components/parameters/EntryDenyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryDenyReportRequest"
+      responses:
+        "200":
+          description: Entry deny rule reported
+
+  /plots/{id}/entry-denies/{denyId}/revoke:
+    post:
+      summary: Revoke entry deny rule
+      description: Revokes an entry deny rule with an audit-visible reason.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+        - $ref: "#/components/parameters/EntryDenyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryDenyRevokeRequest"
+      responses:
+        "200":
+          description: Entry deny rule revoked
+
+  /plots/{id}/entry-force:
+    post:
+      summary: Grant temporary force-entry
+      description: Creates a short-lived in-memory grant for one player to pass an otherwise denied entry check. Grant creation and use are written to audit.
+      tags: [Entry]
+      parameters:
+        - $ref: "#/components/parameters/PlotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryForceRequest"
+      responses:
+        "200":
+          description: Temporary force-entry grant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntryForceGrant"
+
   /plots/{id}/trust:
     post:
       summary: Trust a player
@@ -519,6 +659,14 @@ components:
         type: string
         format: uuid
       description: Plot UUID
+    EntryDenyId:
+      name: denyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Entry deny rule UUID
 
   responses:
     Unauthorized:
@@ -626,6 +774,188 @@ components:
           items:
             type: string
             format: uuid
+        entryDenies:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntryDenyRule"
+
+    EntryDenyRule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        regionId:
+          type: string
+          format: uuid
+        targetType:
+          type: string
+          enum: [PLAYER_UUID, PLAYER_NAME, WILDCARD]
+        targetValue:
+          type: string
+        reason:
+          type: string
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, REPORTED, REVOKED]
+        reportedBy:
+          type: string
+          format: uuid
+          nullable: true
+        reportedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reportReason:
+          type: string
+          nullable: true
+        revokedBy:
+          type: string
+          format: uuid
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokeReason:
+          type: string
+          nullable: true
+
+    EntryDenyCreateRequest:
+      type: object
+      required: [targetType, targetValue, reason, createdBy]
+      properties:
+        targetType:
+          type: string
+          enum: [PLAYER_UUID, PLAYER_NAME, WILDCARD]
+        targetValue:
+          type: string
+        reason:
+          type: string
+        createdBy:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+
+    EntryDenyReportRequest:
+      type: object
+      required: [reportedBy, reason]
+      properties:
+        reportedBy:
+          type: string
+          format: uuid
+        reason:
+          type: string
+
+    EntryDenyRevokeRequest:
+      type: object
+      required: [revokedBy]
+      properties:
+        revokedBy:
+          type: string
+          format: uuid
+        reason:
+          type: string
+
+    EntryCheckRequest:
+      type: object
+      required: [playerId]
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        playerName:
+          type: string
+        bypass:
+          type: boolean
+          default: false
+
+    EntryCheckByPositionRequest:
+      allOf:
+        - $ref: "#/components/schemas/EntryCheckRequest"
+        - type: object
+          required: [world, x, y, z]
+          properties:
+            world:
+              type: string
+            x:
+              type: integer
+            y:
+              type: integer
+            z:
+              type: integer
+
+    EntryCheckResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        reason:
+          type: string
+        regionId:
+          type: string
+          format: uuid
+          nullable: true
+        entryDenyId:
+          type: string
+          format: uuid
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+
+    EntryForceRequest:
+      type: object
+      required: [playerId, grantedBy, reason]
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        grantedBy:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        ttlSeconds:
+          type: integer
+          format: int64
+          default: 30
+          minimum: 1
+          maximum: 300
+
+    EntryForceGrant:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        playerId:
+          type: string
+          format: uuid
+        regionId:
+          type: string
+          format: uuid
+          nullable: true
+        grantedBy:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
 
     Bounds:
       type: object

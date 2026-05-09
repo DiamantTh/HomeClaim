@@ -1,3 +1,21 @@
+export interface EntryDenyRule {
+  id: string;
+  regionId: string;
+  targetType: string;
+  targetValue: string;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt?: string | null;
+  status: string;
+  reportedBy?: string | null;
+  reportedAt?: string | null;
+  reportReason?: string | null;
+  revokedBy?: string | null;
+  revokedAt?: string | null;
+  revokeReason?: string | null;
+}
+
 export interface PlotSummary {
   id: string;
   name: string;
@@ -9,6 +27,8 @@ export interface PlotSummary {
   featured: boolean;
   isOwner: boolean;
   tags: string[];
+  entryDenies?: EntryDenyRule[];
+  entryDenyCount?: number;
 }
 
 const fallbackPlots: PlotSummary[] = [
@@ -22,7 +42,9 @@ const fallbackPlots: PlotSummary[] = [
     visits: 128,
     featured: true,
     isOwner: true,
-    tags: ['featured', 'spawn']
+    tags: ['featured', 'spawn'],
+    entryDenies: [],
+    entryDenyCount: 0
   },
   {
     id: 'market-square',
@@ -34,7 +56,20 @@ const fallbackPlots: PlotSummary[] = [
     visits: 76,
     featured: false,
     isOwner: false,
-    tags: ['shop', 'public']
+    tags: ['shop', 'public'],
+    entryDenies: [
+      {
+        id: 'demo-entry-deny',
+        regionId: 'market-square',
+        targetType: 'WILDCARD',
+        targetValue: 'bot-*',
+        reason: 'Automated grief pattern',
+        createdBy: 'system',
+        createdAt: new Date(0).toISOString(),
+        status: 'ACTIVE'
+      }
+    ],
+    entryDenyCount: 1
   },
   {
     id: 'sky-district',
@@ -46,7 +81,9 @@ const fallbackPlots: PlotSummary[] = [
     visits: 204,
     featured: true,
     isOwner: false,
-    tags: ['imported', 'plotsquared']
+    tags: ['imported', 'plotsquared'],
+    entryDenies: [],
+    entryDenyCount: 0
   }
 ];
 
@@ -81,7 +118,9 @@ export async function getPlot(id: string): Promise<PlotSummary> {
     visits: 0,
     featured: false,
     isOwner: false,
-    tags: ['placeholder']
+    tags: ['placeholder'],
+    entryDenies: [],
+    entryDenyCount: 0
   };
 
   return fetchJson(`/api/plots/${id}`, fallback);

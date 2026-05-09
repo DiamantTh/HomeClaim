@@ -40,6 +40,39 @@ Aktueller Entkopplungsstand:
 - Schutz-Flags: FIRE_SPREAD, EXPLOSION_DAMAGE, PVP, MOB_GRIEF, ENTITY_DAMAGE, VEHICLE_USE
 - Limits: COMPONENT_COOLDOWN_MS, ELEVATOR_RANGE_BLOCKS
 
+## Entry-Deny und Force-Entry
+
+HomeClaim trennt Plot-Rollen von Betreten-Sperren:
+
+- `trusted`, `members` und `banned` bleiben Rollen am Plot.
+- Entry-Deny-Regeln liegen in `region_entry_denies` und koennen UUID, Player-Name oder Wildcard-Pattern sperren.
+- Jede Entry-Deny-Regel braucht einen Grund, eine sichtbare Regel-ID und einen Ersteller.
+- Spieler oder Tools koennen widerspruechliche Regeln ueber die API melden; Revoke und Report bleiben nachvollziehbar.
+
+Betreten wird bei `PlayerMoveEvent` und `PlayerTeleportEvent` geprueft. Damit greifen Sperren auch bei `/home`, `/spawn`, `/tp`, Plot-Warps oder anderen Teleport-Systemen, sofern der Zielpunkt in einer HomeClaim-Region liegt.
+
+Staff-Workflows sind bewusst zweigeteilt:
+
+- `homeclaim.admin.entry.denied`: dauerhafter Bypass fuer Adminrollen, die Deny-Regeln grundsaetzlich ignorieren duerfen.
+- `homeclaim.admin.entry.force`: darf fuer andere Spieler kurzlebige Force-Entry-Grants erzeugen.
+
+Force-Entry ist kein persistenter Zugriffsstatus. Der Grant liegt im Paper-Adapter als In-Memory-Cache, laeuft standardmaessig nach 30 Sekunden ab und wird nur verbraucht, wenn ein normaler Entry-Check wirklich blockieren wuerde. Grant-Erstellung und Grant-Nutzung werden im Audit mit Grant-ID, Zielspieler, Plot, Grund und Ablaufzeit protokolliert.
+
+Ingame:
+
+```text
+/homeclaim entryforce <player|uuid> <here|any|regionUuid> <reason...>
+```
+
+REST:
+
+- `GET /api/v1/plots/{id}/entry-denies`
+- `POST /api/v1/plots/{id}/entry-denies`
+- `POST /api/v1/plots/{id}/entry-denies/{denyId}/report`
+- `POST /api/v1/plots/{id}/entry-denies/{denyId}/revoke`
+- `POST /api/v1/plots/{id}/entry-check`
+- `POST /api/v1/plots/{id}/entry-force`
+
 ## Modded-Sicherheit
 
 Wichtige Core-Defaults fuer Nicht-Player-Akteure:

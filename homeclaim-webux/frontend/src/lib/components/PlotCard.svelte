@@ -19,6 +19,7 @@
     <span>World: {plot.world}</span>
     <span>{plot.likes} likes</span>
     <span>{plot.visits} visits</span>
+    <span>{plot.entryDenyCount ?? plot.entryDenies?.length ?? 0} entry denies</span>
   </div>
 
   <div class="meta">

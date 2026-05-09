@@ -29,6 +29,8 @@ object AuditTaxonomy {
         val BLOCK_DENIED = AuditAction.BLOCK_DENIED.wire
         val GRIEF_DENIED = AuditAction.GRIEF_DENIED.wire
         val ENTER_DENIED = AuditAction.ENTER_DENIED.wire
+        val ENTRY_FORCE_GRANTED = AuditAction.ENTRY_FORCE_GRANTED.wire
+        val ENTRY_FORCE_USED = AuditAction.ENTRY_FORCE_USED.wire
         val ELEVATOR_USED = AuditAction.ELEVATOR_USED.wire
         val TELEPORT_USED = AuditAction.TELEPORT_USED.wire
         val PLOT_IMPORTED = AuditAction.PLOT_IMPORTED.wire

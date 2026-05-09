@@ -1,6 +1,7 @@
 package systems.diath.homeclaim.platform.paper
 
 import systems.diath.homeclaim.core.model.Position
+import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.platform.BlockEventContext
 import systems.diath.homeclaim.core.platform.ComponentTriggerRequest
 import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
@@ -8,6 +9,7 @@ import systems.diath.homeclaim.core.platform.InteractEventContext
 import systems.diath.homeclaim.core.platform.PolicyGuard
 import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.ActorKind
+import systems.diath.homeclaim.core.policy.Decision
 import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.PolicyActionRequest
 import systems.diath.homeclaim.core.policy.PolicyActorContext
@@ -51,14 +53,16 @@ class PaperPolicyListener(
         val to = event.to ?: return@handle
         val player = event.player
         val position = to.position()
-        val decision = policyGuard.onRegionEnter(
-            playerId = player.uniqueId,
+        val (decision, forceGrant, regionId) = regionEnterDecision(
+            player = player,
             position = position,
-            playerName = player.name,
             teleport = true,
-            entryBypass = Permissions.canBypassDeniedEntry(player),
-            extra = mapOf("event" to "PlayerTeleportEvent", "cause" to event.cause.name)
+            extra = mapOf(
+                "event" to "PlayerTeleportEvent",
+                "cause" to event.cause.name
+            )
         )
+        auditForceEntryUse(player, position, regionId, forceGrant, "teleport")
         if (!decision.allowed && decision.reason != DecisionReason.NO_REGION) {
             event.isCancelled = true
             player.deny(decision.reason, decision.detail)
@@ -89,14 +93,13 @@ class PaperPolicyListener(
 
         val player = event.player
         val position = to.position()
-        val decision = policyGuard.onRegionEnter(
-            playerId = player.uniqueId,
+        val (decision, forceGrant, regionId) = regionEnterDecision(
+            player = player,
             position = position,
-            playerName = player.name,
             teleport = false,
-            entryBypass = Permissions.canBypassDeniedEntry(player),
             extra = mapOf("event" to "PlayerMoveEvent")
         )
+        auditForceEntryUse(player, position, regionId, forceGrant, "move")
         if (!decision.allowed && decision.reason != DecisionReason.NO_REGION) {
             event.to = from
             player.deny(decision.reason, decision.detail)
@@ -111,6 +114,77 @@ class PaperPolicyListener(
                 )
             )
         }
+    }
+
+    private data class EntryDecisionResult(
+        val decision: Decision,
+        val forceGrant: EntryForceGrant?,
+        val regionId: RegionId?
+    )
+
+    private fun regionEnterDecision(
+        player: Player,
+        position: Position,
+        teleport: Boolean,
+        extra: Map<String, Any?>
+    ): EntryDecisionResult {
+        val regionId = policyGuard.resolveRegionAt(position)
+        val bypass = Permissions.canBypassDeniedEntry(player)
+        val baseDecision = policyGuard.onRegionEnter(
+            playerId = player.uniqueId,
+            position = position,
+            playerName = player.name,
+            teleport = teleport,
+            entryBypass = bypass,
+            extra = extra
+        )
+        if (baseDecision.allowed || baseDecision.reason == DecisionReason.NO_REGION || bypass) {
+            return EntryDecisionResult(baseDecision, null, regionId)
+        }
+
+        val forceGrant = EntryForceRegistry.consume(player.uniqueId, regionId)
+            ?: return EntryDecisionResult(baseDecision, null, regionId)
+        val forcedDecision = policyGuard.onRegionEnter(
+            playerId = player.uniqueId,
+            position = position,
+            playerName = player.name,
+            teleport = teleport,
+            entryBypass = true,
+            extra = extra + mapOf(
+                "forceEntryGrantId" to forceGrant.id.toString(),
+                "forceEntryGrantedBy" to forceGrant.grantedBy.toString(),
+                "forceEntryReason" to forceGrant.reason
+            )
+        )
+        return EntryDecisionResult(forcedDecision, forceGrant, regionId)
+    }
+
+    private fun auditForceEntryUse(
+        player: Player,
+        position: Position,
+        regionId: RegionId?,
+        forceGrant: EntryForceGrant?,
+        transport: String
+    ) {
+        if (forceGrant == null) return
+        auditService?.append(
+            AuditEntry(
+                actorId = player.uniqueId,
+                targetId = regionId?.value,
+                category = AuditTaxonomy.Category.REGION,
+                action = AuditTaxonomy.Action.ENTRY_FORCE_USED,
+                payload = mapOf(
+                    "grantId" to forceGrant.id.toString(),
+                    "grantedBy" to forceGrant.grantedBy.toString(),
+                    "reason" to forceGrant.reason,
+                    "transport" to transport,
+                    "world" to position.world,
+                    "x" to position.x,
+                    "y" to position.y,
+                    "z" to position.z
+                )
+            )
+        )
     }
 
     @EventHandler(ignoreCancelled = true)

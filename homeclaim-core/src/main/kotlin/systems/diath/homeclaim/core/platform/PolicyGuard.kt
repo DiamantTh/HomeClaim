@@ -124,6 +124,8 @@ class PolicyGuard(
         )
     }
 
+    fun resolveRegionAt(position: Position): RegionId? = resolveRegion(position)
+
     private fun resolveRegion(position: Position): RegionId? {
         return regionService.getRegionAt(position.world, position.x, position.y, position.z)
     }

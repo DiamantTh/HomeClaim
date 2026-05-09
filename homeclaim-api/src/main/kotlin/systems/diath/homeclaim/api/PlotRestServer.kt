@@ -90,7 +90,8 @@ class PlotRestServer(
     private val allowedHosts: Set<String> = emptySet(),
     private val allowLocalhost: Boolean = true,
     private val enableCors: Boolean = false,
-    private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null
+    private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null,
+    private val entryForceHandler: ((RegionId, PlayerId, PlayerId, String, Long) -> EntryForceGrantDto)? = null
 ) {
     fun start(): ApplicationEngine = embeddedServer(Netty, port = port) {
         configurePlugins()
@@ -188,7 +189,7 @@ class PlotRestServer(
                         version = "1.0.0",
                         endpoints = listOf(
                             "/health", "/info", "/plots", "/plots/{id}", "/plots/at",
-                            "/plots/entry-check", "/plots/{id}/entry-denies", "/plots/{id}/entry-check",
+                            "/plots/entry-check", "/plots/{id}/entry-denies", "/plots/{id}/entry-check", "/plots/{id}/entry-force",
                             "/players/{uuid}/plots", "/zones", "/profiles", "/admin/stats",
                             "/metrics", "/metrics/plots", "/metrics/worlds/{name}"
                         )
@@ -524,6 +525,28 @@ class PlotRestServer(
                         val playerId = req.playerId.toUuidOrNull()
                             ?: throw IllegalArgumentException("Invalid playerId")
                         call.respond(checkEntry(region, playerId, req.playerName, req.bypass))
+                    }
+
+                    // POST /plots/{id}/entry-force
+                    post("/{id}/entry-force") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        regionService.getRegionById(id)
+                            ?: throw NoSuchElementException("Plot not found")
+                        val req = call.receive<EntryForceRequest>()
+                        val playerId = req.playerId.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid playerId")
+                        val grantedBy = req.grantedBy.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid grantedBy")
+                        val grant = entryForceHandler?.invoke(
+                            id,
+                            playerId,
+                            grantedBy,
+                            req.reason,
+                            req.ttlSeconds.coerceIn(1, 300)
+                        ) ?: throw IllegalStateException("Entry force handler not available")
+                        call.respond(grant)
                     }
 
                     // POST /plots/{id}/entry-denies/{denyId}/report
@@ -973,6 +996,16 @@ class PlotRestServer(
                     "responses" to mapOf("200" to mapOf("description" to "Created entry deny rule"))
                 )
             ),
+            "/plots/{id}/entry-force" to mapOf(
+                "post" to mapOf(
+                    "summary" to "Grant a temporary force-entry token for a player",
+                    "tags" to listOf("Entry"),
+                    "parameters" to listOf(
+                        mapOf("name" to "id", "in" to "path", "required" to true, "schema" to mapOf("type" to "string", "format" to "uuid"))
+                    ),
+                    "responses" to mapOf("200" to mapOf("description" to "Temporary force-entry grant"))
+                )
+            ),
             "/plots/{id}/buy" to mapOf(
                 "post" to mapOf(
                     "summary" to "Buy a plot",
@@ -1250,6 +1283,20 @@ data class EntryCheckResponse(
     val regionId: String? = null,
     val entryDenyId: String? = null,
     val detail: String? = null
+)
+data class EntryForceRequest(
+    val playerId: String,
+    val grantedBy: String,
+    val reason: String,
+    val ttlSeconds: Long = 30
+)
+data class EntryForceGrantDto(
+    val id: String,
+    val playerId: String,
+    val regionId: String?,
+    val grantedBy: String,
+    val reason: String,
+    val expiresAt: String
 )
 data class ApplyProfileRequest(val profile: String)
 data class ProfileCreateRequest(
