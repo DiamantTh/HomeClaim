@@ -7,6 +7,12 @@ plugins {
     id("com.gradleup.shadow") version "8.3.5"
 }
 
+val faweVersion = "2.12.3"
+val faweRuntime by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
 dependencies {
     implementation(project(":homeclaim-core"))
     implementation(project(":homeclaim-liftlink"))
@@ -18,8 +24,9 @@ dependencies {
     implementation("com.electronwill.night-config:toml:3.8.3")
     
     // FAWE - Optional but recommended for fast block operations
-    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Core:2.12.3")
-    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:2.12.3") { isTransitive = false }
+    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Core:$faweVersion")
+    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:$faweVersion") { isTransitive = false }
+    faweRuntime("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:$faweVersion") { isTransitive = false }
 }
 
 // Optimized Shadow JAR instead of fatJar
@@ -109,6 +116,12 @@ val copyPluginToPaper = tasks.register<Copy>("copyPluginToPaper") {
     rename { "HomeClaim.jar" }
 }
 
+val copyFaweToPaper = tasks.register<Copy>("copyFaweToPaper") {
+    from(faweRuntime)
+    into(runPaperDir.dir("plugins"))
+    rename { "FastAsyncWorldEdit-Bukkit.jar" }
+}
+
 val copyPluginToFolia = tasks.register<Copy>("copyPluginToFolia") {
     dependsOn(tasks.shadowJar)
     from(tasks.shadowJar.map { it.archiveFile })
@@ -174,7 +187,7 @@ val setupOpsJson = tasks.register("setupOpsJson") {
 tasks.register<Exec>("runPaper") {
     group = "run server"
     description = "Run a Paper server for $minecraftVersion"
-    dependsOn(downloadPaper, eulaPaper, setupOpsJson, copyPluginToPaper)
+    dependsOn(downloadPaper, eulaPaper, setupOpsJson, copyPluginToPaper, copyFaweToPaper)
     workingDir = runPaperDir.asFile
     commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
 }
