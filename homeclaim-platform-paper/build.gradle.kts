@@ -103,6 +103,28 @@ fun downloadServer(project: String, version: String, dest: java.io.File) {
     }
 }
 
+fun latestFawePaperArtifact(): Pair<String, String> {
+    val baseUrl = "https://ci.athion.net/view/%20%20FastAsyncWorldEdit/job/FastAsyncWorldEdit/lastSuccessfulBuild"
+    val url = URI("$baseUrl/api/json?tree=artifacts[fileName,relativePath]").toURL()
+    val json = JsonSlurper().parse(openUrl(url)) as Map<*, *>
+    val artifacts = json["artifacts"] as List<*>
+    val artifact = artifacts
+        .map { it as Map<*, *> }
+        .first { (it["fileName"] as String).startsWith("FastAsyncWorldEdit-Paper-") && (it["fileName"] as String).endsWith(".jar") }
+    return baseUrl to artifact["relativePath"] as String
+}
+
+fun downloadFawePaper(dest: java.io.File) {
+    val (baseUrl, relativePath) = latestFawePaperArtifact()
+    val url = URI("$baseUrl/artifact/$relativePath").toURL()
+    dest.parentFile.mkdirs()
+    openUrl(url).use { input ->
+        dest.outputStream().use { output ->
+            input.copyTo(output)
+        }
+    }
+}
+
 val runPaperDir = layout.projectDirectory.dir("run/paper")
 val runFoliaDir = layout.projectDirectory.dir("run/folia")
 
@@ -120,6 +142,21 @@ val copyFaweToPaper = tasks.register<Copy>("copyFaweToPaper") {
     from(faweRuntime)
     into(runPaperDir.dir("plugins"))
     rename { "FastAsyncWorldEdit-Bukkit.jar" }
+}
+
+val downloadFaweToPaper = tasks.register("downloadFaweToPaper") {
+    val faweJar = runPaperDir.file("plugins/FastAsyncWorldEdit.jar").asFile
+    outputs.file(faweJar)
+    outputs.upToDateWhen { false }
+    doFirst {
+        delete(runPaperDir.file("plugins/.paper-remapped/FastAsyncWorldEdit.jar"))
+        delete(runPaperDir.file("plugins/.paper-remapped/FastAsyncWorldEdit-Bukkit.jar"))
+        delete(runPaperDir.file("plugins/FastAsyncWorldEdit-Bukkit.jar"))
+    }
+    doLast {
+        downloadFawePaper(faweJar)
+        println("Downloaded FAWE to $faweJar")
+    }
 }
 
 val copyPluginToFolia = tasks.register<Copy>("copyPluginToFolia") {
@@ -187,7 +224,7 @@ val setupOpsJson = tasks.register("setupOpsJson") {
 tasks.register<Exec>("runPaper") {
     group = "run server"
     description = "Run a Paper server for $minecraftVersion"
-    dependsOn(downloadPaper, eulaPaper, setupOpsJson, copyPluginToPaper, copyFaweToPaper)
+    dependsOn(downloadPaper, eulaPaper, setupOpsJson, copyPluginToPaper, downloadFaweToPaper)
     workingDir = runPaperDir.asFile
     commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
 }

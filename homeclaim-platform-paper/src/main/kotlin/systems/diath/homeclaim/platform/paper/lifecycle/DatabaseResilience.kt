@@ -52,10 +52,7 @@ object DatabaseResilience {
         
         if (dataSource is HikariDataSource) {
             this.dataSource = dataSource
-            
-            // Configure HikariCP for resilience
-            configureHikari(dataSource)
-            
+
             // Start periodic health check
             startHealthCheck()
             
@@ -66,25 +63,6 @@ object DatabaseResilience {
             
             plugin.logger.info(i18n.msg("db.resilience.enabled"))
         }
-    }
-    
-    /**
-     * Configure HikariCP with resilience settings.
-     */
-    private fun configureHikari(ds: HikariDataSource) {
-        // These settings help with transient failures
-        ds.connectionTimeout = 10_000        // 10s to get connection
-        ds.validationTimeout = 5_000         // 5s to validate connection
-        ds.idleTimeout = 300_000             // 5min idle before removal
-        ds.maxLifetime = 1_800_000           // 30min max connection lifetime
-        ds.leakDetectionThreshold = 60_000   // Warn if connection held >60s
-        ds.connectionTestQuery = connectionTestQuery
-        
-        // Pool sizing
-        if (ds.maximumPoolSize < 5) {
-            ds.maximumPoolSize = 10
-        }
-        ds.minimumIdle = 2
     }
     
     /**
