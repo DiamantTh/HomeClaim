@@ -221,10 +221,18 @@ val setupOpsJson = tasks.register("setupOpsJson") {
     }
 }
 
+val cleanRunPaperHomeClaimData = tasks.register("cleanRunPaperHomeClaimData") {
+    group = "run server"
+    description = "Remove HomeClaim plugin data before starting the Paper dev server"
+    doLast {
+        delete(runPaperDir.dir("plugins/HomeClaim"))
+    }
+}
+
 tasks.register<Exec>("runPaper") {
     group = "run server"
     description = "Run a Paper server for $minecraftVersion"
-    dependsOn(downloadPaper, eulaPaper, setupOpsJson, copyPluginToPaper, downloadFaweToPaper)
+    dependsOn(downloadPaper, eulaPaper, setupOpsJson, cleanRunPaperHomeClaimData, copyPluginToPaper, downloadFaweToPaper)
     workingDir = runPaperDir.asFile
     commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
 }
