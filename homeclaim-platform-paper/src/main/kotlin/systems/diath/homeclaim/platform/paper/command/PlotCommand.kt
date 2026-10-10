@@ -5,6 +5,7 @@ import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
+import systems.diath.homeclaim.core.service.OperationStatus
 import systems.diath.homeclaim.core.service.AreaService
 import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
@@ -162,23 +163,29 @@ class PlotCommand(
         val playerId: PlayerId = player.uniqueId
         val effectiveEconService = econService ?: SimpleEconService()
         val bypassLimit = player.hasPermission(Permissions.ADMIN_BYPASS_CLAIM_LIMIT)
-        val limit = operationLimits.evaluateClaim(playerId, bypassLimit)
-        if (!limit.allowed) {
-            auditOperation(request, AuditStatus.DENIED, limit.reason ?: "Claim limit reached")
-            player.sendMessage("§cYou have reached the plot claim limit (${limit.maximum}).")
-            return
-        }
-        auditOperation(request, AuditStatus.ALLOWED)
-        val success = operationLimits.claimRegion(regionId, playerId, 0.0, effectiveEconService, bypassLimit)
-        auditOperation(
-            request,
-            if (success) AuditStatus.COMPLETED else AuditStatus.FAILED,
-            if (success) null else "Claim operation was rejected or could not complete"
+        val result = operationLimits.claim(
+            request, regionId, playerId, 0.0, effectiveEconService, bypassLimit,
+            onAuthorized = { auditOperation(request, AuditStatus.ALLOWED) }
         )
-        if (success) {
-            player.sendMessage(i18n.msg("plot.claim_success"))
-        } else {
-            player.sendMessage(i18n.msg("plot.claim_failed"))
+        when (result.status) {
+            OperationStatus.SUCCESS -> {
+                auditOperation(request, AuditStatus.COMPLETED)
+                player.sendMessage(i18n.msg("plot.claim_success"))
+            }
+            OperationStatus.LIMIT_REACHED -> {
+                auditOperation(request, AuditStatus.DENIED, result.detail ?: "Claim limit reached")
+                player.sendMessage("§cYou have reached the plot claim limit.")
+            }
+            OperationStatus.NOT_APPLICABLE -> {
+                player.sendMessage(i18n.msg("plot.not_on_plot"))
+            }
+            else -> {
+                auditOperation(request, AuditStatus.FAILED, result.detail ?: "Claim operation failed")
+                player.sendMessage(
+                    if (result.status == OperationStatus.CONFLICT) i18n.msg("plot.already_claimed")
+                    else i18n.msg("plot.claim_failed")
+                )
+            }
         }
     }
     
@@ -447,21 +454,24 @@ class PlotCommand(
         )
         auditOperation(request, AuditStatus.ATTEMPTED, targetCount = mergedIds.size)
         val bypassLimit = player.hasPermission(Permissions.ADMIN_BYPASS_MERGE_LIMIT)
-        val mergeLimit = operationLimits.evaluateMerge(mergedIds, bypassLimit)
-        if (!mergeLimit.allowed) {
-            auditOperation(request, AuditStatus.DENIED, mergeLimit.reason ?: "Merge limit or scope rejected", mergedIds.size)
-            player.sendMessage("§cThis merge exceeds the configured limit or crosses a resource boundary.")
-            return
-        }
-        auditOperation(request, AuditStatus.ALLOWED, targetCount = mergedIds.size)
-        runCatching {
-            operationLimits.mergeRegions(mergedIds, bypassLimit)
-        }.onSuccess { mergeId ->
-            auditOperation(request, AuditStatus.COMPLETED, targetCount = mergedIds.size)
-            player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
-        }.onFailure { error ->
-            auditOperation(request, AuditStatus.FAILED, error.message ?: "Merge failed", mergedIds.size)
-            player.sendMessage("§cPlot merge failed: ${error.message ?: "unknown error"}")
+        val result = operationLimits.merge(
+            request, mergedIds, bypassLimit,
+            onAuthorized = { auditOperation(request, AuditStatus.ALLOWED, targetCount = mergedIds.size) }
+        )
+        when (result.status) {
+            OperationStatus.SUCCESS -> {
+                val mergeId = requireNotNull(result.value)
+                auditOperation(request, AuditStatus.COMPLETED, targetCount = mergedIds.size)
+                player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+            }
+            OperationStatus.LIMIT_REACHED, OperationStatus.NOT_APPLICABLE -> {
+                auditOperation(request, AuditStatus.DENIED, result.detail ?: "Merge limit or scope rejected", mergedIds.size)
+                player.sendMessage("§cThis merge exceeds the configured limit or crosses a resource boundary.")
+            }
+            else -> {
+                auditOperation(request, AuditStatus.FAILED, result.detail ?: "Merge failed", mergedIds.size)
+                player.sendMessage("§cPlot merge failed: ${result.detail ?: "unknown error"}")
+            }
         }
     }
 

@@ -4,6 +4,7 @@ import systems.diath.homeclaim.core.model.*
 import systems.diath.homeclaim.core.permission.*
 import systems.diath.homeclaim.core.platform.PolicyGuard
 import systems.diath.homeclaim.core.service.InMemoryWorldAreaService
+import systems.diath.homeclaim.core.service.OperationStatus
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.store.InMemoryRegionStore
 import systems.diath.homeclaim.core.store.InMemoryZoneStore
@@ -52,6 +53,14 @@ class AuthorizationDecisionTest {
     private fun grant(permission: String) = CapabilityPermissionProvider { _, asked, _ ->
         if (permission == asked) PermissionResult.GRANTED else PermissionResult.DENIED
     }
+
+    private fun operationRequest(actionKey: ActionKey, region: Region) = ActionRequest(
+        actor = ActionActor.Player(owner),
+        actionKey = actionKey,
+        target = ActionEndpoint(resource = ActionResourceRef.Region(region.id), areaId = region.areaId),
+        regionId = region.id,
+        areaId = region.areaId
+    )
 
     @Test fun `world outside configured area returns not applicable before role check`() {
         val areas = InMemoryWorldAreaService().also { it.createWorld("world")
@@ -265,6 +274,88 @@ class AuthorizationDecisionTest {
         val target = RegionId(UUID.randomUUID())
         store.createRegion(region(id = target, regionOwner = UUID(0L, 0L)), region().bounds)
         assertTrue(limits.claimRegion(target, owner, 0.0, SimpleEconService(), bypass = true))
+    }
+
+    @Test fun `claim operation returns structured success after mutation`() {
+        val unclaimed = region(regionOwner = UUID(0L, 0L))
+        val store = InMemoryRegionStore().also { it.createRegion(unclaimed, unclaimed.bounds) }
+        val limits = RegionOperationLimitService(store)
+        var authorized = false
+
+        val result = limits.claim(
+            operationRequest(HomeClaimOperationActions.REGION_CLAIM, unclaimed),
+            unclaimed.id,
+            owner,
+            0.0,
+            SimpleEconService(),
+            onAuthorized = { authorized = true }
+        )
+
+        assertEquals(OperationStatus.SUCCESS, result.status)
+        assertEquals(owner, result.value?.owner)
+        assertTrue(authorized)
+    }
+
+    @Test fun `claim operation distinguishes scope actor and quota failures`() {
+        val unclaimed = region(regionOwner = UUID(0L, 0L))
+        val store = InMemoryRegionStore().also { it.createRegion(unclaimed, unclaimed.bounds) }
+        val limits = RegionOperationLimitService(store, maxOwnedRegions = 0)
+        var authorized = false
+
+        val noArea = operationRequest(HomeClaimOperationActions.REGION_CLAIM, unclaimed).copy(areaId = null)
+        assertEquals(OperationStatus.NOT_APPLICABLE,
+            limits.claim(noArea, unclaimed.id, owner, 0.0, SimpleEconService()).status)
+
+        val wrongActor = operationRequest(HomeClaimOperationActions.REGION_CLAIM, unclaimed)
+            .copy(actor = ActionActor.Player(visitor))
+        assertEquals(OperationStatus.INVALID,
+            limits.claim(wrongActor, unclaimed.id, owner, 0.0, SimpleEconService()).status)
+
+        assertEquals(OperationStatus.LIMIT_REACHED,
+            limits.claim(
+                operationRequest(HomeClaimOperationActions.REGION_CLAIM, unclaimed),
+                unclaimed.id,
+                owner,
+                0.0,
+                SimpleEconService(),
+                onAuthorized = { authorized = true }
+            ).status)
+        assertFalse(authorized)
+        assertEquals(UUID(0L, 0L), store.getRegionById(unclaimed.id)?.owner)
+    }
+
+    @Test fun `merge operation returns a typed group id on success`() {
+        val first = region()
+        val second = region(id = RegionId(UUID.randomUUID()))
+        val store = InMemoryRegionStore().also {
+            it.createRegion(first, first.bounds)
+            it.createRegion(second, second.bounds)
+        }
+        val result = RegionOperationLimitService(store).merge(
+            operationRequest(HomeClaimOperationActions.REGION_MERGE, first),
+            listOf(first.id, second.id)
+        )
+
+        assertEquals(OperationStatus.SUCCESS, result.status)
+        assertNotNull(result.value)
+        assertEquals(result.value, store.getRegionById(first.id)?.mergeGroupId)
+        assertEquals(result.value, store.getRegionById(second.id)?.mergeGroupId)
+    }
+
+    @Test fun `merge operation rejects mixed areas and reports configured limit`() {
+        val first = region()
+        val otherArea = region(id = RegionId(UUID.randomUUID()), regionArea = AreaId.newId())
+        val store = InMemoryRegionStore().also {
+            it.createRegion(first, first.bounds)
+            it.createRegion(otherArea, otherArea.bounds)
+        }
+        val limits = RegionOperationLimitService(store, maxMergedRegions = 1)
+        val request = operationRequest(HomeClaimOperationActions.REGION_MERGE, first)
+
+        assertEquals(OperationStatus.CONFLICT, limits.merge(request, listOf(first.id, otherArea.id)).status)
+        val third = region(id = RegionId(UUID.randomUUID()))
+        store.createRegion(third, third.bounds)
+        assertEquals(OperationStatus.LIMIT_REACHED, limits.merge(request, listOf(first.id, third.id)).status)
     }
 
     @Test fun `concurrent claims cannot exceed one plot per player`() {
