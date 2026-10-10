@@ -247,17 +247,35 @@ class DatabaseDialectRuntimeTest {
             )
             val engine = rest.start()
             try {
-                val response = HttpClient.newHttpClient().send(
-                    HttpRequest.newBuilder(URI("http://127.0.0.1:$port/api/v1/plots/${firstId.value}/trust"))
-                        .header("X-Admin-Token", "homeclaim-isolated-runtime-test")
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString("""{"playerId":"$restPlayerId"}"""))
-                        .build(),
-                    HttpResponse.BodyHandlers.ofString()
+                val response = sendRestRequest(
+                    port,
+                    "POST",
+                    "/api/v1/plots/${firstId.value}/trust",
+                    token = "homeclaim-isolated-runtime-test",
+                    body = """{"playerId":"$restPlayerId"}"""
                 )
                 assertEquals(200, response.statusCode(), response.body())
                 assertTrue(regions.getRegionById(firstId)?.roles?.trusted?.contains(restPlayerId) == true)
                 assertNotNull(regions.getRegionById(firstId))
+
+                val invalid = sendRestRequest(
+                    port,
+                    "POST",
+                    "/api/v1/plots/${firstId.value}/trust",
+                    token = "homeclaim-isolated-runtime-test",
+                    body = """{"playerId":"not-a-uuid"}"""
+                )
+                assertEquals(400, invalid.statusCode(), invalid.body())
+                val missing = sendRestRequest(
+                    port,
+                    "GET",
+                    "/api/v1/plots/${UUID.randomUUID()}",
+                    token = "homeclaim-isolated-runtime-test"
+                )
+                assertEquals(404, missing.statusCode(), missing.body())
+                val unauthorized = sendRestRequest(port, "GET", "/api/v1/health")
+                assertEquals(401, unauthorized.statusCode(), unauthorized.body())
+
                 dataSource.connection.use { connection ->
                     connection.prepareStatement(
                         "SELECT COUNT(*) FROM audit_log WHERE action_key = ? AND status = ?"
@@ -290,9 +308,84 @@ class DatabaseDialectRuntimeTest {
             } finally {
                 engine.stop(100, 1_000)
             }
+
+            val forbiddenPort = ServerSocket(0).use { it.localPort }
+            val forbiddenServer = PlotRestServer(
+                regionService = regions,
+                plotMemberService = null,
+                zoneService = zones,
+                componentService = components,
+                adminService = null,
+                port = forbiddenPort,
+                authToken = "homeclaim-isolated-runtime-test",
+                allowedHosts = setOf("203.0.113.1"),
+                allowLocalhost = false
+            )
+            val forbiddenEngine = forbiddenServer.start()
+            try {
+                val forbidden = sendRestRequest(
+                    forbiddenPort,
+                    "GET",
+                    "/api/v1/health",
+                    token = "homeclaim-isolated-runtime-test"
+                )
+                assertEquals(403, forbidden.statusCode(), forbidden.body())
+            } finally {
+                forbiddenEngine.stop(100, 1_000)
+            }
+
+            val failedPort = ServerSocket(0).use { it.localPort }
+            val failedServer = PlotRestServer(
+                regionService = regions,
+                plotMemberService = null,
+                zoneService = zones,
+                componentService = components,
+                adminService = null,
+                auditService = audit,
+                port = failedPort,
+                authToken = "homeclaim-isolated-runtime-test",
+                allowLocalhost = true,
+                roleService = object : systems.diath.homeclaim.core.service.RoleService {
+                    override fun setRole(regionId: RegionId, playerId: UUID, role: RegionRole) {
+                        throw IllegalStateException("simulated role persistence failure")
+                    }
+
+                    override fun removeRole(regionId: RegionId, playerId: UUID, role: RegionRole) {
+                        throw IllegalStateException("simulated role persistence failure")
+                    }
+                }
+            )
+            val failedEngine = failedServer.start()
+            try {
+                val failed = sendRestRequest(
+                    failedPort,
+                    "POST",
+                    "/api/v1/plots/${firstId.value}/trust",
+                    token = "homeclaim-isolated-runtime-test",
+                    body = """{"playerId":"${UUID.randomUUID()}"}"""
+                )
+                assertEquals(500, failed.statusCode(), failed.body())
+            } finally {
+                failedEngine.stop(100, 1_000)
+            }
         } finally {
             dataSource.close()
         }
+    }
+
+    private fun sendRestRequest(
+        port: Int,
+        method: String,
+        path: String,
+        token: String? = null,
+        body: String? = null
+    ): HttpResponse<String> {
+        val builder = HttpRequest.newBuilder(URI("http://127.0.0.1:$port$path"))
+        token?.let { builder.header("X-Admin-Token", it) }
+        if (body != null) builder.header("Content-Type", "application/json")
+        val publisher = body?.let(HttpRequest.BodyPublishers::ofString) ?: HttpRequest.BodyPublishers.noBody()
+        val request = builder.method(method, publisher).build()
+        return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString())
     }
 
     private data class JdbcConnectionConfig(
