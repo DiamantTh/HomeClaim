@@ -8,13 +8,16 @@ data class ZoneDefaults(
 
 data class Zone(
     val id: ZoneId,
-    val world: WorldId,
+    /** Legacy display value; canonical spatial ownership is [areaId]. */
+    @Deprecated("Use areaId and resolve its HomeClaimWorld")
+    val world: String,
     val shape: RegionShape,
     val bounds: Bounds,
     val priority: Int,
     val defaults: ZoneDefaults = ZoneDefaults(),
     val lockedFlags: Set<FlagKey> = emptySet(),
-    val tags: Set<String> = emptySet()
+    val tags: Set<String> = emptySet(),
+    val areaId: AreaId = AreaId.legacyDefault(WorldId.fromLegacyName(world))
 ) {
     fun appliesTo(position: Position): Boolean = bounds.contains(position.x, position.y, position.z)
 }

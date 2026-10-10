@@ -96,11 +96,15 @@ rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
 
+[homeclaim.limits]
+maxPlotsPerPlayer = -1
+maxMergedRegions = -1
+
 [homeclaim.migrations]
 enabled = true
-allowNonPostgres = false
+allowNonPostgres = true
 baselineOnMigrate = true
-locations = ["classpath:db/migration"]
+locations = ["classpath:db/migration/common"]
 
 [homeclaim.clientlink]
 enabled = false

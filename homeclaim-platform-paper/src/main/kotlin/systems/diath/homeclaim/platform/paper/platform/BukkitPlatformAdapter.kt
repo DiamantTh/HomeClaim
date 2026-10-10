@@ -134,27 +134,10 @@ class BukkitPlatformProvider(private val plugin: org.bukkit.plugin.Plugin) : Pla
     }
     
     override fun runAsyncTask(task: () -> Unit) {
-        if (isFolia()) {
-            Bukkit.getAsyncScheduler().runNow(plugin) { _ -> task() }
-        } else {
-            Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable { task() })
-        }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable { task() })
     }
     
     override fun runSyncTask(task: () -> Unit) {
-        if (isFolia()) {
-            Bukkit.getGlobalRegionScheduler().run(plugin) { _ -> task() }
-        } else {
-            Bukkit.getScheduler().runTask(plugin, Runnable { task() })
-        }
-    }
-    
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
+        Bukkit.getScheduler().runTask(plugin, Runnable { task() })
     }
 }

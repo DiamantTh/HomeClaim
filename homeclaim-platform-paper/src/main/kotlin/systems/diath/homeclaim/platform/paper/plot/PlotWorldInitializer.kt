@@ -5,10 +5,15 @@ import org.bukkit.World
 import org.bukkit.plugin.Plugin
 import systems.diath.homeclaim.platform.paper.scheduler.BukkitTaskScheduler
 import systems.diath.homeclaim.core.model.Bounds
+import systems.diath.homeclaim.core.model.Area
+import systems.diath.homeclaim.core.model.AreaId
+import systems.diath.homeclaim.core.model.AreaScope
+import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import java.util.UUID
 
 /**
@@ -17,7 +22,8 @@ import java.util.UUID
  */
 class PlotWorldInitializer(
     private val regionService: RegionService,
-    private val plugin: Plugin
+    private val plugin: Plugin,
+    private val worldAreaService: WorldAreaService? = null
 ) {
     private val taskScheduler = BukkitTaskScheduler(plugin)
     companion object {
@@ -39,20 +45,40 @@ class PlotWorldInitializer(
         config: PlotWorldConfig,
         progressCallback: ((Double) -> Unit)? = null
     ): java.util.concurrent.CompletableFuture<Int> {
-        return initializePlots(world.name, config, progressCallback)
+        val areaId = getOrCreatePlotArea(world, config.sanitized())
+        return initializePlots(areaId, world.name, config, progressCallback)
     }
+
+    fun initializePlots(
+        areaId: AreaId,
+        world: World,
+        config: PlotWorldConfig,
+        progressCallback: ((Double) -> Unit)? = null
+    ): java.util.concurrent.CompletableFuture<Int> = initializePlots(areaId, world.name, config, progressCallback)
 
     fun initializePlots(
         worldName: String,
         config: PlotWorldConfig,
         progressCallback: ((Double) -> Unit)? = null
     ): java.util.concurrent.CompletableFuture<Int> {
+        val paperWorld = Bukkit.getWorld(worldName)
+        val areaId = if (paperWorld != null) getOrCreatePlotArea(paperWorld, config.sanitized())
+        else AreaId.legacyDefault(WorldId.fromLegacyName(worldName))
+        return initializePlots(areaId, worldName, config, progressCallback)
+    }
+
+    fun initializePlots(
+        areaId: AreaId,
+        worldName: String,
+        config: PlotWorldConfig,
+        progressCallback: ((Double) -> Unit)? = null
+    ): java.util.concurrent.CompletableFuture<Int> {
         val future = java.util.concurrent.CompletableFuture<Int>()
 
-        // Run async to avoid blocking the main thread and to stay Folia-compatible.
+        // Build database records asynchronously; world mutations remain on Paper's main thread.
         taskScheduler.runAsyncTask(0) {
             try {
-                val count = initializePlotsSync(worldName, config, progressCallback)
+                val count = initializePlotsSync(areaId, worldName, config, progressCallback)
                 future.complete(count)
             } catch (e: Exception) {
                 future.completeExceptionally(e)
@@ -66,15 +92,23 @@ class PlotWorldInitializer(
         worldName: String,
         config: PlotWorldConfig,
         progressCallback: ((Double) -> Unit)? = null
-    ): Int {
-        return createPlotRegions(worldName, config, progressCallback)
-    }
+    ): Int = initializePlotsSync(
+        AreaId.legacyDefault(WorldId.fromLegacyName(worldName)), worldName, config, progressCallback
+    )
+
+    fun initializePlotsSync(
+        areaId: AreaId,
+        worldName: String,
+        config: PlotWorldConfig,
+        progressCallback: ((Double) -> Unit)? = null
+    ): Int = createPlotRegions(areaId, worldName, config, progressCallback)
     
     /**
      * Create all plot regions for a world.
      * This is the synchronous implementation.
      */
     private fun createPlotRegions(
+        areaId: AreaId,
         worldName: String,
         config: PlotWorldConfig,
         progressCallback: ((Double) -> Unit)? = null
@@ -111,7 +145,7 @@ class PlotWorldInitializer(
         var lastProgress = 0.0
         val existingBounds = regionService.listAllRegions()
             .asSequence()
-            .filter { it.world == worldName }
+            .filter { it.areaId == areaId }
             .map { boundsKey(it.bounds) }
             .toMutableSet()
         
@@ -151,6 +185,7 @@ class PlotWorldInitializer(
                 val region = Region(
                     id = RegionId(UUID.randomUUID()),
                     world = worldName,
+                    areaId = areaId,
                     shape = RegionShape.CUBOID,
                     bounds = bounds,
                     owner = UNCLAIMED_UUID,  // Unclaimed by default
@@ -190,5 +225,32 @@ class PlotWorldInitializer(
             bounds.minZ,
             bounds.maxZ
         ).joinToString(":")
+    }
+
+    fun getOrCreatePlotArea(world: World, config: PlotWorldConfig): AreaId {
+        val store = worldAreaService ?: return AreaId.legacyDefault(WorldId.fromLegacyName(world.name))
+        val registeredWorld = store.getWorldByPlatformId(world.uid)
+            ?: store.getWorldByName(world.name)?.let { store.bindPlatformWorld(it.id, world.uid, world.name) }
+            ?: store.createWorld(world.name, world.uid)
+
+        val existing = store.listAreas(registeredWorld.id)
+        existing.firstOrNull { it.key == "legacy-default" }?.let { return it.id }
+        existing.firstOrNull { it.key == "plots" }?.let { return it.id }
+
+        val cfg = config.sanitized()
+        val bounds = Bounds(
+            minX = cfg.plotAreaMinCoordinate(),
+            maxX = cfg.plotAreaMaxExclusive() - 1,
+            minY = cfg.minGenHeight ?: -64,
+            maxY = 319,
+            minZ = cfg.plotAreaMinCoordinate(),
+            maxZ = cfg.plotAreaMaxExclusive() - 1
+        )
+        if (cfg.plotsPerSide <= 0) {
+            return store.createArea(Area(AreaId.newId(), registeredWorld.id, "plots", AreaScope.WholeWorld)).id
+        }
+        return store.createArea(
+            Area(AreaId.newId(), registeredWorld.id, "plots", AreaScope.Finite(bounds))
+        ).id
     }
 }

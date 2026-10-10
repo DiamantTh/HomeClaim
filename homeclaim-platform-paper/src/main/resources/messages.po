@@ -1400,7 +1400,7 @@ msgid "plugin.script.failed"
 msgstr "§eCould not extract {0}: {1}"
 
 msgid "plugin.config.errors"
-msgstr "§cConfiguration errors prevent startup. Please fix config.yml"
+msgstr "§cConfiguration errors prevent startup. Please fix config/HomeClaim.toml."
 
 msgid "plugin.startup.warnings"
 msgstr "§eStartup validation found issues - check logs above"

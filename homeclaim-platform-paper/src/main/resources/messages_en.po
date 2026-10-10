@@ -1027,7 +1027,7 @@ msgid "plot.world_not_found"
 msgstr "§cWelt not found."
 
 msgid "plugin.config.errors"
-msgstr "§cKonfigurationsfehler verhindern Start. Please config.yml korrigieren"
+msgstr "§cConfiguration errors prevent startup. Please fix config/HomeClaim.toml."
 
 msgid "plugin.economy.essentials"
 msgstr "§a✓ Economy: EssentialsX erkannt (Vault not found)"
@@ -1157,9 +1157,6 @@ msgstr "§eCreating plot world: {0}..."
 
 msgid "setup.done.saved"
 msgstr "§a✔ Plot world config saved: {0}"
-
-msgid "setup.folia.restart_required"
-msgstr "§e⚠ Folia detected: Please restart the server to load world §f{0}§e."
 
 msgid "setup.create_failed"
 msgstr "§c✖ Error: Failed to create world {0}."

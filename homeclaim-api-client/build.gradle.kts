@@ -8,12 +8,12 @@ group = "systems.diath.homeclaim"
 version = rootProject.version
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 dependencies {
-    api("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
-    api("org.jetbrains.kotlin:kotlin-reflect:2.2.0")
+    api("org.jetbrains.kotlin:kotlin-stdlib:2.3.21")
+    api("org.jetbrains.kotlin:kotlin-reflect:2.3.21")
 }
 
 tasks {

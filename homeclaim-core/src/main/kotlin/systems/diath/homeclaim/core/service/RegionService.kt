@@ -7,6 +7,7 @@ import systems.diath.homeclaim.core.event.PostRegionClaimEvent
 import systems.diath.homeclaim.core.event.RegionBuyEvent
 import systems.diath.homeclaim.core.event.RegionClaimEvent
 import systems.diath.homeclaim.core.model.Bounds
+import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.model.PlayerId
@@ -15,13 +16,29 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.WorldId
 
 interface RegionService {
-    fun getRegionAt(world: WorldId, x: Int, y: Int, z: Int): RegionId?
+    fun getRegionAt(areaId: AreaId, x: Int, y: Int, z: Int): RegionId?
+
+    @Deprecated("Resolve an Area first, then use the AreaId overload")
+    fun getRegionAt(world: WorldId, x: Int, y: Int, z: Int): RegionId? =
+        getRegionAt(AreaId.legacyDefault(world), x, y, z)
+
+    @Deprecated("Resolve an Area first, then use the AreaId overload")
+    fun getRegionAt(worldName: String, x: Int, y: Int, z: Int): RegionId? =
+        getRegionAt(AreaId.legacyDefault(WorldId.fromLegacyName(worldName)), x, y, z)
     
     /**
      * 2D plot lookup (ignores Y axis).
      * Use this for plot commands where height shouldn't matter (claim, info, etc.)
      */
-    fun getRegionAt2D(world: WorldId, x: Int, z: Int): RegionId?
+    fun getRegionAt2D(areaId: AreaId, x: Int, z: Int): RegionId?
+
+    @Deprecated("Resolve an Area first, then use the AreaId overload")
+    fun getRegionAt2D(world: WorldId, x: Int, z: Int): RegionId? =
+        getRegionAt2D(AreaId.legacyDefault(world), x, z)
+
+    @Deprecated("Resolve an Area first, then use the AreaId overload")
+    fun getRegionAt2D(worldName: String, x: Int, z: Int): RegionId? =
+        getRegionAt2D(AreaId.legacyDefault(WorldId.fromLegacyName(worldName)), x, z)
     
     fun listRegionsByOwner(ownerId: PlayerId): List<Region>
     fun listAllRegions(): List<Region>

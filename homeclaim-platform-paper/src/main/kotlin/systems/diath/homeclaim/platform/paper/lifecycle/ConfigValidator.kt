@@ -5,9 +5,9 @@ import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.platform.paper.I18n
 
 /**
- * Configuration validation with clear error messages.
- * Validates all config values at startup to catch issues early.
+ * Legacy Bukkit YAML validator. The active Paper runtime loads HomeClaimTomlConfig.
  */
+@Deprecated("The active Paper runtime configuration is HomeClaim.toml")
 object ConfigValidator {
     
     @PublishedApi

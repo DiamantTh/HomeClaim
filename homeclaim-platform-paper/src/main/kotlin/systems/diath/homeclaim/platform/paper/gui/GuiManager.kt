@@ -9,6 +9,9 @@ import org.bukkit.event.inventory.InventoryCloseEvent
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.ZoneService
 import systems.diath.homeclaim.core.service.ComponentService
+import systems.diath.homeclaim.core.service.RegionAdminService
+import systems.diath.homeclaim.core.service.RoleService
+import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.platform.paper.listener.PlayerCleanupManager
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
 import java.util.concurrent.ConcurrentHashMap
@@ -19,19 +22,12 @@ import java.util.concurrent.ConcurrentHashMap
 class GuiManager(
     val regionService: RegionService,
     val zoneService: ZoneService,
-    val componentService: ComponentService
+    val componentService: ComponentService,
+    val adminService: RegionAdminService? = null,
+    val roleService: RoleService? = null,
+    val auditService: AuditService? = null
 ) : Listener {
     private val activeMenus = ConcurrentHashMap<Player, GuiMenu>()
-    private val plugin by lazy { Bukkit.getPluginManager().getPlugin("HomeClaim")!! }
-    
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
-    }
     
     init {
         // Register cleanup for player quit
@@ -56,10 +52,7 @@ class GuiManager(
         player.closeInventory()
     }
     
-    /**
-     * Close all open menus (used during shutdown).
-     * On Folia, each player.closeInventory() must run on the player's entity scheduler.
-     */
+    /** Close all open menus during shutdown on Paper's server thread. */
     fun closeAll() {
         val players = activeMenus.keys.toList()
         for (player in players) {
@@ -67,14 +60,7 @@ class GuiManager(
                 val menu = activeMenus.remove(player)
                 menu?.onClose(player)
                 
-                // Close inventory on proper thread
-                if (isFolia()) {
-                    // Folia: Must run on entity scheduler
-                    player.scheduler.run(plugin, { _ -> player.closeInventory() }, null)
-                } else {
-                    // Paper/Spigot: Can call directly
-                    player.closeInventory()
-                }
+                player.closeInventory()
             } catch (_: Exception) {
                 // Player might be offline
             }

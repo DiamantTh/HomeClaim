@@ -1,0 +1,132 @@
+name: HomeClaim
+version: 0.1.0-SNAPSHOT
+main: systems.diath.homeclaim.platform.paper.HomeClaimPaperPlugin
+api-version: "26.3"
+bootstrapper: systems.diath.homeclaim.platform.paper.HomeClaimPaperPluginBootstrap
+load: STARTUP
+description: Paper adapter for HomeClaim
+author: HomeClaim
+
+dependencies:
+  server:
+    FastAsyncWorldEdit:
+      load: BEFORE
+      required: false
+      join-classpath: true
+    Vault:
+      load: BEFORE
+      required: false
+      join-classpath: true
+    Essentials:
+      load: BEFORE
+      required: false
+      join-classpath: true
+permissions:
+  homeclaim.admin:
+    description: Zugriff auf Admin-Commands
+    default: op
+  homeclaim.admin.setup:
+    description: Allows running the HomeClaim plot setup wizard
+    default: op
+  homeclaim.admin.components:
+    description: Allows managing components in any region (Owner/Trusted bypass this)
+    default: false
+  homeclaim.admin.entry.denied:
+    description: Allows entering plots despite HomeClaim entry deny rules
+    default: false
+  homeclaim.bypass.protection:
+    description: Explicitly bypasses HomeClaim protection decisions
+    default: false
+  homeclaim.bypass.entry:
+    description: Explicitly bypasses HomeClaim entry restrictions
+    default: false
+  homeclaim.bypass.locked-policy:
+    description: Explicitly bypasses locked HomeClaim policies
+    default: false
+  homeclaim.action.region_enter:
+    description: Grants the region-enter capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_teleport_enter:
+    description: Grants the region-teleport-enter capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_build:
+    description: Grants the region-build capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_break:
+    description: Grants the region-break capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_interact_block:
+    description: Grants the block-interaction capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_interact_container:
+    description: Grants the container-interaction capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_redstone:
+    description: Grants the redstone capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_pvp:
+    description: Grants the PvP capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_fire:
+    description: Grants the fire capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_explosion:
+    description: Grants the explosion capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_mob_grief:
+    description: Grants the mob-grief capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_entity_damage:
+    description: Grants the entity-damage capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.region_vehicle_use:
+    description: Grants the vehicle-use capability when HomeClaim policy inherits
+    default: false
+  homeclaim.action.component_use:
+    description: Grants the component-use capability when HomeClaim policy inherits
+    default: false
+  homeclaim.admin.bypass.claimlimit:
+    description: Bypasses configured per-player plot claim limits
+    default: false
+  homeclaim.admin.bypass.mergelimit:
+    description: Bypasses configured maximum merged-region count
+    default: false
+  homeclaim.admin.entry.force:
+    description: Allows force-entry workflows that intentionally bypass entry deny rules for other players
+    default: op
+  homeclaim.audit.view:
+    description: Allows viewing audit logs of player actions in regions (requires LuckPerms/permission plugin)
+    default: false
+  homeclaim.plot.claim:
+    description: Allows claiming plots
+    default: true
+  homeclaim.plot.home:
+    description: Allows teleporting to own plot
+    default: true
+  homeclaim.plot.visit:
+    description: Allows visiting other players' plots
+    default: true
+  homeclaim.plot.merge:
+    description: Allows merging adjacent owned plots
+    default: true
+  homeclaim.plot.unlink:
+    description: Allows unlinking merged plots and optionally restoring roads
+    default: true
+  homeclaim.plot.reset:
+    description: Allows queueing a plot reset job
+    default: true
+  homeclaim.plot.alias:
+    description: Allows setting/clearing plot alias on current plot
+    default: true
+  homeclaim.plot.description:
+    description: Allows setting/clearing plot description on current plot
+    default: true
+  homeclaim.plot.jobs:
+    description: Allows viewing and cancelling queued plot jobs
+    default: op
+  homeclaim.plot.info.platform:
+    description: Allows viewing owner UUID and Java/Bedrock platform in /plot info (admin/rank permission)
+    default: op
+  homeclaim.plot.info.owner.name:
+    description: Allows viewing owner player name in /plot info (otherwise redacted)
+    default: op

@@ -9,7 +9,9 @@ import systems.diath.homeclaim.core.service.PlotMemberService
 import systems.diath.homeclaim.core.service.RegionAdminService
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.RoleService
 import systems.diath.homeclaim.core.service.ZoneService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.config.SensorRegistry
 import systems.diath.homeclaim.core.ui.ComponentCreationService
@@ -31,5 +33,7 @@ data class PlatformServices(
     val econService: EconService? = null,
     val sensorRegistry: SensorRegistry? = null,
     val componentCreationService: ComponentCreationService? = null,
-    val liftEventDispatcher: LiftEventDispatcher? = null
+    val liftEventDispatcher: LiftEventDispatcher? = null,
+    val worldAreaService: WorldAreaService? = null,
+    val roleService: RoleService? = null
 )

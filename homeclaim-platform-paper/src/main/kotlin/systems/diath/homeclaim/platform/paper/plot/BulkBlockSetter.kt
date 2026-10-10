@@ -13,8 +13,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.function.Consumer
 
 /**
- * Bulk block setter using FastAsyncWorldEdit (FAWE).
- * FAWE is a required dependency for HomeClaim.
+ * Optional FastAsyncWorldEdit (FAWE) backend used by existing-world conversion.
+ * HomeClaim's ordinary protection and Paper-native mutation paths do not require FAWE.
  */
 @Suppress("DEPRECATION")
 class BulkBlockSetter(private val plugin: Plugin) {

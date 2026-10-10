@@ -18,17 +18,6 @@ class BukkitEffectDispatcher(
     private val platformProvider: PlatformProvider
 ) : EffectDispatcher {
     
-    private val plugin by lazy { Bukkit.getPluginManager().getPlugin("HomeClaim")!! }
-    
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
-    }
-    
     override fun playParticle(effect: ParticleEffect) {
         try {
             val particle = Particle.valueOf(effect.name.uppercase())
@@ -52,13 +41,7 @@ class BukkitEffectDispatcher(
                 )
             }
             
-            if (isFolia()) {
-                // Folia: Run on region scheduler for the location
-                Bukkit.getRegionScheduler().run(plugin, location) { _ -> spawnTask() }
-            } else {
-                // Paper/Spigot: Can call directly
-                spawnTask()
-            }
+            spawnTask()
         } catch (e: Exception) {
             // Particle not found or other error
         }
@@ -85,13 +68,7 @@ class BukkitEffectDispatcher(
                 )
             }
             
-            if (isFolia()) {
-                // Folia: Run on region scheduler
-                Bukkit.getRegionScheduler().run(plugin, location) { _ -> playTask() }
-            } else {
-                // Paper/Spigot: Can call directly
-                playTask()
-            }
+            playTask()
         } catch (e: Exception) {
             // Sound not found or other error
         }

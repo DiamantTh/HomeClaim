@@ -1,6 +1,7 @@
 package systems.diath.homeclaim.core.store
 
 import systems.diath.homeclaim.core.model.Bounds
+import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
@@ -34,91 +35,40 @@ import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
 import java.sql.ResultSet
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import javax.sql.DataSource
 
 class JdbcRegionRepository(
     private val dataSource: DataSource,
     private val eventDispatcher: EventDispatcher? = null,
-    private val auditService: AuditService? = null
+    private val auditService: AuditService? = null,
+    private val worldAreaRepository: JdbcWorldAreaRepository? = null
 ) : RegionService {
-    override fun getRegionAt(world: WorldId, x: Int, y: Int, z: Int): RegionId? {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT id FROM regions
-                WHERE world = ?
-                  AND ? BETWEEN min_x AND max_x
-                  AND ? BETWEEN min_y AND max_y
-                  AND ? BETWEEN min_z AND max_z
-                LIMIT 1
-                """.trimIndent()
-            ).apply {
-                setString(1, world)
-                setInt(2, x)
-                setInt(3, y)
-                setInt(4, z)
-            }.executeQuery().use { rs ->
-                return if (rs.next()) RegionId(UUID.fromString(rs.getString("id"))) else null
-            }
-        }
+    /** A startup-loaded spatial snapshot keeps protection lookups off JDBC event hot paths. */
+    private val runtimeIndex = AtomicReference(RegionRuntimeIndex.EMPTY)
+
+    init {
+        reloadRuntimeIndex()
+    }
+
+    override fun getRegionAt(areaId: AreaId, x: Int, y: Int, z: Int): RegionId? {
+        return runtimeIndex.get().findAt(areaId, x, y, z, twoDimensional = false)
     }
     
-    override fun getRegionAt2D(world: WorldId, x: Int, z: Int): RegionId? {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT id FROM regions
-                WHERE world = ?
-                  AND ? BETWEEN min_x AND max_x
-                  AND ? BETWEEN min_z AND max_z
-                LIMIT 1
-                """.trimIndent()
-            ).apply {
-                setString(1, world)
-                setInt(2, x)
-                setInt(3, z)
-            }.executeQuery().use { rs ->
-                return if (rs.next()) RegionId(UUID.fromString(rs.getString("id"))) else null
-            }
-        }
+    override fun getRegionAt2D(areaId: AreaId, x: Int, z: Int): RegionId? {
+        return runtimeIndex.get().findAt(areaId, x, 0, z, twoDimensional = true)
     }
 
     override fun listRegionsByOwner(ownerId: PlayerId): List<Region> {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT * FROM regions WHERE owner = ?").apply {
-                setObject(1, ownerId)
-            }.executeQuery().use { rs ->
-                val regions = mutableListOf<Region>()
-                while (rs.next()) {
-                    regions += rs.toRegion(conn)
-                }
-                return regions
-            }
-        }
+        return runtimeIndex.get().regions.values.filter { it.owner == ownerId }
     }
 
     override fun listAllRegions(): List<Region> {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT * FROM regions").use { stmt ->
-                stmt.executeQuery().use { rs ->
-                    val regions = mutableListOf<Region>()
-                    while (rs.next()) {
-                        regions += rs.toRegion(conn)
-                    }
-                    return regions
-                }
-            }
-        }
+        return runtimeIndex.get().regions.values.toList()
     }
 
     override fun getRegionById(regionId: RegionId): Region? {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT * FROM regions WHERE id = ?").apply {
-                setObject(1, regionId.value)
-            }.executeQuery().use { rs ->
-                return if (rs.next()) rs.toRegion(conn) else null
-            }
-        }
+        return runtimeIndex.get().regions[regionId]
     }
 
     override fun mergeRegions(regionIds: Collection<RegionId>): MergeGroupId {
@@ -143,11 +93,18 @@ class JdbcRegionRepository(
             conn.commit()
         }
 
+        replaceCachedRegions { regions ->
+            regions.mapValues { (id, region) ->
+                if (id in normalizedIds) region.copy(mergeGroupId = mergeId) else region
+            }
+        }
+
         eventDispatcher?.dispatch(PostRegionMergeEvent(normalizedIds, initiatorId, mergeId))
         return mergeId
     }
 
     override fun createRegion(region: Region, bounds: Bounds): RegionId {
+        if (regionAreaIsLegacyDefault(region)) worldAreaRepository?.ensureLegacyArea(region.world)
         // Dispatch pre-event
         val createEvent = RegionCreateEvent(
             regionId = region.id,
@@ -166,23 +123,24 @@ class JdbcRegionRepository(
             try {
                 conn.prepareStatement(
                     """
-                    INSERT INTO regions (id, world, shape, min_x, max_x, min_y, max_y, min_z, max_z, owner, merge_group_id, price, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO regions (id, world, area_id, shape, min_x, max_x, min_y, max_y, min_z, max_z, owner, merge_group_id, price, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """.trimIndent()
                 ).apply {
                     setObject(1, region.id.value)
                     setString(2, region.world)
-                    setString(3, region.shape.name)
-                    setInt(4, bounds.minX)
-                    setInt(5, bounds.maxX)
-                    setInt(6, bounds.minY)
-                    setInt(7, bounds.maxY)
-                    setInt(8, bounds.minZ)
-                    setInt(9, bounds.maxZ)
-                    setObject(10, region.owner)
-                    setObject(11, region.mergeGroupId?.value)
-                    setDouble(12, region.price)
-                    setString(13, Serialization.toJson(region.metadata))
+                    setString(3, region.areaId.value.toString())
+                    setString(4, region.shape.name)
+                    setInt(5, bounds.minX)
+                    setInt(6, bounds.maxX)
+                    setInt(7, bounds.minY)
+                    setInt(8, bounds.maxY)
+                    setInt(9, bounds.minZ)
+                    setInt(10, bounds.maxZ)
+                    setObject(11, region.owner)
+                    setObject(12, region.mergeGroupId?.value)
+                    setDouble(13, region.price)
+                    setString(14, Serialization.toJson(region.metadata))
                 }.executeUpdate()
 
                 replaceRoles(conn, region.id, region.roles)
@@ -207,6 +165,8 @@ class JdbcRegionRepository(
                 conn.autoCommit = true
             }
         }
+
+        replaceCachedRegion(region.copy(bounds = bounds))
         
         // Dispatch post-event
         eventDispatcher?.dispatch(
@@ -219,6 +179,9 @@ class JdbcRegionRepository(
         
         return region.id
     }
+
+    private fun regionAreaIsLegacyDefault(region: Region): Boolean =
+        region.areaId == AreaId.legacyDefault(WorldId.fromLegacyName(region.world))
 
     override fun deleteRegion(regionId: RegionId) {
         val region = getRegionById(regionId)
@@ -242,6 +205,8 @@ class JdbcRegionRepository(
                 setObject(1, regionId.value)
             }.executeUpdate()
         }
+
+        replaceCachedRegions { regions -> regions - regionId }
         
         // Audit log
         region?.let {
@@ -290,23 +255,24 @@ class JdbcRegionRepository(
             try {
                 conn.prepareStatement(
                     """
-                    UPDATE regions SET world = ?, shape = ?, min_x = ?, max_x = ?, min_y = ?, max_y = ?, min_z = ?, max_z = ?, owner = ?, merge_group_id = ?, price = ?, metadata = ?
+                    UPDATE regions SET world = ?, area_id = ?, shape = ?, min_x = ?, max_x = ?, min_y = ?, max_y = ?, min_z = ?, max_z = ?, owner = ?, merge_group_id = ?, price = ?, metadata = ?
                     WHERE id = ?
                     """.trimIndent()
                 ).apply {
                     setString(1, region.world)
-                    setString(2, region.shape.name)
-                    setInt(3, region.bounds.minX)
-                    setInt(4, region.bounds.maxX)
-                    setInt(5, region.bounds.minY)
-                    setInt(6, region.bounds.maxY)
-                    setInt(7, region.bounds.minZ)
-                    setInt(8, region.bounds.maxZ)
-                    setObject(9, region.owner)
-                    setObject(10, region.mergeGroupId?.value)
-                    setDouble(11, region.price)
-                    setString(12, Serialization.toJson(region.metadata))
-                    setObject(13, region.id.value)
+                    setString(2, region.areaId.value.toString())
+                    setString(3, region.shape.name)
+                    setInt(4, region.bounds.minX)
+                    setInt(5, region.bounds.maxX)
+                    setInt(6, region.bounds.minY)
+                    setInt(7, region.bounds.maxY)
+                    setInt(8, region.bounds.minZ)
+                    setInt(9, region.bounds.maxZ)
+                    setObject(10, region.owner)
+                    setObject(11, region.mergeGroupId?.value)
+                    setDouble(12, region.price)
+                    setString(13, Serialization.toJson(region.metadata))
+                    setObject(14, region.id.value)
                 }.executeUpdate()
 
                 replaceRoles(conn, region.id, region.roles)
@@ -330,6 +296,7 @@ class JdbcRegionRepository(
                 conn.autoCommit = true
             }
         }
+        if (existing != null) replaceCachedRegion(region)
         
         // Dispatch post-event
         eventDispatcher?.dispatch(
@@ -346,6 +313,7 @@ class JdbcRegionRepository(
         return Region(
             id = regionId,
             world = getString("world"),
+            areaId = AreaId(UUID.fromString(getString("area_id"))),
             shape = RegionShape.valueOf(getString("shape")),
             bounds = Bounds(
                 minX = getInt("min_x"),
@@ -363,6 +331,88 @@ class JdbcRegionRepository(
             metadata = Serialization.fromJson(getString("metadata")),
             price = getDouble("price")
         )
+    }
+
+    private fun reloadRuntimeIndex() {
+        val loaded = dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT * FROM regions").use { statement ->
+                statement.executeQuery().use { rs ->
+                    buildMap {
+                        while (rs.next()) {
+                            val region = rs.toRegion(conn)
+                            put(region.id, region)
+                        }
+                    }
+                }
+            }
+        }
+        runtimeIndex.set(RegionRuntimeIndex.build(loaded))
+    }
+
+    private fun replaceCachedRegion(region: Region) = replaceCachedRegions { it + (region.id to region) }
+
+    private fun replaceCachedRegions(transform: (Map<RegionId, Region>) -> Map<RegionId, Region>) {
+        runtimeIndex.updateAndGet { current -> RegionRuntimeIndex.build(transform(current.regions)) }
+    }
+
+    private class RegionRuntimeIndex private constructor(
+        val regions: Map<RegionId, Region>,
+        private val byChunk: Map<AreaId, Map<Long, List<RegionId>>>,
+        private val wideRegions: Map<AreaId, List<RegionId>>
+    ) {
+        fun findAt(areaId: AreaId, x: Int, y: Int, z: Int, twoDimensional: Boolean): RegionId? {
+            val chunkKey = chunkKey(x shr 4, z shr 4)
+            val indexed = byChunk[areaId]?.get(chunkKey).orEmpty()
+            val wide = wideRegions[areaId].orEmpty()
+            var match: RegionId? = null
+            for (id in indexed) {
+                val bounds = regions[id]?.bounds ?: continue
+                val contains = if (twoDimensional) bounds.contains2D(x, z) else bounds.contains(x, y, z)
+                val current = match
+                if (contains && (current == null || id.value < current.value)) match = id
+            }
+            for (id in wide) {
+                val bounds = regions[id]?.bounds ?: continue
+                val contains = if (twoDimensional) bounds.contains2D(x, z) else bounds.contains(x, y, z)
+                val current = match
+                if (contains && (current == null || id.value < current.value)) match = id
+            }
+            return match
+        }
+
+        companion object {
+            private const val MAX_INDEXED_CHUNKS_PER_REGION = 4096L
+            val EMPTY = RegionRuntimeIndex(emptyMap(), emptyMap(), emptyMap())
+
+            fun build(regions: Map<RegionId, Region>): RegionRuntimeIndex {
+                val mutableChunks = HashMap<AreaId, HashMap<Long, MutableList<RegionId>>>()
+                val mutableWide = HashMap<AreaId, MutableList<RegionId>>()
+                for (region in regions.values) {
+                    val minChunkX = region.bounds.minX shr 4
+                    val maxChunkX = region.bounds.maxX shr 4
+                    val minChunkZ = region.bounds.minZ shr 4
+                    val maxChunkZ = region.bounds.maxZ shr 4
+                    val count = (maxChunkX.toLong() - minChunkX + 1) * (maxChunkZ.toLong() - minChunkZ + 1)
+                    if (count > MAX_INDEXED_CHUNKS_PER_REGION) {
+                        mutableWide.getOrPut(region.areaId, ::mutableListOf).add(region.id)
+                        continue
+                    }
+                    val chunks = mutableChunks.getOrPut(region.areaId, ::HashMap)
+                    for (chunkX in minChunkX..maxChunkX) {
+                        for (chunkZ in minChunkZ..maxChunkZ) {
+                            chunks.getOrPut(chunkKey(chunkX, chunkZ), ::mutableListOf).add(region.id)
+                        }
+                    }
+                }
+                val sortedChunks = mutableChunks.mapValues { (_, chunks) ->
+                    chunks.mapValues { (_, ids) -> ids.sortedBy { it.value.toString() } }
+                }
+                val sortedWide = mutableWide.mapValues { (_, ids) -> ids.sortedBy { it.value.toString() } }
+                return RegionRuntimeIndex(regions.toMap(), sortedChunks, sortedWide)
+            }
+
+            private fun chunkKey(x: Int, z: Int): Long = (x.toLong() shl 32) xor (z.toLong() and 0xffffffffL)
+        }
     }
 
     private fun java.sql.Connection.fetchRoles(regionId: RegionId): RegionRoles {
@@ -507,8 +557,12 @@ class JdbcRegionRepository(
         return true
     }
     
+    @Synchronized
     override fun claimRegion(regionId: RegionId, claimerId: PlayerId, cost: Double, econService: EconService): Boolean {
         val region = getRegionById(regionId) ?: return false
+        // Claim calls are serialized within this repository instance, and the low-level
+        // service refuses to overwrite an already-owned region even if an adapter is stale.
+        if (region.owner != UNCLAIMED_OWNER) return false
         
         // Dispatch pre-event
         val claimEvent = RegionClaimEvent(regionId, claimerId, cost)
@@ -536,4 +590,8 @@ class JdbcRegionRepository(
     }
     
     override fun getEventDispatcher(): EventDispatcher? = eventDispatcher
+
+    private companion object {
+        val UNCLAIMED_OWNER: UUID = UUID(0L, 0L)
+    }
 }

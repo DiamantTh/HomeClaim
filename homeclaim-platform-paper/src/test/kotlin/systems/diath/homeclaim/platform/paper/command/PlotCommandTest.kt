@@ -2,7 +2,6 @@ package systems.diath.homeclaim.platform.paper.command
 
 import org.bukkit.Location
 import org.bukkit.World
-import org.bukkit.command.Command
 import org.bukkit.entity.Player
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
@@ -14,12 +13,16 @@ import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
+import org.mockito.Mockito
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditStatus
 import systems.diath.homeclaim.core.store.InMemoryRegionStore
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
@@ -38,9 +41,9 @@ class PlotCommandTest {
     fun `claim still works when no economy service is wired`() {
         val regionService = InMemoryRegionStore()
         val guiManager = mock(GuiManager::class.java)
+        val auditService = mock(AuditService::class.java)
         val player = mock(Player::class.java)
         val world = mock(World::class.java)
-        val command = mock(Command::class.java)
 
         val playerId = UUID.randomUUID()
         val regionId = RegionId(UUID.randomUUID())
@@ -66,12 +69,21 @@ class PlotCommandTest {
         doReturn(true).`when`(player).hasPermission(anyString())
         doReturn("plots").`when`(world).name
 
-        val plotCommand = PlotCommand(regionService, guiManager, econService = null)
+        val plotCommand = PlotCommand(regionService, guiManager, econService = null, auditService = auditService)
 
-        plotCommand.onCommand(player, command, "plot", arrayOf("claim"))
+        plotCommand.execute(player, arrayOf("claim"))
 
         assertEquals(playerId, regionService.getRegionById(regionId)?.owner)
         verify(player, never()).sendMessage(contains("economy"))
+        val records = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(3, records.size)
+        assertEquals(
+            listOf(AuditStatus.ATTEMPTED, AuditStatus.ALLOWED, AuditStatus.COMPLETED),
+            records.map { it.status }
+        )
+        assertEquals(1, records.map { it.correlationId }.distinct().size)
+        assertEquals("homeclaim:region_claim", records.first().actionKey?.value)
     }
 
     @Test
@@ -81,7 +93,6 @@ class PlotCommandTest {
         val plotResetService = mock(PlotResetService::class.java)
         val plotMutationService = mock(PlotMutationService::class.java)
         val player = mock(Player::class.java)
-        val command = mock(Command::class.java)
 
         doReturn(false).`when`(player).isOp
         doReturn(UUID.randomUUID()).`when`(player).uniqueId
@@ -97,7 +108,7 @@ class PlotCommandTest {
             plotMutationService = plotMutationService
         )
 
-        plotCommand.onCommand(player, command, "plot", arrayOf("jobs", "status", "plots"))
+        plotCommand.execute(player, arrayOf("jobs", "status", "plots"))
 
         verify(player, atLeastOnce()).sendMessage(contains("mut-1"))
         verify(player, atLeastOnce()).sendMessage(contains("reset-1"))

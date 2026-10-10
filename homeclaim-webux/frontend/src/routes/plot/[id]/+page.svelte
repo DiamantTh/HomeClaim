@@ -1,18 +1,32 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getPlot, type PlotSummary } from '$lib/api';
+  import { ApiRequestError, getPlot, type PlotSummary } from '$lib/api';
 
   export let data: { plotId: string };
 
   let plot: PlotSummary | null = null;
+  let loading = true;
+  let error: string | null = null;
+  let unauthorized = false;
 
   onMount(async () => {
-    plot = await getPlot(data.plotId);
+    try {
+      plot = await getPlot(data.plotId);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not load plot details.';
+      unauthorized = cause instanceof ApiRequestError && (cause.status === 401 || cause.status === 403);
+    } finally {
+      loading = false;
+    }
   });
 </script>
 
 <section class="panel">
-  {#if plot}
+  {#if loading}
+    <p class="muted">Loading plot…</p>
+  {:else if error}
+    <p role="alert">{unauthorized ? 'You are not authorized to view this plot.' : `Plot service error: ${error}`}</p>
+  {:else if plot}
     <span class="badge">Plot detail</span>
     <h1>{plot.name}</h1>
     <p class="muted">{plot.description}</p>
@@ -64,7 +78,7 @@
       {/if}
     </section>
   {:else}
-    <p class="muted">Loading plot…</p>
+    <p class="muted">Plot not found.</p>
   {/if}
 </section>
 

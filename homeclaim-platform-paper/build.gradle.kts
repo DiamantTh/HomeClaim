@@ -6,7 +6,6 @@ plugins {
     id("org.jetbrains.kotlin.jvm")
     id("com.gradleup.shadow") version "8.3.5"
 }
-
 val faweVersion = "2.12.3"
 val faweRuntime by configurations.creating {
     isCanBeConsumed = false
@@ -17,9 +16,15 @@ dependencies {
     implementation(project(":homeclaim-core"))
     implementation(project(":homeclaim-liftlink"))
     implementation(project(":homeclaim-api"))
-    compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
-    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.+")
+    testImplementation("io.papermc.paper:paper-api:26.3.build.+")
     implementation("org.flywaydb:flyway-core:10.10.0")
+    implementation("org.flywaydb:flyway-database-postgresql:10.10.0")
+    implementation("org.flywaydb:flyway-mysql:10.10.0")
+    runtimeOnly("org.xerial:sqlite-jdbc:3.53.4.0")
+    runtimeOnly("org.postgresql:postgresql:42.7.7")
+    runtimeOnly("org.mariadb.jdbc:mariadb-java-client:3.5.3")
+    runtimeOnly("com.mysql:mysql-connector-j:9.3.0")
     compileOnly("com.github.MilkBowl:VaultAPI:1.7.1")
     implementation("com.electronwill.night-config:toml:3.8.3")
     
@@ -45,7 +50,6 @@ tasks.shadowJar {
     exclude("**/*.kotlin_metadata", "**/*.kotlin_builtins")
     exclude("**/*.proto")        // Protocol Buffers
     exclude("**/*.md")           // Markdown docs
-    exclude("**/*.txt")          // Text files
     exclude("DebugProbesKt.bin") // Kotlin coroutines debug
     exclude("module-info.class") // Java 9+ modules
     exclude("**/package.html")   // Javadoc
@@ -68,6 +72,7 @@ tasks.shadowJar {
     archiveVersion.set("")
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    mergeServiceFiles()
 
     // Keep subproject build outputs intact so test/IDE classpaths and incremental Kotlin compilation remain stable.
 }
@@ -76,31 +81,34 @@ tasks.named("build") {
     dependsOn(tasks.shadowJar)
 }
 
-val minecraftVersion = "1.21.11"
+val minecraftVersion = "26.3"
 
 fun openUrl(url: URL): java.io.InputStream {
     val conn = url.openConnection()
-    conn.setRequestProperty("User-Agent", "HomeClaim-Gradle")
+    conn.setRequestProperty("User-Agent", "HomeClaim-Gradle/0.1.0 (https://github.com/DiamantTh/HomeClaim)")
     return conn.getInputStream()
 }
 
-fun latestBuild(project: String, version: String): Int {
-    val url = URI("https://api.papermc.io/v2/projects/$project/versions/$version").toURL()
-    val json = JsonSlurper().parse(openUrl(url)) as Map<*, *>
-    val builds = json["builds"] as List<*>
-    return builds.last() as Int
-}
-
 fun downloadServer(project: String, version: String, dest: java.io.File) {
-    val build = latestBuild(project, version)
-    val fileName = "$project-$version-$build.jar"
-    val url = URI("https://api.papermc.io/v2/projects/$project/versions/$version/builds/$build/downloads/$fileName").toURL()
+    val buildsUrl = URI("https://fill.papermc.io/v3/projects/$project/versions/$version/builds").toURL()
+    val builds = JsonSlurper().parse(openUrl(buildsUrl)) as List<*>
+    val build = builds.asSequence()
+        .map { it as Map<*, *> }
+        .firstOrNull { it["channel"] == "STABLE" }
+        ?: builds.asSequence()
+            .map { it as Map<*, *> }
+            .firstOrNull { it["channel"] == "BETA" }
+        ?: throw GradleException("No stable or beta $project build is available for Minecraft $version")
+    val serverDownload = ((build["downloads"] as? Map<*, *>)?.get("server:default") as? Map<*, *>)
+        ?: throw GradleException("Paper build ${build["id"]} has no default server download")
+    val url = URI(serverDownload["url"] as String).toURL()
     dest.parentFile.mkdirs()
     openUrl(url).use { input ->
         dest.outputStream().use { output ->
             input.copyTo(output)
         }
     }
+    println("Downloaded $project $version build ${build["id"]} to $dest")
 }
 
 fun latestFawePaperArtifact(): Pair<String, String> {
@@ -126,10 +134,8 @@ fun downloadFawePaper(dest: java.io.File) {
 }
 
 val runPaperDir = layout.projectDirectory.dir("run/paper")
-val runFoliaDir = layout.projectDirectory.dir("run/folia")
 
 val paperJar = runPaperDir.file("paper-$minecraftVersion.jar").asFile
-val foliaJar = runFoliaDir.file("folia-$minecraftVersion.jar").asFile
 
 val copyPluginToPaper = tasks.register<Copy>("copyPluginToPaper") {
     dependsOn(tasks.shadowJar)
@@ -159,21 +165,9 @@ val downloadFaweToPaper = tasks.register("downloadFaweToPaper") {
     }
 }
 
-val copyPluginToFolia = tasks.register<Copy>("copyPluginToFolia") {
-    dependsOn(tasks.shadowJar)
-    from(tasks.shadowJar.map { it.archiveFile })
-    into(runFoliaDir.dir("plugins"))
-    rename { "HomeClaim.jar" }
-}
-
 val downloadPaper = tasks.register("downloadPaper") {
     outputs.file(paperJar)
     doLast { downloadServer("paper", minecraftVersion, paperJar) }
-}
-
-val downloadFolia = tasks.register("downloadFolia") {
-    outputs.file(foliaJar)
-    doLast { downloadServer("folia", minecraftVersion, foliaJar) }
 }
 
 val eulaPaper = tasks.register("eulaPaper") {
@@ -185,19 +179,9 @@ val eulaPaper = tasks.register("eulaPaper") {
     }
 }
 
-val eulaFolia = tasks.register("eulaFolia") {
-    val file = runFoliaDir.file("eula.txt").asFile
-    outputs.file(file)
-    doLast {
-        file.parentFile.mkdirs()
-        file.writeText("eula=true\n")
-    }
-}
-
 val setupOpsJson = tasks.register("setupOpsJson") {
     val opsPaper = runPaperDir.file("ops.json").asFile
-    val opsFolia = runFoliaDir.file("ops.json").asFile
-    outputs.files(opsPaper, opsFolia)
+    outputs.file(opsPaper)
     doLast {
         val opsContent = """[
   {
@@ -209,14 +193,9 @@ val setupOpsJson = tasks.register("setupOpsJson") {
 ]
 """
         opsPaper.parentFile.mkdirs()
-        opsFolia.parentFile.mkdirs()
         if (!opsPaper.exists()) {
             opsPaper.writeText(opsContent)
             println("Created $opsPaper")
-        }
-        if (!opsFolia.exists()) {
-            opsFolia.writeText(opsContent)
-            println("Created $opsFolia")
         }
     }
 }
@@ -232,15 +211,7 @@ val cleanRunPaperHomeClaimData = tasks.register("cleanRunPaperHomeClaimData") {
 tasks.register<Exec>("runPaper") {
     group = "run server"
     description = "Run a Paper server for $minecraftVersion"
-    dependsOn(downloadPaper, eulaPaper, setupOpsJson, cleanRunPaperHomeClaimData, copyPluginToPaper, downloadFaweToPaper)
+    dependsOn(downloadPaper, eulaPaper, setupOpsJson, cleanRunPaperHomeClaimData, copyPluginToPaper)
     workingDir = runPaperDir.asFile
     commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
-}
-
-tasks.register<Exec>("runFolia") {
-    group = "run server"
-    description = "Run a Folia server for $minecraftVersion"
-    dependsOn(downloadFolia, eulaFolia, setupOpsJson, copyPluginToFolia)
-    workingDir = runFoliaDir.asFile
-    commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", foliaJar.name, "nogui")
 }

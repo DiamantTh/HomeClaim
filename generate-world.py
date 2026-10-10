@@ -12,7 +12,7 @@ def main() -> int:
     print("⚠️  Der CLI-World-Setup wurde entfernt.")
     print("   Bitte nutze den Ingame-Setup über: /homeclaim setup")
     print("   Paper: neue Plot-Welt + FAWE-Konvertierung möglich")
-    print("   Folia: neue Plot-Welt unterstützt, Konvertierung bestehender Welten deaktiviert")
+    print("   Folia wird nicht unterstützt")
     return 2
 
 

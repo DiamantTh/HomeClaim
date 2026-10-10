@@ -1,5 +1,6 @@
-# HomeClaim Paper Konfiguration (Beispiele)
-# Kopiere diese Datei nach config.yml und passe die Werte an.
+# Legacy YAML examples retained for older tooling.
+# The current Paper runtime reads ../HomeClaim.toml; do not copy this file to config.yml.
+# This file does not describe the supported Paper runtime configuration contract.
 #
 # STORAGE:
 # - Nur JDBC verfügbar (SQLite, PostgreSQL, MySQL, MariaDB)
@@ -101,7 +102,7 @@ homeclaim:
         PVP: false
 
 # =====================================================================
-# Plot Worlds (HomeClaim Plot Setup) - 1.21+ Schematiken
+# Plot Worlds (legacy YAML example; the active plugin configuration is HomeClaim.toml)
 # =====================================================================
 # Standard-Defaults: Gras (oben), Dunkles Prismarinblock (Straße), Diamantblock (Plotrand), Glatte Quarztreppe (Straßenrand)
 # P2 Templates (separate Dateien): copper, deepslate, modern

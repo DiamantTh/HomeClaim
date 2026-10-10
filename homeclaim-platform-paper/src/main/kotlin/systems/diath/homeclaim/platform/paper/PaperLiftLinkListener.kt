@@ -3,19 +3,24 @@ package systems.diath.homeclaim.platform.paper
 import systems.diath.homeclaim.core.model.ComponentState
 import systems.diath.homeclaim.core.model.ComponentType
 import systems.diath.homeclaim.core.model.Position
-import systems.diath.homeclaim.core.model.ComponentId
-import systems.diath.homeclaim.core.platform.PolicyGuard
+import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
+import systems.diath.homeclaim.core.platform.ComponentTriggerRequest
 import systems.diath.homeclaim.core.policy.Action
+import systems.diath.homeclaim.core.policy.ActorKind
 import systems.diath.homeclaim.core.policy.DecisionReason
+import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.AuditEntries
+import systems.diath.homeclaim.core.service.AuditPolicy
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditStatus
 import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.liftlink.LiftLinkPlanner
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
+import systems.diath.homeclaim.platform.paper.protection.toHomeClaimPosition
 import org.bukkit.Material
-import org.bukkit.block.Block
+import org.bukkit.World
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
@@ -25,7 +30,7 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import systems.diath.homeclaim.platform.paper.I18n
 
 class PaperLiftLinkListener(
-    private val guard: PolicyGuard,
+    private val componentTriggerHandler: ComponentTriggerHandler,
     private val componentService: ComponentService,
     private val regionService: RegionService,
     private val planner: LiftLinkPlanner,
@@ -40,13 +45,13 @@ class PaperLiftLinkListener(
         Material.POLISHED_BLACKSTONE_PRESSURE_PLATE
     )
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     fun onInteract(e: PlayerInteractEvent) = SafeEventHandler.handle(e, "LiftLink.onInteract") {
         if (e.action != BlockAction.PHYSICAL) return@handle
         val block = e.clickedBlock ?: return@handle
         if (!triggerBlocks.contains(block.type)) return@handle
         val player = e.player
-        val pos = block.toPosition()
+        val pos = block.toHomeClaimPosition()
         val comp = componentService.getComponentAt(pos) ?: return@handle
         if (comp.state != ComponentState.ENABLED) return@handle
         when (comp.type) {
@@ -54,13 +59,6 @@ class PaperLiftLinkListener(
             ComponentType.TELEPORT_PAD -> handleTeleport(player, e, comp, pos)
         }
     }
-
-    private fun Block.toPosition(): Position = Position(
-        world = this.world.name,
-        x = this.x,
-        y = this.y,
-        z = this.z
-    )
 
     private fun systems.diath.homeclaim.core.model.Position.toCenterLocation(world: org.bukkit.World) =
         org.bukkit.Location(world, x.toDouble() + 0.5, y.toDouble().coerceAtLeast(0.0), z.toDouble() + 0.5)
@@ -70,22 +68,31 @@ class PaperLiftLinkListener(
      * Mit World-Checking und Permission-Validation
      */
     private fun teleportCrossWorld(player: org.bukkit.entity.Player, target: Position) {
-        val targetWorld = org.bukkit.Bukkit.getWorld(target.world)
+        val targetWorld = target.toPaperWorld()
+        val targetWorldName = target.displayWorldName()
         if (targetWorld == null) {
-            player.sendMessage(i18n.msg("liftlink.target.world.not.exists", target.world))
+            player.sendMessage(i18n.msg("liftlink.target.world.not.exists", targetWorldName))
             return
         }
         
         // Prüfe Welt-Berechtigung wenn nötig
         if (hasWorldTeleportRestriction(player)) {
-            player.sendMessage(i18n.msg("liftlink.no.world.access", target.world))
+            player.sendMessage(i18n.msg("liftlink.no.world.access", targetWorldName))
             return
         }
         
         val destLocation = target.toCenterLocation(targetWorld)
         player.teleportAsync(destLocation)
-        player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(i18n.msg("liftlink.teleport.arrow") + " ${target.world}"))
+        player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(i18n.msg("liftlink.teleport.arrow") + " $targetWorldName"))
     }
+
+    private fun Position.displayWorldName(): String = legacyWorldName ?: worldId.value.toString()
+
+    private fun Position.toPaperWorld(): World? =
+        org.bukkit.Bukkit.getWorld(worldId.value) ?: legacyWorldName?.let { org.bukkit.Bukkit.getWorld(it) }
+
+    private fun Position.isIn(world: World): Boolean =
+        legacyWorldName?.let { it == world.name } ?: (worldId.value == world.uid)
     
     /**
      * Prüfe ob Spieler in die Zielwelt teleportiert darf
@@ -110,16 +117,8 @@ class PaperLiftLinkListener(
     }
 
     private fun handleElevator(player: Player, e: PlayerInteractEvent, comp: systems.diath.homeclaim.core.model.Component, pos: Position) {
-        val decision = guard.check(
-            action = Action.COMPONENT_USE,
-            position = pos,
-            extra = mapOf(
-                "playerId" to player.uniqueId,
-                "componentId" to comp.id,
-                "regionId" to comp.regionId
-            )
-        )
-        if (!decision.allowed) {
+        val decision = checkComponentUse(player, comp, pos) ?: return
+        if (decision.effect == systems.diath.homeclaim.core.policy.DecisionEffect.DENY) {
             player.sendMessage(policyMessage(decision.reason, decision.detail))
             e.isCancelled = true
             return
@@ -133,7 +132,7 @@ class PaperLiftLinkListener(
         val target = nearby.first()
         
         // Prüfe Cross-World Teleport
-        val isCrossWorld = target.position.world != player.world.name
+        val isCrossWorld = !target.position.isIn(player.world)
         if (isCrossWorld) {
             // Cross-World Teleport mit Permission-Check
             if (!player.hasPermission("homeclaim.elevator.crossworld")) {
@@ -178,13 +177,17 @@ class PaperLiftLinkListener(
             return
         }
         
-        // Check sensor block access: only players without perms need active redstone signal
-        val region = regionService.getRegionById(comp.regionId)
-        val playerRole = region?.roles?.resolve(player.uniqueId, region.owner) 
-            ?: systems.diath.homeclaim.core.model.RegionRole.VISITOR
-        
-        // If visitor/non-member, check redstone signal on sensor block
-        if (playerRole == systems.diath.homeclaim.core.model.RegionRole.VISITOR) {
+        val decision = checkComponentUse(player, comp, pos) ?: return
+        if (decision.effect == systems.diath.homeclaim.core.policy.DecisionEffect.DENY) {
+            player.sendMessage(policyMessage(decision.reason, decision.detail))
+            e.isCancelled = true
+            return
+        }
+
+        // Reuse the central policy decision's role result for the sensor behavior.
+        // This keeps component use and teleport behavior on the same membership resolver.
+        val isVisitor = decision.trace.role == systems.diath.homeclaim.core.model.RegionRole.VISITOR.name
+        if (isVisitor) {
             val sensorBlock = e.clickedBlock
             if (sensorBlock != null && BlockSensorRegistry.isValidSensor(sensorBlock)) {
                 if (!BlockSensorRegistry.hasActiveSignal(sensorBlock)) {
@@ -193,21 +196,6 @@ class PaperLiftLinkListener(
                     return
                 }
             }
-        }
-        
-        val decision = guard.check(
-            action = Action.COMPONENT_USE,
-            position = pos,
-            extra = mapOf(
-                "playerId" to player.uniqueId,
-                "componentId" to comp.id,
-                "regionId" to comp.regionId
-            )
-        )
-        if (!decision.allowed) {
-            player.sendMessage(policyMessage(decision.reason, decision.detail))
-            e.isCancelled = true
-            return
         }
         
         val targets = resolveTeleportTargets(comp, config)
@@ -219,7 +207,7 @@ class PaperLiftLinkListener(
         val destComp = targets.first()
         
         // Prüfe Cross-World Teleport
-        val isCrossWorld = destComp.position.world != player.world.name
+        val isCrossWorld = !destComp.position.isIn(player.world)
         if (isCrossWorld) {
             // Cross-World Teleport mit Permission-Check
             if (!player.hasPermission("homeclaim.teleporter.crossworld")) {
@@ -252,6 +240,39 @@ class PaperLiftLinkListener(
         )
         
         e.isCancelled = true
+    }
+
+    private fun checkComponentUse(
+        player: Player,
+        component: systems.diath.homeclaim.core.model.Component,
+        position: Position
+    ): systems.diath.homeclaim.core.policy.Decision? {
+        val result = componentTriggerHandler.onTrigger(
+            ComponentTriggerRequest(
+                playerId = player.uniqueId,
+                position = position,
+                actor = PolicyActorContext(
+                    kind = ActorKind.PLAYER,
+                    actorId = player.uniqueId.toString(),
+                    sourceMod = "paper"
+                ),
+                platform = "paper",
+                extra = mapOf(
+                    "event" to "PlayerInteractEvent:LiftLink",
+                    "playerName" to player.name,
+                    "componentType" to component.type.name
+                )
+            ),
+            component
+        )
+        val decision = result.decision ?: return null
+        if (decision.effect == systems.diath.homeclaim.core.policy.DecisionEffect.DENY) {
+            decision.context.actionRequest?.let { request ->
+                val entry = AuditEntries.actionResult(request, decision, AuditStatus.DENIED)
+                if (AuditPolicy.shouldPersist(entry)) auditService?.append(entry)
+            }
+        }
+        return decision
     }
 
     private fun policyMessage(reason: String, detail: String?): String {

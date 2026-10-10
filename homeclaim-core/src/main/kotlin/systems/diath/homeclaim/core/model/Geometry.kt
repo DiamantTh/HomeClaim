@@ -22,6 +22,11 @@ data class Bounds(
     fun contains2D(x: Int, z: Int): Boolean {
         return x in minX..maxX && z in minZ..maxZ
     }
+
+    fun overlaps(other: Bounds): Boolean =
+        minX <= other.maxX && maxX >= other.minX &&
+            minY <= other.maxY && maxY >= other.minY &&
+            minZ <= other.maxZ && maxZ >= other.minZ
 }
 
 enum class RegionShape {

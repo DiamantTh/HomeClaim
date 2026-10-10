@@ -39,7 +39,7 @@ data class ServerMetrics(
 data class VersionInfo(
     val homeclaimVersion: String = "unknown",
     val javaVersion: String = "unknown",
-    val serverImplementation: String = "unknown",  // Paper, Folia, Bukkit, etc.
+    val serverImplementation: String = "unknown",  // Paper API implementation, such as Paper or Purpur.
     val serverVersion: String = "unknown"
 )
 

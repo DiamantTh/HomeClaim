@@ -8,7 +8,6 @@ import systems.diath.homeclaim.core.model.ComponentState
 import systems.diath.homeclaim.core.model.ComponentType
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
-import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.ComponentService
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -16,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 class InMemoryComponentStore : ComponentService {
     private val components = ConcurrentHashMap<ComponentId, Component>()
     private val byRegion = ConcurrentHashMap<RegionId, MutableSet<ComponentId>>()
-    private val chunkIndex = ConcurrentHashMap<WorldId, MutableMap<Pair<Int, Int>, MutableSet<ComponentId>>>()
+    private val chunkIndex = ConcurrentHashMap<String, MutableMap<Pair<Int, Int>, MutableSet<ComponentId>>>()
 
     override fun createComponent(
         regionId: RegionId,

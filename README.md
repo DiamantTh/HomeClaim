@@ -12,7 +12,7 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 - `homeclaim-core`: Datenmodelle, Service-Schnittstellen, Policy-Grundlagen.
 - `homeclaim-ux`: Referenz-Wiring fuer In-Game-/Web-UX, nutzt Core-Services.
 - `homeclaim-liftlink`: Bewegungs-Komponenten (Elevator-/Teleport-Pads) auf Basis des Core-Component-Service.
-- `homeclaim-platform-paper`: Paper/Folia-Adapter fuer MC 1.21.5+.
+- `homeclaim-platform-paper`: Paper-Adapter fuer Minecraft/Paper 26.3.x+ (Java 25); Purpur ist ein wichtiges Kompatibilitaetsziel. Folia wird nicht unterstuetzt.
 - `docs/db/schema.sql`: SQL-Schema fuer Postgres/MariaDB/SQLite-lesbar (Regionen, Zonen, Komponenten, Rollen, Flags/Limits, Audit).
 
 ## Quickstart
@@ -36,7 +36,7 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 ```
 
 - Paper: Welt erstellen; Konvertierung mit FAWE moeglich.
-- Folia: Welt erstellen unterstuetzt; Konvertierung deaktiviert.
+- Folia: nicht unterstuetzt.
 - Sichere Setup-Grenzen: Plotgroesse 16 bis 512, Strassenbreite 1 bis 128, Hoehe 1 bis 319.
 
 ### Recovery bei unvollstaendigem Erststart

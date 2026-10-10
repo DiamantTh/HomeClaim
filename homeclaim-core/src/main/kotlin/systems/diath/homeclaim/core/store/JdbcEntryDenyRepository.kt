@@ -11,11 +11,18 @@ import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import javax.sql.DataSource
 
 class JdbcEntryDenyRepository(
     private val dataSource: DataSource
 ) : EntryDenyService {
+    private val runtimeRules = AtomicReference<Map<RegionId, List<EntryDenyRule>>>(emptyMap())
+
+    init {
+        reloadRuntimeRules()
+    }
+
     override fun createRule(
         regionId: RegionId,
         targetType: EntryDenyTargetType,
@@ -58,46 +65,18 @@ class JdbcEntryDenyRepository(
                 stmt.executeUpdate()
             }
         }
+        replaceCachedRule(rule)
         return rule
     }
 
-    override fun getRule(id: EntryDenyId): EntryDenyRule? {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT * FROM region_entry_denies WHERE id = ?").use { stmt ->
-                stmt.setObject(1, id.value)
-                stmt.executeQuery().use { rs ->
-                    return if (rs.next()) rs.toEntryDenyRule() else null
-                }
-            }
-        }
-    }
+    override fun getRule(id: EntryDenyId): EntryDenyRule? = runtimeRules.get().values.asSequence()
+        .flatten().firstOrNull { it.id == id }
 
     override fun listRules(regionId: RegionId, includeInactive: Boolean): List<EntryDenyRule> {
-        dataSource.connection.use { conn ->
-            val sql = if (includeInactive) {
-                "SELECT * FROM region_entry_denies WHERE region_id = ? ORDER BY created_at DESC"
-            } else {
-                """
-                SELECT * FROM region_entry_denies
-                WHERE region_id = ?
-                  AND status <> ?
-                  AND (expires_at IS NULL OR expires_at > ?)
-                ORDER BY created_at DESC
-                """.trimIndent()
-            }
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setObject(1, regionId.value)
-                if (!includeInactive) {
-                    stmt.setString(2, EntryDenyStatus.REVOKED.name)
-                    stmt.setTimestamp(3, Timestamp.from(Instant.now()))
-                }
-                stmt.executeQuery().use { rs ->
-                    val rules = mutableListOf<EntryDenyRule>()
-                    while (rs.next()) rules += rs.toEntryDenyRule()
-                    return rules
-                }
-            }
-        }
+        val rules = runtimeRules.get()[regionId].orEmpty()
+        if (includeInactive) return rules
+        val now = Instant.now()
+        return rules.filter { it.status != EntryDenyStatus.REVOKED && (it.expiresAt == null || it.expiresAt.isAfter(now)) }
     }
 
     override fun findActiveDeny(regionId: RegionId, playerId: PlayerId, playerName: String?): EntryDenyRule? {
@@ -106,7 +85,7 @@ class JdbcEntryDenyRepository(
 
     override fun reportRule(id: EntryDenyId, reportedBy: PlayerId, reason: String): Boolean {
         require(reason.isNotBlank()) { "Report reason is required" }
-        dataSource.connection.use { conn ->
+        val updated = dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
                 UPDATE region_entry_denies
@@ -120,13 +99,15 @@ class JdbcEntryDenyRepository(
                 stmt.setString(4, reason.trim())
                 stmt.setObject(5, id.value)
                 stmt.setString(6, EntryDenyStatus.REVOKED.name)
-                return stmt.executeUpdate() > 0
+                stmt.executeUpdate() > 0
             }
         }
+        if (updated) refreshCachedRule(id)
+        return updated
     }
 
     override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId, reason: String): Boolean {
-        dataSource.connection.use { conn ->
+        val updated = dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
                 UPDATE region_entry_denies
@@ -140,9 +121,11 @@ class JdbcEntryDenyRepository(
                 stmt.setString(4, reason.trim())
                 stmt.setObject(5, id.value)
                 stmt.setString(6, EntryDenyStatus.REVOKED.name)
-                return stmt.executeUpdate() > 0
+                stmt.executeUpdate() > 0
             }
         }
+        if (updated) refreshCachedRule(id)
+        return updated
     }
 
     private fun normalizeTarget(type: EntryDenyTargetType, value: String): String {
@@ -157,6 +140,44 @@ class JdbcEntryDenyRepository(
                 }
                 trimmed
             }
+        }
+    }
+
+    private fun reloadRuntimeRules() {
+        val loaded = dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT * FROM region_entry_denies ORDER BY created_at DESC").use { statement ->
+                statement.executeQuery().use { rs ->
+                    buildMap<RegionId, MutableList<EntryDenyRule>> {
+                        while (rs.next()) {
+                            val rule = rs.toEntryDenyRule()
+                            getOrPut(rule.regionId, ::mutableListOf).add(rule)
+                        }
+                    }.mapValues { (_, rules) -> rules.toList() }
+                }
+            }
+        }
+        runtimeRules.set(loaded)
+    }
+
+    private fun replaceCachedRule(rule: EntryDenyRule) {
+        runtimeRules.updateAndGet { current ->
+            val rules = current[rule.regionId].orEmpty().filterNot { it.id == rule.id }
+            current + (rule.regionId to (listOf(rule) + rules).sortedByDescending { it.createdAt })
+        }
+    }
+
+    private fun refreshCachedRule(id: EntryDenyId) {
+        val refreshed = dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT * FROM region_entry_denies WHERE id = ?").use { statement ->
+                statement.setObject(1, id.value)
+                statement.executeQuery().use { rs -> if (rs.next()) rs.toEntryDenyRule() else null }
+            }
+        }
+        runtimeRules.updateAndGet { current ->
+            val reduced = current.mapValues { (_, rules) -> rules.filterNot { it.id == id } }
+                .filterValues { it.isNotEmpty() }
+            if (refreshed == null) reduced else reduced + (refreshed.regionId to
+                (listOf(refreshed) + reduced[refreshed.regionId].orEmpty()).sortedByDescending { it.createdAt })
         }
     }
 

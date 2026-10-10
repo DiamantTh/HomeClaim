@@ -69,14 +69,25 @@ interface PlotMemberService {
     fun getMember(plotId: PlotId, playerId: PlayerId): PlotMember?
     fun listMembers(plotId: PlotId): List<PlotMember>
     fun listMembersByRole(plotId: PlotId, role: PlotMemberRole): List<PlotMember>
-    fun hasAccess(plotId: PlotId, playerId: PlayerId, ownerOnline: Boolean): Boolean
-    fun isDenied(plotId: PlotId, playerId: PlayerId): Boolean
+
+    /** Legacy storage adapter translated into the canonical HomeClaim role vocabulary. */
+    fun resolveRole(plotId: PlotId, playerId: PlayerId): RegionRole =
+        getMember(plotId, playerId)?.role?.toRegionRole() ?: RegionRole.VISITOR
+
+    /** Legacy Boolean projection. Authorization uses RegionRoles through PolicyService. */
+    @Deprecated("Use the central PolicyService decision for an action")
+    fun hasAccess(plotId: PlotId, playerId: PlayerId, ownerOnline: Boolean): Boolean =
+        resolveRole(plotId, playerId).allowsInheritedAction()
+    /** Legacy role query; PolicyService remains the canonical role decision path. */
+    @Deprecated("Resolve RegionRole through the central policy path")
+    fun isDenied(plotId: PlotId, playerId: PlayerId): Boolean =
+        resolveRole(plotId, playerId) == RegionRole.BANNED
     
     // Trust (permanent access)
     fun trustPlayer(plotId: PlotId, playerId: PlayerId, addedBy: PlayerId): Boolean
     fun untrustPlayer(plotId: PlotId, playerId: PlayerId): Boolean
     
-    // Member (owner-online access)
+    // Member access is permanent; OWNER_ONLINE is retained only for old stored records.
     fun addMember(plotId: PlotId, playerId: PlayerId, addedBy: PlayerId): Boolean
     fun removeMember(plotId: PlotId, playerId: PlayerId): Boolean
     

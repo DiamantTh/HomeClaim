@@ -1214,7 +1214,7 @@ msgid "plugin.script.failed"
 msgstr "Failed to extract scripts."
 
 msgid "plugin.config.errors"
-msgstr "§cConfiguration errors prevent startup. Please fix config.yml"
+msgstr "§cConfiguration errors prevent startup. Please fix config/HomeClaim.toml."
 
 msgid "plugin.startup.warnings"
 msgstr "Startup warnings present (see above)"

@@ -92,8 +92,9 @@ enum class PlotMemberRole {
 }
 
 enum class PermissionMode {
-    PERMANENT,      // Always has access
-    OWNER_ONLINE    // Only when owner is online
+    PERMANENT,      // HomeClaim member access is permanent; kept for persisted API compatibility.
+    @Deprecated("HomeClaim MEMBER access is permanent across policy and plot-member APIs")
+    OWNER_ONLINE    // Legacy persisted value; no longer changes the MEMBER role.
 }
 
 /**

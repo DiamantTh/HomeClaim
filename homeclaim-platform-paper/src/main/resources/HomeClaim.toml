@@ -18,11 +18,16 @@ rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
 
+[homeclaim.limits]
+# -1 means unlimited. These operation quotas are enforced by the shared plot operation service.
+maxPlotsPerPlayer = -1
+maxMergedRegions = -1
+
 [homeclaim.migrations]
 enabled = true
-allowNonPostgres = false
+allowNonPostgres = true
 baselineOnMigrate = true
-locations = ["classpath:db/migration"]
+locations = ["classpath:db/migration/common"]
 
 [homeclaim.clientlink]
 enabled = false

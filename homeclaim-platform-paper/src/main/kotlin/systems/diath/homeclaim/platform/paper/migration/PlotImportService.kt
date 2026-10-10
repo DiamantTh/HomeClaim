@@ -177,16 +177,9 @@ class PlotImportService(
         // Async Task starten
         val plugin = Bukkit.getPluginManager().getPlugin("HomeClaim")
         if (plugin != null) {
-            // Use Folia-compatible async scheduler
-            if (isFolia()) {
-                Bukkit.getAsyncScheduler().runNow(plugin) { _ ->
-                    runImportTask(plots, progress, callback)
-                }
-            } else {
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
-                    runImportTask(plots, progress, callback)
-                })
-            }
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+                runImportTask(plots, progress, callback)
+            })
         } else {
             progress.status = ImportStatus.FAILED
             progress.errors.add("HomeClaim plugin not found")
@@ -228,18 +221,6 @@ class PlotImportService(
         }
         
         callback(progress)
-    }
-    
-    /**
-     * Detect if running on Folia.
-     */
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
     }
     
     /**

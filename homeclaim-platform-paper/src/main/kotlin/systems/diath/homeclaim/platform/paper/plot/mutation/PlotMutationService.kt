@@ -7,7 +7,7 @@ import systems.diath.homeclaim.core.model.Region
 /**
  * Platform-specific world mutation hook for plot lifecycle changes.
  *
- * Core services remain data-driven; Paper/Folia decide independently how to
+ * Core services remain data-driven; the Paper platform layer decides how to
  * visualize those state changes in the world.
  */
 interface PlotMutationService {

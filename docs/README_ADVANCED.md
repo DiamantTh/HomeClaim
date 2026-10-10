@@ -8,7 +8,7 @@ Die Kurzfassung fuer Betreiber und Entwickler ist in der Root-README.
 HomeClaim trennt Fachlogik von Plattform-Adaptercode:
 
 - `homeclaim-core`: Modelle, Policy, Rollen, Events, abstrahierte Mutation-Backends.
-- `homeclaim-platform-paper`: Paper/Folia-Adapter (Listener, Commands, Lifecycle).
+- `homeclaim-platform-paper`: Paper-Adapter fuer Paper 26.3.x+ (Listener, Commands, Lifecycle); Purpur ist ein wichtiges Kompatibilitaetsziel. Folia wird nicht unterstuetzt.
 - Spaetere Zieladapter: Fabric-first, NeoForge als Dummy-Start.
 
 Aktueller Entkopplungsstand:
@@ -22,13 +22,13 @@ Aktueller Entkopplungsstand:
 - `homeclaim-core`: Datenmodelle, Service-Schnittstellen, Policy-Grundlagen.
 - `homeclaim-ux`: Referenz-Wiring fuer In-Game-/Web-UX.
 - `homeclaim-liftlink`: Elevator-/Teleport-Pads.
-- `homeclaim-platform-paper`: Paper/Folia Adapter fuer MC 1.21.5+.
+- `homeclaim-platform-paper`: Paper Adapter fuer Minecraft/Paper 26.3.x+ (Java 25); Purpur ist ein wichtiges Kompatibilitaetsziel. Folia wird nicht unterstuetzt.
 - `homeclaim-api`: REST-Schicht.
 - `homeclaim-webux`: SvelteKit-first Frontend.
 
 ## Konfiguration (Paper)
 
-- Config: `homeclaim-platform-paper/src/main/resources/config.yml` (Beispiel: `config.example.yml`)
+- Config: `homeclaim-platform-paper/src/main/resources/HomeClaim.toml` (runtime file: `plugins/HomeClaim/config/HomeClaim.toml`)
 - Locale: `homeclaim.locale` (`en`, `de`, ...)
 - Storage: JDBC (SQLite default, alternativ PostgreSQL/MySQL/MariaDB)
 - Migrationen: Flyway via `homeclaim.migrations.*`
@@ -112,7 +112,7 @@ Ingame Setup:
 ```
 
 - Paper: Welt erstellen + Konvertierung mit FAWE moeglich.
-- Folia: Welt erstellen unterstuetzt, Konvertierung deaktiviert.
+- Folia wird nicht unterstuetzt. Der Wizard verwendet Paper-Serverthread-APIs.
 - Setup-Grenzen im Wizard: Plotgroesse 16 bis 512, Strassenbreite 1 bis 128 und nicht groesser als die Plotgroesse, Hoehe 1 bis 319.
 
 Manuelle Recovery bei einem unterbrochenen Erststart:

@@ -6,15 +6,14 @@ import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.policy.SimplePolicyService
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.BoundedAsyncAuditService
 import systems.diath.homeclaim.core.service.AuditTaxonomy
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionAdminServiceImpl
 import systems.diath.homeclaim.core.store.JdbcAuditService
 import systems.diath.homeclaim.core.store.JdbcComponentRepository
-import systems.diath.homeclaim.core.store.JdbcFlagLimitRepository
 import systems.diath.homeclaim.core.store.JdbcFlagProfileService
 import systems.diath.homeclaim.core.store.JdbcRegionRepository
-import systems.diath.homeclaim.core.store.JdbcRoleRepository
 import systems.diath.homeclaim.core.store.JdbcZoneRepository
 import systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository
 import systems.diath.homeclaim.core.store.SqlDsl
@@ -48,7 +47,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this),
             i18nProvider = { i18n },
             plugin = this,
-            regionServiceProvider = { services?.regionService }
+            regionServiceProvider = { services?.regionService },
+            worldAreaServiceProvider = { services?.worldAreaService }
         )
     }
     private var bridge: PaperPlatformBridge? = null
@@ -57,6 +57,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var restServer: io.ktor.server.engine.ApplicationEngine? = null
     private var services: PlatformServices? = null
     private var guiManager: systems.diath.homeclaim.platform.paper.gui.GuiManager? = null
+    private var plotCommand: systems.diath.homeclaim.platform.paper.command.PlotCommand? = null
+    private var zoneCommand: systems.diath.homeclaim.platform.paper.command.ZoneCommand? = null
     private var plotMutationHooksRegistered: Boolean = false
     private var plotMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService =
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
@@ -80,42 +82,45 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         initializeEconomy()
         
         // Register GUI system
-        guiManager = systems.diath.homeclaim.platform.paper.gui.GuiManager(services.regionService, services.zoneService, services.componentService).also {
+        guiManager = systems.diath.homeclaim.platform.paper.gui.GuiManager(
+            services.regionService,
+            services.zoneService,
+            services.componentService,
+            services.adminService,
+            services.roleService,
+            services.auditService
+        ).also {
             server.pluginManager.registerEvents(it, this)
         }
         
         // Register pad creator listener
         server.pluginManager.registerEvents(systems.diath.homeclaim.platform.paper.gui.PadCreatorListener(), this)
         
-        // Register /plot command (P2-Style)
-        getCommand("plot")?.let { cmd ->
-            val ratingRepository = services.dataSource?.let { ds ->
-                systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository(ds)
-            }
-            val executor = systems.diath.homeclaim.platform.paper.command.PlotCommand(
-                services.regionService,
-                guiManager!!,
-                econService,
-                plotResetService,
-                plotMutationService,
-                ratingRepository,
-                i18n,
-                plotMutationBackend
-            )
-            cmd.setExecutor(executor)
-            cmd.tabCompleter = executor
+        val ratingRepository = services.dataSource?.let { ds ->
+            systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository(ds)
         }
-        
-        // Register /zone command
-        getCommand("zone")?.let { cmd ->
-            val executor = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
-                services.zoneService,
+        plotCommand = systems.diath.homeclaim.platform.paper.command.PlotCommand(
+            services.regionService,
+            guiManager!!,
+            econService,
+            plotResetService,
+            plotMutationService,
+            ratingRepository,
+            i18n,
+            plotMutationBackend,
+            services.worldAreaService,
+            systems.diath.homeclaim.core.service.RegionOperationLimitService(
                 services.regionService,
-                i18n
-            )
-            cmd.setExecutor(executor)
-            cmd.tabCompleter = executor
-        }
+                maxOwnedRegions = homeClaimConfig.getInt("homeclaim.limits.maxPlotsPerPlayer", -1),
+                maxMergedRegions = homeClaimConfig.getInt("homeclaim.limits.maxMergedRegions", -1)
+            ),
+            services.auditService
+        )
+        zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
+            services.zoneService,
+            services.regionService,
+            i18n
+        )
         
         maybeStartRest(services)
         setupClientLinkChannels()
@@ -237,8 +242,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     }
 
     /**
-     * Called by Bukkit/Folia when a world needs this plugin's generator.
-     * This is how Folia loads custom worlds on server start (via bukkit.yml).
+     * Called by Bukkit when a world needs this plugin's generator.
+     * This is how configured plot worlds load their generator on server start.
      * 
      * bukkit.yml entry:
      *   worlds:
@@ -328,26 +333,18 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val mutationLimitForWorld: (String) -> Int = { world ->
             configStore.loadConfig(world)?.maxConcurrentMutationJobsPerWorld ?: Int.MAX_VALUE
         }
-        val backend: systems.diath.homeclaim.core.mutation.WorldMutationBackend = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend(
-                this, maxConcurrentMutationsForWorld = mutationLimitForWorld
-            )
-        } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend(
-                maxConcurrentMutationsForWorld = mutationLimitForWorld
-            )
-        }
+        val backend = systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend(
+            maxConcurrentMutationsForWorld = mutationLimitForWorld
+        )
         plotMutationBackend = backend
-        plotMutationService = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotMutationService(this, mutationBackend = backend)
-        } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(this, mutationBackend = backend)
-        }
-        plotResetService = if (isFoliaRuntime()) {
-            systems.diath.homeclaim.platform.paper.plot.mutation.FoliaPlotResetService(this, mutationBackend = backend)
-        } else {
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(this, mutationBackend = backend)
-        }
+        plotMutationService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(
+            this,
+            mutationBackend = backend
+        )
+        plotResetService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(
+            this,
+            mutationBackend = backend
+        )
 
         dispatcher.registerListener(
             systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener(
@@ -365,16 +362,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             this
         )
         plotMutationHooksRegistered = true
-        logger.info("Plot mutation hooks registered (${if (isFoliaRuntime()) "Folia" else "Paper"} mode)")
-    }
-
-    private fun isFoliaRuntime(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
+        logger.info("Plot mutation hooks registered (Paper native backend)")
     }
 
     private fun savePlotMutationJobs() {
@@ -382,26 +370,14 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             val jobsFile = java.io.File(dataFolder, "plot-mutation-jobs.json")
             // Try to export job snapshots if backend is available
             val mutationBackend = plotMutationBackend as? systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend
-                ?: plotMutationBackend as? systems.diath.homeclaim.platform.paper.plot.mutation.FoliaRegionScheduledWorldMutationBackend
-            
             if (mutationBackend != null) {
-                val registry = (mutationBackend as? Any)?.let {
-                    try {
-                        it::class.java.getMethod("getJobRegistry").invoke(it)
-                            as systems.diath.homeclaim.platform.paper.plot.mutation.PlotJobRegistry
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-                
-                if (registry != null) {
-                    val json = registry.toPersistedFormat()
-                    jobsFile.parentFile?.mkdirs()
-                    jobsFile.writeText(json)
-                    val snapshots = registry.snapshot()
-                    if (snapshots.isNotEmpty()) {
-                        logger.info("Saved ${snapshots.size} active plot mutation jobs for recovery on reload")
-                    }
+                val registry = mutationBackend.getJobRegistry()
+                val json = registry.toPersistedFormat()
+                jobsFile.parentFile?.mkdirs()
+                jobsFile.writeText(json)
+                val snapshots = registry.snapshot()
+                if (snapshots.isNotEmpty()) {
+                    logger.info("Saved ${snapshots.size} active plot mutation jobs for recovery on reload")
                 }
             }
         } catch (e: Exception) {
@@ -434,6 +410,12 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         ShutdownManager.registerHook("RestServer", priority = 100) {
             restServer?.stop(500, 1000)
         }
+
+        services.auditService?.let { audit ->
+            if (audit is AutoCloseable) {
+                ShutdownManager.registerHook("AuditWriter", priority = 800) { audit.close() }
+            }
+        }
         
         // Database connection pool (last)
         ShutdownManager.registerDataSource(services.dataSource)
@@ -457,10 +439,31 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         services = null
     }
 
+    internal fun dispatchPaperCommand(command: String, sender: CommandSender, args: List<String>): Int {
+        val handled = when (command.lowercase()) {
+            "homeclaim" -> handleHomeClaimCommand(sender, args.toTypedArray())
+            "plot" -> plotCommand?.execute(sender, args.toTypedArray()) ?: run {
+                sender.sendMessage(i18n.msg("plugin.startup.warnings"))
+                true
+            }
+            "zone" -> zoneCommand?.execute(sender, args.toTypedArray()) ?: run {
+                sender.sendMessage(i18n.msg("plugin.startup.warnings"))
+                true
+            }
+            else -> false
+        }
+        return if (handled) 1 else 0
+    }
+
+    /** Legacy Bukkit dispatch remains callable for integrations that invoke the plugin directly. */
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (!command.name.equals("homeclaim", ignoreCase = true) && !command.name.equals("hc", ignoreCase = true)) {
             return false
         }
+        return handleHomeClaimCommand(sender, args)
+    }
+
+    private fun handleHomeClaimCommand(sender: CommandSender, args: Array<out String>): Boolean {
         val sub = args.getOrNull(0)?.lowercase()
         when (sub) {
             "reload" -> {
@@ -692,7 +695,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 }
 
                 sender.sendMessage("§eInitializing plot regions for '$worldName'...")
-                val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(svc, this)
+                val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(svc, this, services?.worldAreaService)
                 initializer.initializePlots(worldName, cfg).thenAccept { created ->
                     sender.sendMessage("§a✓ Plot initialization finished for '$worldName' ($created new regions).")
                 }.exceptionally { ex ->
@@ -710,14 +713,15 @@ class HomeClaimPaperPlugin : JavaPlugin() {
 
     private fun recoverPendingPlotWorlds(regionService: systems.diath.homeclaim.core.service.RegionService) {
         val configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this)
-        val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(regionService, this)
+        val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(regionService, this, services?.worldAreaService)
 
         server.worlds.forEach { world ->
             val cfg = configStore.loadConfig(world.name) ?: return@forEach
             if (cfg.plotsPerSide <= 0) return@forEach
 
             val expected = cfg.plotsPerSide * cfg.plotsPerSide
-            val existing = regionService.listAllRegions().count { it.world == world.name }
+            val areaId = initializer.getOrCreatePlotArea(world, cfg)
+            val existing = regionService.listAllRegions().count { it.areaId == areaId }
             if (existing >= expected) return@forEach
 
             logger.info("Recovering plot regions for world '${world.name}' ($existing/$expected present)")
@@ -742,13 +746,30 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         DatabaseResilience.init(this, dataSource)
         
         maybeMigrate(dataSource, config.driver)
-        val auditService = JdbcAuditService(dataSource)
-        val regionRepo = JdbcRegionRepository(dataSource, eventDispatcher, auditService)
+        val worldAreaRepo = systems.diath.homeclaim.core.store.JdbcWorldAreaRepository(dataSource)
+        worldAreaRepo.ensureSchema()
+        worldAreaRepo.migrateLegacyWorldNames()
+        server.worlds.forEach { paperWorld ->
+            val registered = worldAreaRepo.getWorldByPlatformId(paperWorld.uid)
+                ?: worldAreaRepo.getWorldByName(paperWorld.name)?.takeIf { it.platformWorldId == null }
+            if (registered != null) {
+                worldAreaRepo.bindPlatformWorld(registered.id, paperWorld.uid, paperWorld.name)
+            }
+        }
+        worldAreaRepo.warmRuntimeCache()
+        val auditService = BoundedAsyncAuditService(
+            sink = JdbcAuditService(dataSource),
+            onFailure = { message, error ->
+                if (error == null) logger.warning(message)
+                else logger.log(java.util.logging.Level.SEVERE, message, error)
+            }
+        )
+        val regionRepo = JdbcRegionRepository(dataSource, eventDispatcher, auditService, worldAreaRepo)
         val componentRepo = JdbcComponentRepository(dataSource)
-        val zoneRepo = JdbcZoneRepository(dataSource)
+        val zoneRepo = JdbcZoneRepository(dataSource, worldAreaRepo)
         val entryDenyRepo = systems.diath.homeclaim.core.store.JdbcEntryDenyRepository(dataSource)
         val profileService = JdbcFlagProfileService(dataSource)
-        val flagLimitRepo = JdbcFlagLimitRepository(dataSource)
+        val roleRepository = systems.diath.homeclaim.core.service.RegionRoleService(regionRepo)
         val policy: PolicyService = SimplePolicyService(
             regionService = regionRepo,
             zoneService = zoneRepo,
@@ -757,13 +778,14 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 region.roles.resolve(playerId, region.owner)
             },
             flagProfileService = profileService,
-            entryDenyService = entryDenyRepo
+            entryDenyService = entryDenyRepo,
+            areaService = worldAreaRepo,
+            permissionProvider = systems.diath.homeclaim.platform.paper.permission.PaperCapabilityPermissionProvider()
         )
         loadProfilesFromConfig(null, profileService)
         val admin = RegionAdminServiceImpl(
             regionService = regionRepo,
             profileService = profileService,
-            flagLimitRepo = flagLimitRepo,
             profileJdbc = profileService,
             auditService = auditService
         )
@@ -778,7 +800,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             flagProfileService = profileService,
             auditService = auditService,
             dataSource = dataSource,
-            eventDispatcher = eventDispatcher
+            eventDispatcher = eventDispatcher,
+            worldAreaService = worldAreaRepo,
+            roleService = roleRepository
         )
     }
 
@@ -846,9 +870,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private fun loadMigrationConfig(): MigrationConfig {
         return MigrationConfig(
             enabled = homeClaimConfig.getBoolean("homeclaim.migrations.enabled", storageType == StorageType.JDBC && migrationConfig.enabled),
-            allowNonPostgres = homeClaimConfig.getBoolean("homeclaim.migrations.allowNonPostgres", false),
+            allowNonPostgres = homeClaimConfig.getBoolean("homeclaim.migrations.allowNonPostgres", true),
             baselineOnMigrate = homeClaimConfig.getBoolean("homeclaim.migrations.baselineOnMigrate", true),
-            locations = homeClaimConfig.getStringList("homeclaim.migrations.locations", listOf("classpath:db/migration"))
+            locations = homeClaimConfig.getStringList("homeclaim.migrations.locations", listOf("classpath:db/migration/common"))
         )
     }
 
@@ -862,7 +886,11 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             return
         }
         val locations = mutableListOf<String>().apply {
-            addAll(migrationConfig.locations)
+            // Older pre-release configs used the parent path. Flyway scans child folders
+            // recursively, so use only the common schema folder before adding one dialect.
+            addAll(migrationConfig.locations.map { location ->
+                if (location == "classpath:db/migration") "classpath:db/migration/common" else location
+            })
             when (driver) {
                 DriverType.POSTGRES -> add("classpath:db/migration/postgres")
                 DriverType.MARIADB -> add("classpath:db/migration/mariadb")
@@ -871,7 +899,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             }
         }
         try {
-            Flyway.configure()
+            // Paper isolates plugins with dedicated classloaders; pass the plugin loader so
+            // Flyway discovers the bundled classpath:db/migration resources.
+            Flyway.configure(javaClass.classLoader)
                 .locations(*locations.toTypedArray())
                 .dataSource(dataSource)
                 .baselineOnMigrate(migrationConfig.baselineOnMigrate)
@@ -937,6 +967,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             allowLocalhost = allowLocalhost,
             enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false),
             entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) },
+            policyService = services.policyService,
             entryForceHandler = { regionId, playerId, grantedBy, reason, ttlSeconds ->
                 val grant = EntryForceRegistry.grant(playerId, regionId, grantedBy, reason, ttlSeconds)
                 auditEntryForceGrant(grant, services.auditService)
@@ -948,7 +979,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     reason = grant.reason,
                     expiresAt = grant.expiresAt.toString()
                 )
-            }
+            },
+            roleService = services.roleService
         ).start()
         logger.info(
             i18n.msg(
@@ -1015,9 +1047,9 @@ private data class StorageConfig(
 
 private data class MigrationConfig(
     val enabled: Boolean = true,
-    val allowNonPostgres: Boolean = false,
+    val allowNonPostgres: Boolean = true,
     val baselineOnMigrate: Boolean = true,
-    val locations: List<String> = listOf("classpath:db/migration")
+    val locations: List<String> = listOf("classpath:db/migration/common")
 )
 
 // Only JDBC storage supported (SQLite, PostgreSQL, MySQL, MariaDB)
@@ -1043,7 +1075,7 @@ private enum class DriverType(val className: String) {
                 "mariadb" -> MARIADB
                 "mysql" -> MYSQL
                 "sqlite" -> SQLITE
-                else -> SQLITE  // Default to SQLite for easy setup and Folia testing
+                else -> SQLITE  // Default to SQLite for easy local setup
             }
         }
     }

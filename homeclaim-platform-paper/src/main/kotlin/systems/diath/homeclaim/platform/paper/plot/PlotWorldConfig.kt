@@ -8,7 +8,7 @@ private const val DEFAULT_PLOT_HEIGHT = 64
 private const val DEFAULT_PLOTS_PER_SIDE = 128
 
 /**
- * Plot World Schema (1.21+)
+ * Plot world setup defaults for the supported Paper API line.
  * plotBlock: Bodenblock für Plots (oben)
  * roadBlock: Block für Straßen/Ebenen
  * wallBlock: Block für Ränder/Mauern (Beton)
@@ -65,30 +65,13 @@ object PlotSchemas {
         schema = "default"
     )
 
-    fun recommended(foliaMode: Boolean): PlotWorldConfig {
-        return if (foliaMode) {
-            default().copy(
-                plotSize = 40,
-                roadWidth = 8,
-                plotHeight = 64,
-                plotsPerSide = 96,
-                mutationBatchColumnsPerTask = 32,
-                maxConcurrentMutationJobsPerWorld = 2,
-                maxConcurrentResetJobsPerWorld = 1,
-                jobTimeoutMillis = 180_000L,
-                resetBatchColumnsPerTick = 48,
-                schema = "default"
-            )
-        } else {
-            default().copy(
-                plotSize = DEFAULT_PLOT_SIZE,
-                roadWidth = DEFAULT_ROAD_WIDTH,
-                plotHeight = DEFAULT_PLOT_HEIGHT,
-                plotsPerSide = DEFAULT_PLOTS_PER_SIDE,
-                schema = "default"
-            )
-        }
-    }
+    fun recommended(): PlotWorldConfig = default().copy(
+        plotSize = DEFAULT_PLOT_SIZE,
+        roadWidth = DEFAULT_ROAD_WIDTH,
+        plotHeight = DEFAULT_PLOT_HEIGHT,
+        plotsPerSide = DEFAULT_PLOTS_PER_SIDE,
+        schema = "default"
+    )
     
     // Desert: Sand, Sandstone Straße, Orange Terracotta Rand
     fun desert(): PlotWorldConfig = PlotWorldConfig(

@@ -5,7 +5,15 @@ import com.fasterxml.jackson.databind.SerializationFeature
 import systems.diath.homeclaim.core.model.*
 import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.FlagProfile
+import systems.diath.homeclaim.core.policy.Action
+import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.*
+import systems.diath.homeclaim.core.policy.ActionActor
+import systems.diath.homeclaim.core.policy.ActionEndpoint
+import systems.diath.homeclaim.core.policy.ActionRequest
+import systems.diath.homeclaim.core.policy.ActionResourceRef
+import systems.diath.homeclaim.core.policy.CorrelationId
+import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
 import systems.diath.homeclaim.api.license.*
 import io.ktor.http.*
 import io.ktor.serialization.jackson.*
@@ -91,7 +99,9 @@ class PlotRestServer(
     private val allowLocalhost: Boolean = true,
     private val enableCors: Boolean = false,
     private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null,
-    private val entryForceHandler: ((RegionId, PlayerId, PlayerId, String, Long) -> EntryForceGrantDto)? = null
+    private val entryForceHandler: ((RegionId, PlayerId, PlayerId, String, Long) -> EntryForceGrantDto)? = null,
+    private val policyService: PolicyService? = null,
+    private val roleService: RoleService? = null
 ) {
     fun start(): ApplicationEngine = embeddedServer(Netty, port = port) {
         configurePlugins()
@@ -389,6 +399,11 @@ class PlotRestServer(
                     post("/entry-check") {
                         if (!auth.check(call)) return@post
                         val req = call.receive<EntryCheckByPositionRequest>()
+                        val playerId = req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId")
+                        if (policyService != null) {
+                            call.respond(evaluateEntry(playerId, req.playerName, Action.REGION_ENTER, Position(req.world, req.x, req.y, req.z)))
+                            return@post
+                        }
                         val regionId = regionService.getRegionAt(req.world, req.x, req.y, req.z)
                         if (regionId == null) {
                             call.respond(EntryCheckResponse(allowed = true, reason = "NO_REGION"))
@@ -396,7 +411,7 @@ class PlotRestServer(
                         }
                         val region = regionService.getRegionById(regionId)
                             ?: throw NoSuchElementException("Plot not found")
-                        call.respond(checkEntry(region, req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId"), req.playerName, req.bypass))
+                        call.respond(checkEntry(region, playerId, req.playerName))
                     }
                     
                     // POST /plots/{id}/buy
@@ -404,22 +419,8 @@ class PlotRestServer(
                         if (!auth.check(call)) return@post
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
-                        val req = call.receive<BuyRequest>()
-                        
-                        val region = regionService.getRegionById(id)
-                            ?: throw NoSuchElementException("Plot not found")
-                        
-                        if (region.price <= 0) {
-                            call.respond(HttpStatusCode.BadRequest, ApiError("not_for_sale", "This plot is not for sale"))
-                            return@post
-                        }
-                        
-                        // Note: Actual purchase requires EconService integration
-                        call.respond(ApiSuccess("purchase_initiated", mapOf(
-                            "plotId" to id.value.toString(),
-                            "buyer" to req.buyerId,
-                            "price" to region.price
-                        )))
+                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
+                        call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Plot purchases are not connected to an economy operation."))
                     }
                     
                     // POST /plots/{id}/sell
@@ -427,18 +428,9 @@ class PlotRestServer(
                         if (!auth.check(call)) return@post
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
-                        val req = call.receive<SellRequest>()
-                        
-                        // Verify region exists
                         regionService.getRegionById(id)
                             ?: throw NoSuchElementException("Plot not found")
-                        
-                        // Update price via admin service
-                        // Note: This requires updating the region
-                        call.respond(ApiSuccess("listed_for_sale", mapOf(
-                            "plotId" to id.value.toString(),
-                            "price" to req.price
-                        )))
+                        call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Plot listing is not connected to a sale operation."))
                     }
                     
                     // POST /plots/{id}/flags
@@ -524,7 +516,7 @@ class PlotRestServer(
                             ?: throw NoSuchElementException("Plot not found")
                         val playerId = req.playerId.toUuidOrNull()
                             ?: throw IllegalArgumentException("Invalid playerId")
-                        call.respond(checkEntry(region, playerId, req.playerName, req.bypass))
+                        call.respond(checkEntry(region, playerId, req.playerName))
                     }
 
                     // POST /plots/{id}/entry-force
@@ -591,19 +583,15 @@ class PlotRestServer(
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<PlayerActionRequest>()
-                        
-                        // Verify region exists
-                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
-                        
-                        // Grant trust (permanent access) via PlotMemberService
-                        // In production: get currentUserId from JWT token
-                        // For now: simplified without PlotMemberService (requires domain integration)
-                        // TODO: Implement plotMemberService.trustPlayer() when PlotId/RegionId mapping exists
-                        
-                        call.respond(ApiSuccess("player_trusted", mapOf(
-                            "plot" to id.value.toString(),
-                            "player" to req.playerId
-                        )))
+                        val region = regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
+                        val playerId = req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId")
+                        val roles = roleService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
+                            return@post
+                        }
+                        roles.setRole(id, playerId, RegionRole.TRUSTED)
+                        auditRoleChange(id, region.areaId, playerId, "TRUSTED", AuditStatus.COMPLETED)
+                        call.respond(ApiSuccess("player_trusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
                     }
                     
                     // POST /plots/{id}/untrust
@@ -612,14 +600,15 @@ class PlotRestServer(
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<PlayerActionRequest>()
-                        
-                        // Verify region exists
-                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
-                        
-                        call.respond(ApiSuccess("player_untrusted", mapOf(
-                            "plot" to id.value.toString(),
-                            "player" to req.playerId
-                        )))
+                        val region = regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
+                        val playerId = req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId")
+                        val roles = roleService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
+                            return@post
+                        }
+                        roles.removeRole(id, playerId, RegionRole.TRUSTED)
+                        auditRoleChange(id, region.areaId, playerId, "TRUSTED", AuditStatus.COMPLETED)
+                        call.respond(ApiSuccess("player_untrusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
                     }
                     
                     // GET /plots/{id}/components
@@ -806,14 +795,34 @@ class PlotRestServer(
         return entryDenyService?.listRules(region.id, includeInactive = true)?.map { it.toDto() } ?: emptyList()
     }
 
-    private fun checkEntry(region: Region, playerId: UUID, playerName: String?, bypass: Boolean): EntryCheckResponse {
-        if (bypass) {
-            return EntryCheckResponse(
-                allowed = true,
-                reason = "BYPASS",
-                regionId = region.id.value.toString()
+    private fun auditRoleChange(
+        regionId: RegionId,
+        areaId: AreaId,
+        targetPlayerId: UUID,
+        role: String,
+        status: AuditStatus
+    ) {
+        val request = ActionRequest(
+            actor = ActionActor.System("rest-admin-token"),
+            actionKey = HomeClaimOperationActions.ROLE_CHANGE,
+            target = ActionEndpoint(
+                resource = ActionResourceRef.Region(regionId),
+                areaId = areaId
+            ),
+            correlationId = CorrelationId.newId(),
+            context = systems.diath.homeclaim.core.policy.ActionContext(
+                platform = "rest",
+                eventName = "role_change",
+                attributes = mapOf("playerId" to targetPlayerId.toString(), "role" to role)
             )
-        }
+        )
+        auditService?.append(
+            AuditEntries.operationResult(request, status, targetCount = 1)
+        )
+    }
+
+    private fun checkEntry(region: Region, playerId: UUID, playerName: String?): EntryCheckResponse {
+        if (policyService != null) return evaluateEntry(playerId, playerName, Action.REGION_ENTER, null, region.id)
 
         val role = region.roles.resolve(playerId, region.owner)
         if (role == RegionRole.OWNER) {
@@ -846,6 +855,32 @@ class PlotRestServer(
             allowed = true,
             reason = DecisionReason.ALLOWED,
             regionId = region.id.value.toString()
+        )
+    }
+
+    private fun evaluateEntry(
+        playerId: UUID,
+        playerName: String?,
+        action: Action,
+        position: Position?,
+        regionId: RegionId? = null
+    ): EntryCheckResponse {
+        val extra = buildMap<String, Any> {
+            if (playerName != null) put("playerName", playerName)
+            if (regionId != null) put("regionId", regionId)
+        }
+        val decision = policyService!!.evaluateWithActor(
+            playerId = playerId,
+            action = action,
+            position = position,
+            actor = PolicyActorContext(actorId = playerId.toString()),
+            extraContext = extra
+        )
+        return EntryCheckResponse(
+            allowed = decision.allowed,
+            reason = decision.reason,
+            regionId = decision.context.regionId?.value?.toString(),
+            detail = decision.detail
         )
     }
     
@@ -1266,6 +1301,7 @@ data class EntryDenyRevokeRequest(val revokedBy: String, val reason: String = ""
 data class EntryCheckRequest(
     val playerId: String,
     val playerName: String? = null,
+    @Deprecated("Client supplied bypass is ignored; use an explicit server-side HomeClaim capability")
     val bypass: Boolean = false
 )
 data class EntryCheckByPositionRequest(
@@ -1275,6 +1311,7 @@ data class EntryCheckByPositionRequest(
     val z: Int,
     val playerId: String,
     val playerName: String? = null,
+    @Deprecated("Client supplied bypass is ignored; use an explicit server-side HomeClaim capability")
     val bypass: Boolean = false
 )
 data class EntryCheckResponse(
@@ -1416,7 +1453,7 @@ private fun Component.toDto() = ComponentDto(
 
 private fun Zone.toDto() = ZoneDto(
     id = id.value.toString(),
-    world = world, // WorldId is typealias for String
+    world = world, // Legacy REST DTOs still use a world-name string.
     shape = shape.name,
     bounds = BoundsDto(bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, bounds.minZ, bounds.maxZ),
     priority = priority,

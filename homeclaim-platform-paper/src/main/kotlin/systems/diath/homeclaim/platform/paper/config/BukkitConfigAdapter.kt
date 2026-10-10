@@ -7,8 +7,9 @@ import systems.diath.homeclaim.platform.paper.I18n
 import java.io.File
 
 /**
- * Bukkit YAML configuration adapter.
+ * Legacy Bukkit YAML configuration adapter. The Paper plugin runtime uses HomeClaimTomlConfig.
  */
+@Deprecated("The active Paper runtime configuration is HomeClaim.toml")
 class BukkitConfigAdapter(
     private val file: File,
     private val plugin: Plugin

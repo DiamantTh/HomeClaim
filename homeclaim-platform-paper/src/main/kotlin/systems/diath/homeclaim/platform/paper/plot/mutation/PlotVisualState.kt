@@ -5,7 +5,7 @@ import java.util.UUID
 
 /**
  * Visual state for a plot/region. This is deliberately separate from ownership
- * and policy metadata so Paper/Folia world mutations can evolve independently.
+ * and policy metadata so Paper world mutations can evolve independently.
  */
 enum class PlotVisualState {
     UNCLAIMED,

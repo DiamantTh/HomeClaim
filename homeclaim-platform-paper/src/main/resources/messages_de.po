@@ -114,12 +114,6 @@ msgstr "§ePlot-Welt wird erstellt: {0}..."
 msgid "setup.done.saved"
 msgstr "§a✔ Plot-Welt-Konfig gespeichert: {0}"
 
-msgid "setup.folia.restart_required"
-msgstr "§e⚠ Folia erkannt: Bitte starte den Server neu, damit die Welt §f{0}§e geladen wird."
-
-msgid "setup.folia.plots_on_restart"
-msgstr "§7Plots werden automatisch beim Server-Start initialisiert."
-
 msgid "setup.create_failed"
 msgstr "§c✖ Fehler: Welt {0} konnte nicht erstellt werden."
 
@@ -1590,7 +1584,7 @@ msgid "plugin.script.failed"
 msgstr "§eKonnte {0} nicht extrahieren: {1}"
 
 msgid "plugin.config.errors"
-msgstr "§cKonfigurationsfehler verhindern Start. Bitte config.yml korrigieren"
+msgstr "§cKonfigurationsfehler verhindern Start. Bitte config/HomeClaim.toml korrigieren"
 
 msgid "plugin.startup.warnings"
 msgstr "§eStart-Validierung fand Probleme - siehe Logs oben"

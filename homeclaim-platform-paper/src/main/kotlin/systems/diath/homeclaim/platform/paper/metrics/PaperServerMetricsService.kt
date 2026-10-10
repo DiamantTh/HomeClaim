@@ -8,8 +8,8 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
 
 /**
- * Paper/Folia implementation of ServerMetricsService.
- * Collects metrics from Bukkit/Paper/Folia servers including Multiverse worlds.
+ * Paper implementation of ServerMetricsService.
+ * Collects metrics for loaded worlds, including worlds provided by optional multiworld plugins.
  */
 class PaperServerMetricsService(
     private val homeClaimVersion: String,
@@ -66,11 +66,10 @@ class PaperServerMetricsService(
     private fun getVersionInfo(): VersionInfo {
         val javaVersion = System.getProperty("java.version") ?: "unknown"
         val server = Bukkit.getServer()
-        val serverImpl = if (isFolia()) "Folia" else "Paper"
         return VersionInfo(
             homeclaimVersion = homeClaimVersion,
             javaVersion = javaVersion,
-            serverImplementation = serverImpl,
+            serverImplementation = "Paper API (${server.name})",
             serverVersion = server.version
         )
     }
@@ -83,15 +82,6 @@ class PaperServerMetricsService(
             fifteenMinuteAverage = osBean.systemLoadAverage.coerceAtLeast(0.0),
             availableProcessors = osBean.availableProcessors
         )
-    }
-    
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: Exception) {
-            false
-        }
     }
     
     override fun collectPlotsMetrics(): PlotsMetrics {
@@ -175,7 +165,7 @@ class PaperServerMetricsService(
     
     private fun getServerTPS(): Float {
         return try {
-            // Use reflection to get TPS from Paper/Folia if available
+            // Use the supported Paper API for server tick metrics.
             val server = Bukkit.getServer()
             val method = server.javaClass.getMethod("getTPS")
             val tpsArray = method.invoke(server) as DoubleArray

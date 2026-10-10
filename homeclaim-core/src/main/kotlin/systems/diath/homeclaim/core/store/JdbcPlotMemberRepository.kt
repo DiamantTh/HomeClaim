@@ -54,25 +54,6 @@ class JdbcPlotMemberRepository(
         }
     }
 
-    override fun hasAccess(plotId: PlotId, playerId: PlayerId, ownerOnline: Boolean): Boolean {
-        val member = getMember(plotId, playerId) ?: return false
-        
-        return when (member.role) {
-            PlotMemberRole.OWNER, PlotMemberRole.TRUSTED -> true
-            PlotMemberRole.MEMBER -> when (member.permissionMode) {
-                PermissionMode.PERMANENT -> true
-                PermissionMode.OWNER_ONLINE -> ownerOnline
-            }
-            PlotMemberRole.GUEST -> ownerOnline
-            PlotMemberRole.DENIED -> false
-        }
-    }
-
-    override fun isDenied(plotId: PlotId, playerId: PlayerId): Boolean {
-        val member = getMember(plotId, playerId)
-        return member?.role == PlotMemberRole.DENIED
-    }
-
     override fun trustPlayer(plotId: PlotId, playerId: PlayerId, addedBy: PlayerId): Boolean {
         return upsertMember(plotId, playerId, PlotMemberRole.TRUSTED, PermissionMode.PERMANENT, addedBy)
     }
@@ -84,7 +65,7 @@ class JdbcPlotMemberRepository(
     }
 
     override fun addMember(plotId: PlotId, playerId: PlayerId, addedBy: PlayerId): Boolean {
-        return upsertMember(plotId, playerId, PlotMemberRole.MEMBER, PermissionMode.OWNER_ONLINE, addedBy)
+        return upsertMember(plotId, playerId, PlotMemberRole.MEMBER, PermissionMode.PERMANENT, addedBy)
     }
 
     override fun removeMember(plotId: PlotId, playerId: PlayerId): Boolean {

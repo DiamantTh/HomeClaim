@@ -17,6 +17,7 @@ import systems.diath.homeclaim.core.model.ComponentId
 import systems.diath.homeclaim.core.model.EntryDenyTargetType
 import systems.diath.homeclaim.core.policy.FlagProfile
 import systems.diath.homeclaim.core.store.InMemoryEntryDenyService
+import systems.diath.homeclaim.core.service.InMemoryWorldAreaService
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -28,10 +29,10 @@ class SimplePolicyServiceTest {
     private val trusted: PlayerId = UUID.randomUUID()
     private val visitor: PlayerId = UUID.randomUUID()
     private val regionId = RegionId(UUID.randomUUID())
-    private val world: WorldId = "world"
+    private val world: WorldId = WorldId.fromLegacyName("world")
     private val region = Region(
         id = regionId,
-        world = world,
+            world = "world",
         shape = RegionShape.CUBOID,
         bounds = Bounds(0, 10, 0, 10, 0, 10),
         owner = owner,
@@ -40,13 +41,29 @@ class SimplePolicyServiceTest {
     )
 
     @Test
-    fun `owner bypasses flags`() {
+    fun `position outside all homeclaim areas is not applicable`() {
+        val service = SimplePolicyService(
+            InMemoryRegionStore(),
+            InMemoryZoneStore(),
+            roleResolver = { _, _ -> RegionRole.VISITOR },
+            areaService = InMemoryWorldAreaService()
+        )
+
+        val decision = service.evaluate(visitor, Action.REGION_BUILD, Position("main", 1000, 64, 1000))
+
+        assertTrue(decision.allowed)
+        assertEquals(DecisionReason.NOT_APPLICABLE, decision.reason)
+    }
+
+    @Test
+    fun `owner cannot bypass explicit flag deny`() {
         val regionStore = InMemoryRegionStore().also { it.createRegion(region, region.bounds) }
         val zoneStore = InMemoryZoneStore()
         val service = SimplePolicyService(regionStore, zoneStore, roleResolver = { _, _ -> RegionRole.OWNER })
 
         val decision = service.evaluate(owner, Action.REGION_BUILD, Position(world, 5, 5, 5))
-        assertTrue(decision.allowed)
+        assertFalse(decision.allowed)
+        assertEquals(DecisionReason.FLAG_DENY, decision.reason)
     }
 
     @Test
@@ -73,7 +90,7 @@ class SimplePolicyServiceTest {
             it.createZone(
                 Zone(
                     id = systems.diath.homeclaim.core.model.ZoneId(UUID.randomUUID()),
-                    world = world,
+                    world = "world",
                     shape = RegionShape.CUBOID,
                     bounds = Bounds(0, 20, 0, 20, 0, 20),
                     priority = 10,
@@ -102,7 +119,7 @@ class SimplePolicyServiceTest {
             it.createZone(
                 Zone(
                     id = systems.diath.homeclaim.core.model.ZoneId(UUID.randomUUID()),
-                    world = world,
+                    world = "world",
                     shape = RegionShape.CUBOID,
                     bounds = Bounds(0, 20, 0, 20, 0, 20),
                     priority = 10,

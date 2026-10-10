@@ -23,7 +23,7 @@ import kotlin.math.abs
 class RegionVisualizerImpl(
     private val plugin: Plugin
 ) {
-    
+
     private val activeVisualizations = mutableMapOf<String, RegionVisualization>()
     
     /**
@@ -88,58 +88,28 @@ class RegionVisualization(
     private val density: Double
 ) {
     
-    private var task: Any? = null  // BukkitTask or ScheduledTask
+    private var task: BukkitTask? = null
     private var lastPlayerPos: Location? = null
-    
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
-    }
     
     fun start() {
         // Update visualization every 20 ticks (1 second)
-        if (isFolia()) {
-            // Folia: Use EntityScheduler for player-specific tasks
-            task = player.scheduler.runAtFixedRate(plugin, { _ ->
-                // Only render if player is in the same world and within render distance
-                if (player.world.name != region.world) return@runAtFixedRate
-                
-                val currentPos = player.location
-                val lastPos = lastPlayerPos
-                
-                // Only update if player moved significantly (more than 5 blocks)
-                if (lastPos == null || currentPos.distance(lastPos) > 5.0) {
-                    renderRegionBoundary()
-                    lastPlayerPos = currentPos
-                }
-            }, null, 1, 20)  // 1 tick initial, 20 ticks between updates
-        } else {
-            // Paper/Spigot: Use BukkitScheduler
-            task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
-                // Only render if player is in the same world and within render distance
-                if (player.world.name != region.world) return@Runnable
-                
-                val currentPos = player.location
-                val lastPos = lastPlayerPos
-                
-                // Only update if player moved significantly (more than 5 blocks)
-                if (lastPos == null || currentPos.distance(lastPos) > 5.0) {
-                    renderRegionBoundary()
-                    lastPlayerPos = currentPos
-                }
-            }, 0, 20)  // 0 delay, 20 ticks between updates
-        }
+        task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
+            // Only render if player is in the same world and within render distance
+            if (player.world.name != region.world) return@Runnable
+
+            val currentPos = player.location
+            val lastPos = lastPlayerPos
+
+            // Only update if player moved significantly (more than 5 blocks)
+            if (lastPos == null || currentPos.distance(lastPos) > 5.0) {
+                renderRegionBoundary()
+                lastPlayerPos = currentPos
+            }
+        }, 0, 20)  // 0 delay, 20 ticks between updates
     }
     
     fun stop() {
-        when (task) {
-            is BukkitTask -> (task as BukkitTask).cancel()
-            is io.papermc.paper.threadedregions.scheduler.ScheduledTask -> (task as io.papermc.paper.threadedregions.scheduler.ScheduledTask).cancel()
-        }
+        task?.cancel()
         task = null
     }
     

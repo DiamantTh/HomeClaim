@@ -66,7 +66,7 @@ fun BukkitItemStack?.toCore(): ItemStack? {
  */
 class BukkitInventoryAdapter(private val inventory: BukkitInventory) : Inventory {
     override val size: Int = inventory.size
-    override val title: String? = null // Title property removed in Paper 1.21
+    override val title: String? = null // The adapter does not retain the title used when this inventory was created.
     
     override fun getItem(slot: Int): ItemStack? {
         return inventory.getItem(slot).toCore()
@@ -131,7 +131,7 @@ class BukkitPlayerInventoryAdapter(private val inventory: org.bukkit.inventory.P
     }
     
     override fun setHelmet(item: ItemStack?) {
-        inventory.helmet = item?.toBukkit()
+        inventory.setHelmet(item?.toBukkit())
     }
     
     override fun getChestplate(): ItemStack? {
@@ -139,7 +139,7 @@ class BukkitPlayerInventoryAdapter(private val inventory: org.bukkit.inventory.P
     }
     
     override fun setChestplate(item: ItemStack?) {
-        inventory.chestplate = item?.toBukkit()
+        inventory.setChestplate(item?.toBukkit())
     }
     
     override fun getLeggings(): ItemStack? {
@@ -147,7 +147,7 @@ class BukkitPlayerInventoryAdapter(private val inventory: org.bukkit.inventory.P
     }
     
     override fun setLeggings(item: ItemStack?) {
-        inventory.leggings = item?.toBukkit()
+        inventory.setLeggings(item?.toBukkit())
     }
     
     override fun getBoots(): ItemStack? {
@@ -155,6 +155,6 @@ class BukkitPlayerInventoryAdapter(private val inventory: org.bukkit.inventory.P
     }
     
     override fun setBoots(item: ItemStack?) {
-        inventory.boots = item?.toBukkit()
+        inventory.setBoots(item?.toBukkit())
     }
 }

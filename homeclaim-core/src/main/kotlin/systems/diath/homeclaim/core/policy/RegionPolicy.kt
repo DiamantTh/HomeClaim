@@ -23,9 +23,10 @@ object RegionPolicy {
         val limits = mutableMapOf<LimitKey, LimitValue>()
         val locked = mutableSetOf<FlagKey>()
 
+        // First (highest priority) applicable zone wins; collection/SQL ordering is never a rule.
         for (zone in sortedZones) {
-            flags.putAll(zone.defaults.defaultFlags)
-            limits.putAll(zone.defaults.defaultLimits)
+            for ((key, value) in zone.defaults.defaultFlags) flags.putIfAbsent(key, value)
+            for ((key, value) in zone.defaults.defaultLimits) limits.putIfAbsent(key, value)
             locked += zone.lockedFlags
         }
 
@@ -37,5 +38,11 @@ object RegionPolicy {
         }
 
         return EffectivePolicy(flags, limits, locked)
+    }
+
+    fun flagEffect(policy: EffectivePolicy, flag: FlagKey): DecisionEffect {
+        val value = policy.flags[flag] as? systems.diath.homeclaim.core.model.PolicyValue.Bool
+            ?: return DecisionEffect.INHERIT
+        return if (value.allowed) DecisionEffect.ALLOW else DecisionEffect.DENY
     }
 }

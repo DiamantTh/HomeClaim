@@ -1,5 +1,5 @@
-# Default config with SQLite (persistent storage)
-# See config.example.yml for PostgreSQL/MySQL variants
+# Legacy YAML sample. The Paper runtime reads HomeClaim.toml instead.
+# Kept for older tooling; edits here do not change active plugin configuration.
 homeclaim:
   locale: "en"
   storage:

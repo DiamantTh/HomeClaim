@@ -1,4 +1,34 @@
--- HomeClaim schema (Postgres/MariaDB/SQLite compatible with minor adjustments)
+-- HomeClaim domain schema reference.
+-- The pre-release Flyway baseline is the source of truth; this file also documents
+-- the separate account/authentication tables used by the REST service.
+
+CREATE TABLE worlds (
+    id VARCHAR(36) PRIMARY KEY,
+    platform_uuid VARCHAR(36) UNIQUE,
+    name VARCHAR(128) NOT NULL,
+    metadata JSON
+);
+
+CREATE TABLE areas (
+    id VARCHAR(36) PRIMARY KEY,
+    world_id VARCHAR(36) NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    area_key VARCHAR(128) NOT NULL,
+    whole_world BOOLEAN NOT NULL DEFAULT FALSE,
+    min_x INT,
+    max_x INT,
+    min_y INT,
+    max_y INT,
+    min_z INT,
+    max_z INT,
+    priority INT NOT NULL DEFAULT 0,
+    metadata JSON,
+    CONSTRAINT uq_areas_world_key UNIQUE(world_id, area_key),
+    CONSTRAINT ck_area_scope CHECK (
+        (whole_world = TRUE AND min_x IS NULL AND max_x IS NULL AND min_y IS NULL AND max_y IS NULL AND min_z IS NULL AND max_z IS NULL)
+        OR
+        (whole_world = FALSE AND min_x IS NOT NULL AND max_x IS NOT NULL AND min_y IS NOT NULL AND max_y IS NOT NULL AND min_z IS NOT NULL AND max_z IS NOT NULL)
+    )
+);
 
 CREATE TABLE regions (
     id UUID PRIMARY KEY,
@@ -10,6 +40,8 @@ CREATE TABLE regions (
     max_y INT NOT NULL,
     min_z INT NOT NULL,
     max_z INT NOT NULL,
+    -- Retained for display and old integrations; area_id is the canonical scope.
+    area_id VARCHAR(36) REFERENCES areas(id),
     owner UUID NOT NULL,
     merge_group_id UUID,
     price DOUBLE PRECISION NOT NULL DEFAULT 0.0,
@@ -65,6 +97,8 @@ CREATE TABLE zones (
     max_y INT NOT NULL,
     min_z INT NOT NULL,
     max_z INT NOT NULL,
+    -- Retained for legacy lookups; area_id is the canonical scope.
+    area_id VARCHAR(36) REFERENCES areas(id),
     priority INT NOT NULL,
     locked_flags JSON NOT NULL DEFAULT '[]',
     tags JSON NOT NULL DEFAULT '[]',
@@ -90,14 +124,46 @@ CREATE TABLE components (
 );
 
 CREATE TABLE audit_log (
-    id BIGSERIAL PRIMARY KEY,
-    actor_id UUID,
-    target_id UUID,
+    audit_id VARCHAR(36) PRIMARY KEY,
+    actor_id VARCHAR(36),
+    target_id VARCHAR(36),
     category VARCHAR(64) NOT NULL,
     action VARCHAR(64) NOT NULL,
-    payload JSON NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT now()
+    correlation_id VARCHAR(36),
+    parent_correlation_id VARCHAR(36),
+    actor_kind VARCHAR(32),
+    actor_ref VARCHAR(128),
+    action_key VARCHAR(255),
+    world_id VARCHAR(36),
+    area_id VARCHAR(36),
+    source_world_id VARCHAR(36),
+    source_area_id VARCHAR(36),
+    source_x INT,
+    source_y INT,
+    source_z INT,
+    source_resource_type VARCHAR(64),
+    source_resource_id VARCHAR(36),
+    target_world_id VARCHAR(36),
+    target_area_id VARCHAR(36),
+    target_x INT,
+    target_y INT,
+    target_z INT,
+    target_resource_type VARCHAR(64),
+    target_resource_id VARCHAR(36),
+    role VARCHAR(32),
+    policy_result VARCHAR(32),
+    permission_result VARCHAR(32),
+    bypass VARCHAR(128),
+    reason VARCHAR(128),
+    status VARCHAR(32) NOT NULL,
+    target_count INT,
+    error TEXT,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_audit_correlation ON audit_log(correlation_id);
+CREATE INDEX idx_audit_target_created ON audit_log(target_id, created_at);
 
 CREATE TABLE flag_profiles (
     name VARCHAR(64) PRIMARY KEY,
@@ -108,12 +174,15 @@ CREATE TABLE flag_profiles (
 
 -- Indices for fast lookup
 CREATE INDEX idx_regions_world_chunk ON regions (world, min_x, max_x, min_z, max_z);
+CREATE INDEX idx_areas_world_priority ON areas(world_id, priority);
+CREATE INDEX idx_regions_area_bounds ON regions(area_id, min_x, max_x, min_z, max_z);
 CREATE INDEX idx_components_world_chunk ON components (world, x, z);
 CREATE INDEX idx_region_roles_owner ON region_roles (player_id);
 CREATE INDEX idx_region_entry_denies_region ON region_entry_denies(region_id);
 CREATE INDEX idx_region_entry_denies_active ON region_entry_denies(region_id, status, expires_at);
 CREATE INDEX idx_region_entry_denies_target ON region_entry_denies(target_type, target_value);
 CREATE INDEX idx_zones_world_priority ON zones (world, priority DESC);
+CREATE INDEX idx_zones_area_priority ON zones (area_id, priority);
 
 -- ============================================================================
 -- ACCOUNT SYSTEM (API Authentication)

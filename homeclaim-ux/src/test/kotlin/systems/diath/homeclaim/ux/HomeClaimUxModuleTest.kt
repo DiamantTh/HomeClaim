@@ -14,7 +14,7 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.RegionRoles
-import systems.diath.homeclaim.core.model.WorldId
+import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RoleService
@@ -56,10 +56,10 @@ class HomeClaimUxModuleTest {
 private class InMemoryRegionService(
     private val regionsByOwner: Map<PlayerId, List<Region>>
 ) : RegionService {
-    override fun getRegionAt(world: WorldId, x: Int, y: Int, z: Int): RegionId? =
-        regionsByOwner.values.flatten().firstOrNull { it.world == world && it.bounds.contains(x, y, z) }?.id
-    override fun getRegionAt2D(world: WorldId, x: Int, z: Int): RegionId? =
-        regionsByOwner.values.flatten().firstOrNull { it.world == world && it.bounds.contains2D(x, z) }?.id
+    override fun getRegionAt(areaId: AreaId, x: Int, y: Int, z: Int): RegionId? =
+        regionsByOwner.values.flatten().firstOrNull { it.areaId == areaId && it.bounds.contains(x, y, z) }?.id
+    override fun getRegionAt2D(areaId: AreaId, x: Int, z: Int): RegionId? =
+        regionsByOwner.values.flatten().firstOrNull { it.areaId == areaId && it.bounds.contains2D(x, z) }?.id
     override fun listRegionsByOwner(ownerId: PlayerId): List<Region> = regionsByOwner[ownerId].orEmpty()
     override fun listAllRegions(): List<Region> = regionsByOwner.values.flatten()
     override fun getRegionById(regionId: RegionId): Region? = regionsByOwner.values.flatten().find { it.id == regionId }

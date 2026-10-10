@@ -1,9 +1,7 @@
 package systems.diath.homeclaim.platform.paper.command
 
 import org.bukkit.command.Command
-import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
-import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.service.RegionService
@@ -14,9 +12,13 @@ class ZoneCommand(
     private val zoneService: ZoneService,
     private val regionService: RegionService,
     private val i18n: I18n
-) : CommandExecutor, TabCompleter {
-    
-    override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
+) {
+    /** Compatibility adapter for older in-process callers; Paper uses the lifecycle Brigadier tree. */
+    @Deprecated("Paper commands are routed through the lifecycle command tree")
+    fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean =
+        execute(sender, args)
+
+    fun execute(sender: CommandSender, args: Array<out String>): Boolean {
         if (sender !is Player) {
             sender.sendMessage(i18n.msg("zone.player_only"))
             return true
@@ -31,7 +33,11 @@ class ZoneCommand(
         return true
     }
     
-    override fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> {
+    @Deprecated("Paper suggestions are registered on the lifecycle command tree")
+    fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> =
+        suggestions(sender, args)
+
+    fun suggestions(sender: CommandSender, args: Array<out String>): List<String> {
         if (args.size == 1) {
             return listOf("info").filter { it.startsWith(args[0], ignoreCase = true) }
         }

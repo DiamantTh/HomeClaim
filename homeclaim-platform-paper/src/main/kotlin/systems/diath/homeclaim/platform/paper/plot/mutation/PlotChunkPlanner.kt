@@ -1,6 +1,6 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
-/** Pure helpers for chunk-oriented column planning, mainly for Folia-safe scheduling. */
+/** Pure helpers for planning chunk-oriented column mutations. */
 internal object PlotChunkPlanner {
     data class ChunkKey(val x: Int, val z: Int)
 

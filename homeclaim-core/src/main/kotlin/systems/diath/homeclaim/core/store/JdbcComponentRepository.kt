@@ -13,11 +13,18 @@ import systems.diath.homeclaim.core.service.ComponentService
 import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import javax.sql.DataSource
 
 class JdbcComponentRepository(
     private val dataSource: DataSource
 ) : ComponentService {
+    private val runtimeSnapshot = AtomicReference(ComponentRuntimeSnapshot.EMPTY)
+
+    init {
+        reloadRuntimeSnapshot()
+    }
+
     override fun createComponent(
         regionId: RegionId,
         type: ComponentType,
@@ -46,39 +53,23 @@ class JdbcComponentRepository(
                 setObject(11, UUID(0, 0))
             }.executeUpdate()
         }
+        val component = Component(
+            id = id,
+            regionId = regionId,
+            type = type,
+            position = Position(position.worldId, position.x, position.y, position.z, position.legacyWorldName),
+            state = ComponentState.ENABLED,
+            policy = policy,
+            config = config,
+            createdBy = UUID(0, 0)
+        )
+        replaceCachedComponents { it + (id to component) }
         return id
     }
 
-    override fun getComponentAt(position: Position): Component? {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT * FROM components
-                WHERE world = ? AND x = ? AND y = ? AND z = ?
-                LIMIT 1
-                """.trimIndent()
-            ).apply {
-                setString(1, position.world)
-                setInt(2, position.x)
-                setInt(3, position.y)
-                setInt(4, position.z)
-            }.executeQuery().use { rs ->
-                return if (rs.next()) rs.toComponent() else null
-            }
-        }
-    }
+    override fun getComponentAt(position: Position): Component? = runtimeSnapshot.get().at(position)
 
-    override fun listComponents(regionId: RegionId): List<Component> {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT * FROM components WHERE region_id = ?").apply {
-                setObject(1, regionId.value)
-            }.executeQuery().use { rs ->
-                val result = mutableListOf<Component>()
-                while (rs.next()) result += rs.toComponent()
-                return result
-            }
-        }
-    }
+    override fun listComponents(regionId: RegionId): List<Component> = runtimeSnapshot.get().byRegion[regionId].orEmpty()
 
     override fun updateComponent(componentId: ComponentId, config: ComponentConfig?, policy: ComponentPolicy?, state: ComponentState?) {
         if (config == null && policy == null && state == null) return
@@ -97,6 +88,16 @@ class JdbcComponentRepository(
                 setObject(params.size + 1, componentId.value)
             }.executeUpdate()
         }
+        runtimeSnapshot.get().components[componentId]?.let { current ->
+            replaceCachedComponents { components ->
+                components + (componentId to current.copy(
+                    config = config ?: current.config,
+                    policy = policy ?: current.policy,
+                    state = state ?: current.state,
+                    updatedAt = Instant.now()
+                ))
+            }
+        }
     }
 
     override fun deleteComponent(componentId: ComponentId) {
@@ -105,27 +106,30 @@ class JdbcComponentRepository(
                 setObject(1, componentId.value)
             }.executeUpdate()
         }
+        replaceCachedComponents { it - componentId }
     }
 
-    override fun indexByChunk(world: String, chunkX: Int, chunkZ: Int): List<ComponentId> {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT id FROM components
-                WHERE world = ?
-                  AND (x >> 4) = ?
-                  AND (z >> 4) = ?
-                """.trimIndent()
-            ).apply {
-                setString(1, world)
-                setInt(2, chunkX)
-                setInt(3, chunkZ)
-            }.executeQuery().use { rs ->
-                val ids = mutableListOf<ComponentId>()
-                while (rs.next()) ids += ComponentId(UUID.fromString(rs.getString("id")))
-                return ids
+    override fun indexByChunk(world: String, chunkX: Int, chunkZ: Int): List<ComponentId> =
+        runtimeSnapshot.get().byWorldChunk[world]?.get(chunkKey(chunkX, chunkZ)).orEmpty()
+
+    private fun reloadRuntimeSnapshot() {
+        val loaded = dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT * FROM components").use { statement ->
+                statement.executeQuery().use { rs ->
+                    buildMap {
+                        while (rs.next()) {
+                            val component = rs.toComponent()
+                            put(component.id, component)
+                        }
+                    }
+                }
             }
         }
+        runtimeSnapshot.set(ComponentRuntimeSnapshot.build(loaded))
+    }
+
+    private fun replaceCachedComponents(transform: (Map<ComponentId, Component>) -> Map<ComponentId, Component>) {
+        runtimeSnapshot.updateAndGet { current -> ComponentRuntimeSnapshot.build(transform(current.components)) }
     }
 
     private fun ResultSet.toComponent(): Component {
@@ -146,5 +150,46 @@ class JdbcComponentRepository(
             createdAt = getTimestamp("created_at").toInstant(),
             updatedAt = getTimestamp("updated_at").toInstant()
         )
+    }
+
+    private class ComponentRuntimeSnapshot private constructor(
+        val components: Map<ComponentId, Component>,
+        val byRegion: Map<RegionId, List<Component>>,
+        private val byPosition: Map<ComponentPositionKey, Component>,
+        val byWorldChunk: Map<String, Map<Long, List<ComponentId>>>
+    ) {
+        fun at(position: Position): Component? {
+            val world = position.legacyWorldName ?: position.worldId.value.toString()
+            return byPosition[ComponentPositionKey(world, position.x, position.y, position.z)]
+        }
+
+        companion object {
+            val EMPTY = ComponentRuntimeSnapshot(emptyMap(), emptyMap(), emptyMap(), emptyMap())
+
+            fun build(components: Map<ComponentId, Component>): ComponentRuntimeSnapshot {
+                val byPosition = HashMap<ComponentPositionKey, Component>()
+                val byWorldChunk = HashMap<String, HashMap<Long, MutableList<ComponentId>>>()
+                for (component in components.values) {
+                    val world = component.position.legacyWorldName ?: component.position.worldId.value.toString()
+                    byPosition[ComponentPositionKey(world, component.position.x, component.position.y, component.position.z)] = component
+                    byWorldChunk.getOrPut(world, ::HashMap)
+                        .getOrPut(chunkKey(component.position.x shr 4, component.position.z shr 4), ::mutableListOf)
+                        .add(component.id)
+                }
+                val regions = components.values.groupBy(Component::regionId)
+                val chunks = byWorldChunk.mapValues { (_, entries) ->
+                    entries.mapValues { (_, ids) -> ids.sortedBy { it.value } }
+                }
+                return ComponentRuntimeSnapshot(components.toMap(), regions, byPosition, chunks)
+            }
+
+            private fun chunkKey(x: Int, z: Int): Long = (x.toLong() shl 32) xor (z.toLong() and 0xffffffffL)
+        }
+    }
+
+    private data class ComponentPositionKey(val world: String, val x: Int, val y: Int, val z: Int)
+
+    private companion object {
+        fun chunkKey(x: Int, z: Int): Long = (x.toLong() shl 32) xor (z.toLong() and 0xffffffffL)
     }
 }

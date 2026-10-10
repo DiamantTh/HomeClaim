@@ -1,11 +1,11 @@
 package systems.diath.homeclaim.core.store
 
 import systems.diath.homeclaim.core.model.Bounds
+import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
-import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.event.EventDispatcher
 import systems.diath.homeclaim.core.event.RegionBuyEvent
@@ -34,23 +34,23 @@ class InMemoryRegionStore(
 ) : RegionService {
     private val regions = ConcurrentHashMap<RegionId, Region>()
     private val regionsByOwner = ConcurrentHashMap<PlayerId, MutableSet<RegionId>>()
-    private val chunkIndex = ConcurrentHashMap<WorldId, ConcurrentHashMap<String, MutableSet<RegionId>>>()
+    private val chunkIndex = ConcurrentHashMap<AreaId, ConcurrentHashMap<String, MutableSet<RegionId>>>()
 
-    override fun getRegionAt(world: WorldId, x: Int, y: Int, z: Int): RegionId? {
+    override fun getRegionAt(areaId: AreaId, x: Int, y: Int, z: Int): RegionId? {
         val chunkX = x shr 4
         val chunkZ = z shr 4
         val key = "$chunkX,$chunkZ"
-        val ids = chunkIndex[world]?.get(key).orEmpty()
+        val ids = chunkIndex[areaId]?.get(key).orEmpty()
         return ids.firstOrNull { id ->
             regions[id]?.bounds?.contains(x, y, z) ?: false
         }
     }
     
-    override fun getRegionAt2D(world: WorldId, x: Int, z: Int): RegionId? {
+    override fun getRegionAt2D(areaId: AreaId, x: Int, z: Int): RegionId? {
         val chunkX = x shr 4
         val chunkZ = z shr 4
         val key = "$chunkX,$chunkZ"
-        val ids = chunkIndex[world]?.get(key).orEmpty()
+        val ids = chunkIndex[areaId]?.get(key).orEmpty()
         return ids.firstOrNull { id ->
             regions[id]?.bounds?.contains2D(x, z) ?: false
         }
@@ -215,10 +215,10 @@ class InMemoryRegionStore(
         val maxChunkX = region.bounds.maxX shr 4
         val minChunkZ = region.bounds.minZ shr 4
         val maxChunkZ = region.bounds.maxZ shr 4
-        if (!chunkIndex.containsKey(region.world)) {
-            chunkIndex[region.world] = ConcurrentHashMap()
+        if (!chunkIndex.containsKey(region.areaId)) {
+            chunkIndex[region.areaId] = ConcurrentHashMap()
         }
-        val worldIndex = chunkIndex[region.world]!!
+        val worldIndex = chunkIndex[region.areaId]!!
         for (cx in minChunkX..maxChunkX) {
             for (cz in minChunkZ..maxChunkZ) {
                 val key = "$cx,$cz"
@@ -235,7 +235,7 @@ class InMemoryRegionStore(
         val maxChunkX = region.bounds.maxX shr 4
         val minChunkZ = region.bounds.minZ shr 4
         val maxChunkZ = region.bounds.maxZ shr 4
-        val worldIndex = chunkIndex[region.world] ?: return
+        val worldIndex = chunkIndex[region.areaId] ?: return
         for (cx in minChunkX..maxChunkX) {
             for (cz in minChunkZ..maxChunkZ) {
                 val key = "$cx,$cz"
@@ -271,8 +271,10 @@ class InMemoryRegionStore(
         return true
     }
     
+    @Synchronized
     override fun claimRegion(regionId: RegionId, claimerId: PlayerId, cost: Double, econService: EconService): Boolean {
         val region = getRegionById(regionId) ?: return false
+        if (region.owner != UUID(0L, 0L)) return false
         
         val claimEvent = RegionClaimEvent(regionId, claimerId, cost)
         eventDispatcher?.dispatch(claimEvent)

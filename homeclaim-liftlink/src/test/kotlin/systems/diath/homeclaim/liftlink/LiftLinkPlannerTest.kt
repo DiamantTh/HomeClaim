@@ -10,7 +10,6 @@ import systems.diath.homeclaim.core.model.ElevatorConfig
 import systems.diath.homeclaim.core.model.ElevatorMode
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
-import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.ComponentService
 import java.time.Instant
 import java.util.UUID
@@ -84,5 +83,5 @@ private class MemoryComponentService(
     override fun listComponents(regionId: RegionId) = storage.filter { it.regionId == regionId }
     override fun updateComponent(componentId: ComponentId, config: ComponentConfig?, policy: ComponentPolicy?, state: ComponentState?) {}
     override fun deleteComponent(componentId: ComponentId) {}
-    override fun indexByChunk(world: WorldId, chunkX: Int, chunkZ: Int): List<ComponentId> = emptyList()
+    override fun indexByChunk(world: String, chunkX: Int, chunkZ: Int): List<ComponentId> = emptyList()
 }

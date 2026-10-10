@@ -23,7 +23,8 @@ class PlotWorldSetupWizard(
     private val configStore: PlotWorldConfigStore,
     private val i18nProvider: () -> systems.diath.homeclaim.platform.paper.I18n,
     private val plugin: Plugin,
-    private val regionServiceProvider: () -> systems.diath.homeclaim.core.service.RegionService? = { null }
+    private val regionServiceProvider: () -> systems.diath.homeclaim.core.service.RegionService? = { null },
+    private val worldAreaServiceProvider: () -> systems.diath.homeclaim.core.service.WorldAreaService? = { null }
 ) {
     private val sessions = mutableMapOf<UUID, Session>()
     private val maxPlotsPerSide = 512
@@ -43,8 +44,7 @@ class PlotWorldSetupWizard(
                     player.sendMessage(i18n.msg("setup.already_running"))
                     return true
                 }
-                val foliaMode = isFoliaServer()
-                val session = Session().applyRecommendedDefaults(foliaMode)
+                val session = Session().applyRecommendedDefaults()
                 sessions[player.uniqueId] = session
                 player.sendMessage(i18n.msg("setup.started"))
                 player.sendMessage(i18n.msg("setup.header"))
@@ -53,12 +53,8 @@ class PlotWorldSetupWizard(
                 } else {
                     player.sendMessage("§8FAWE nicht aktiv – die Konvertierung bestehender Welten ist nur auf Paper mit FAWE verfügbar.")
                 }
-                val recommended = PlotSchemas.recommended(foliaMode)
-                if (foliaMode) {
-                    player.sendMessage("§8Folia-Profil aktiv: ${recommended.plotSize}er Plots, ${recommended.roadWidth} breite Straßen, ${recommended.plotsPerSide} Plots/Seite")
-                } else {
-                    player.sendMessage("§8Empfohlene Defaults aktiv: ${recommended.plotSize}er Plots, ${recommended.roadWidth} breite Straßen, ${recommended.plotsPerSide} Plots/Seite")
-                }
+                val recommended = PlotSchemas.recommended()
+                player.sendMessage("§8Empfohlene Defaults aktiv: ${recommended.plotSize}er Plots, ${recommended.roadWidth} breite Straßen, ${recommended.plotsPerSide} Plots/Seite")
                 player.sendMessage("")
                 player.sendMessage(i18n.msg("setup.mode_select"))
                 player.sendMessage(i18n.msg("setup.mode_new_world"))
@@ -66,9 +62,6 @@ class PlotWorldSetupWizard(
                 // Conversion is only offered on Paper with FAWE.
                 if (supportsConvertMode()) {
                     player.sendMessage(i18n.msg("setup.mode_convert"))
-                } else if (isFoliaServer()) {
-                    player.sendMessage("§7§m2) Bestehende Welt konvertieren§r §c(auf Folia deaktiviert)")
-                    player.sendMessage("§8Nutze auf Folia bitte eine neue Plot-Welt über den Setup-Wizard.")
                 } else {
                     player.sendMessage(i18n.msg("setup.mode_convert_disabled"))
                 }
@@ -115,7 +108,6 @@ class PlotWorldSetupWizard(
                     maxPlotsPerSide,
                     bulkBlockSetter,
                     conversionAvailable = supportsConvertMode(),
-                    foliaMode = isFoliaServer(),
                 )
                 if (!result.ok) {
                     player.sendMessage(result.message)
@@ -128,7 +120,7 @@ class PlotWorldSetupWizard(
                         // Convert existing world
                         handleConversion(player, cfg, i18n)
                     } else {
-                        // Create new world (default) – callback-based for Folia async support
+                        // Create the world on Paper's server thread, then initialize its plot data.
                         sessions.remove(player.uniqueId)
                         player.sendMessage(i18n.msg("setup.creating_world", cfg.worldName))
                         configStore.persistAndCreateWorld(cfg) { createResult ->
@@ -137,11 +129,6 @@ class PlotWorldSetupWizard(
                                     player.sendMessage(i18n.msg("setup.done.created", cfg.worldName))
                                     // Initialize plots in database
                                     initializePlots(player, cfg)
-                                }
-                                WorldCreateResult.FOLIA_RESTART_REQUIRED -> {
-                                    player.sendMessage(i18n.msg("setup.done.saved", cfg.worldName))
-                                    player.sendMessage(i18n.msg("setup.folia.restart_required", cfg.worldName))
-                                    player.sendMessage(i18n.msg("setup.folia.plots_on_restart"))
                                 }
                                 WorldCreateResult.ALREADY_EXISTS ->
                                     player.sendMessage(i18n.msg("setup.world_exists", cfg.worldName))
@@ -279,7 +266,7 @@ class PlotWorldSetupWizard(
         }
         
         player.sendMessage("§eInitializing plots in database...")
-        val initializer = PlotWorldInitializer(regionService, plugin)
+        val initializer = PlotWorldInitializer(regionService, plugin, worldAreaServiceProvider())
         initializer.initializePlots(world, cfg) { progress ->
             val percent = (progress * 100).toInt()
             if (percent % 20 == 0 && percent > 0) {
@@ -295,16 +282,7 @@ class PlotWorldSetupWizard(
         }
     }
 
-    private fun isFoliaServer(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (_: ClassNotFoundException) {
-            false
-        }
-    }
-
-    private fun supportsConvertMode(): Boolean = bulkBlockSetter.isFaweAvailable() && !isFoliaServer()
+    private fun supportsConvertMode(): Boolean = bulkBlockSetter.isFaweAvailable()
 
     private data class Result(val ok: Boolean, val message: String)
 
@@ -335,8 +313,8 @@ class PlotWorldSetupWizard(
         var plotsPerSide: Int = 128
         var schema: String = "default"
 
-        fun applyRecommendedDefaults(foliaMode: Boolean): Session {
-            val recommended = PlotSchemas.recommended(foliaMode)
+        fun applyRecommendedDefaults(): Session {
+            val recommended = PlotSchemas.recommended()
             plotSize = recommended.plotSize
             roadWidth = recommended.roadWidth
             plotHeight = recommended.plotHeight
@@ -355,7 +333,6 @@ class PlotWorldSetupWizard(
             maxPlotsPerSide: Int,
             bulkBlockSetter: BulkBlockSetter,
             conversionAvailable: Boolean,
-            foliaMode: Boolean,
         ): Result {
             // "default" = use the default value (same as empty input)
             val input = if (rawInput.lowercase() == "default" || rawInput.lowercase() == "d") "" else rawInput
@@ -368,9 +345,6 @@ class PlotWorldSetupWizard(
                             Result(true, "ok")
                         }
                         "2", "convert", "konvertieren" -> {
-                            if (foliaMode) {
-                                return Result(false, "§cDie Konvertierung bestehender Welten ist auf Folia deaktiviert. Bitte erstelle dort eine neue Plot-Welt.")
-                            }
                             if (!conversionAvailable || !bulkBlockSetter.isFaweAvailable()) {
                                 return Result(false, i18n.msg("setup.convert_requires_fawe"))
                             }
@@ -468,9 +442,6 @@ class PlotWorldSetupWizard(
                         }
                         if (v == 1) {
                             return Result(false, "§cMindestens 2 Plots pro Seite oder 0 für unbegrenzt verwenden.")
-                        }
-                        if (foliaMode && v > 256) {
-                            return Result(false, "§cFür Folia sind mehr als 256 Plots pro Seite im Ingame-Setup nicht empfohlen. Nutze für größere Layouts bitte später eine manuelle Server-Konfiguration.")
                         }
                         plotsPerSide = v
                     }
@@ -587,11 +558,7 @@ class PlotWorldConfigStore(
     /**
      * Save config and create new world with custom generator.
      * 
-     * On Folia: Bukkit.createWorld(WorldCreator) throws UnsupportedOperationException.
-     * Instead we use WorldCreator.createWorld() on the GlobalRegionScheduler.
-     * See: https://stackoverflow.com/questions/78856245
-     * 
-     * @param onComplete callback with result (needed because Folia runs async on GlobalRegionScheduler)
+     * This method is called from the command flow on Paper's server thread.
      */
     fun persistAndCreateWorld(cfg: PlotWorldConfig, onComplete: (WorldCreateResult) -> Unit) {
         val sanitizedCfg = cfg.sanitized()
@@ -608,35 +575,16 @@ class PlotWorldConfigStore(
         val creator = WorldCreator(sanitizedCfg.worldName)
         creator.generator(PlotWorldChunkGenerator(sanitizedCfg))
         
-        if (isFolia()) {
-            // Folia: Use GlobalRegionScheduler + WorldCreator.createWorld()
-            // GlobalRegionScheduler is for world-level operations not tied to a specific region
-            Bukkit.getGlobalRegionScheduler().run(plugin) { _ ->
-                try {
-                    val world = creator.createWorld()
-                    if (world != null) {
-                        applyWorldBorder(world, sanitizedCfg)
-                        onComplete(WorldCreateResult.CREATED)
-                    } else {
-                        onComplete(WorldCreateResult.CREATE_FAILED)
-                    }
-                } catch (e: Exception) {
-                    plugin.logger.warning("Folia world creation failed: ${e.message}")
-                    onComplete(WorldCreateResult.FOLIA_RESTART_REQUIRED)
-                }
+        try {
+            val world = creator.createWorld() ?: run {
+                onComplete(WorldCreateResult.CREATE_FAILED)
+                return
             }
-        } else {
-            // Paper/Spigot: Create world immediately on main thread
-            try {
-                val world = creator.createWorld() ?: run {
-                    onComplete(WorldCreateResult.CREATE_FAILED)
-                    return
-                }
-                applyWorldBorder(world, sanitizedCfg)
-                onComplete(WorldCreateResult.CREATED)
-            } catch (e: UnsupportedOperationException) {
-                onComplete(WorldCreateResult.FOLIA_RESTART_REQUIRED)
-            }
+            applyWorldBorder(world, sanitizedCfg)
+            onComplete(WorldCreateResult.CREATED)
+        } catch (e: Exception) {
+            plugin.logger.warning("Paper world creation failed: ${e.message}")
+            onComplete(WorldCreateResult.CREATE_FAILED)
         }
     }
     
@@ -649,18 +597,6 @@ class PlotWorldConfigStore(
             val center = cfg.plotAreaCenterCoordinate()
             world.worldBorder.center = org.bukkit.Location(world, center, 0.0, center)
             world.worldBorder.size = size
-        }
-    }
-    
-    /**
-     * Detect if running on Folia.
-     */
-    private fun isFolia(): Boolean {
-        return try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
         }
     }
     
@@ -692,8 +628,6 @@ class PlotWorldConfigStore(
 enum class WorldCreateResult {
     /** World was created successfully (Paper/Spigot) */
     CREATED,
-    /** Config saved, server restart required (Folia) */
-    FOLIA_RESTART_REQUIRED,
     /** World already exists */
     ALREADY_EXISTS,
     /** World creation failed */

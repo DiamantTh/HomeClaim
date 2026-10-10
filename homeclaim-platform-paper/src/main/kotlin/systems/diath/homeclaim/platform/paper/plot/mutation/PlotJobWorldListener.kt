@@ -8,7 +8,7 @@ import java.util.logging.Logger
 
 /**
  * Cancels pending plot jobs when a world unloads so no queued work continues to
- * target a disappearing world on Paper or Folia.
+ * target a disappearing world on Paper.
  */
 internal class PlotJobWorldListener(
     private val logger: Logger,
