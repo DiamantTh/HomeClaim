@@ -69,41 +69,119 @@ class PaperPlotMutationService(
         applyRegionState(unclaimedSnapshot, reason)
     }
 
-    override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason) {
-        if (regions.isEmpty()) return
+    override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
+        if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
         val worldName = regions.first().world
-        val world = Bukkit.getWorld(worldName) ?: return
-        val config = configStore.loadConfig(worldName) ?: return
+        if (regions.any { it.world != worldName }) {
+            return CompletableFuture.failedFuture(IllegalArgumentException("Merge regions must belong to one Paper world"))
+        }
+        val world = Bukkit.getWorld(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for merge mutation: $worldName"))
+        val config = configStore.loadConfig(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for merge mutation: $worldName"))
         val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
+        val result = CompletableFuture<Unit>()
 
-        Bukkit.getScheduler().runTask(plugin, Runnable {
-            regions.forEach { region ->
-                val siblings = regions.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
-                val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
-                val style = PlotMutationSupport.styleFor(region, config, PlotVisualState.MERGED)
-                repaintBorder(
-                    world = world,
-                    bounds = region.bounds,
-                    config = config,
-                    style = style,
-                    reason = reason,
-                    batchId = "paper-mutation:merge-border:${region.id.value}",
-                    includeNorth = !shared.north,
-                    includeSouth = !shared.south,
-                    includeWest = !shared.west,
-                    includeEast = !shared.east
-                )
-            }
+        try {
+            Bukkit.getScheduler().runTask(plugin, Runnable {
+                try {
+                    val mergedRegions = regions.toList()
+                    mergedRegions.forEach { region ->
+                        val siblings = mergedRegions.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
+                        val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
+                        val style = PlotMutationSupport.styleFor(region, config, PlotVisualState.MERGED)
+                        repaintBorder(
+                            world = world,
+                            bounds = region.bounds,
+                            config = config,
+                            style = style,
+                            reason = reason,
+                            batchId = "paper-mutation:merge-border:${region.id.value}",
+                            includeNorth = !shared.north,
+                            includeSouth = !shared.south,
+                            includeWest = !shared.west,
+                            includeEast = !shared.east,
+                            throwOnMutationFailure = true
+                        )
+                    }
 
-            val mergedFillStyle = PlotBorderStyle(
-                fillMaterial = config.plotBlock,
-                capMaterial = config.plotBlock
-            )
-                repaintCorridors(
-                    world, regions.toList(), config, mergedFillStyle, maxGap, reason,
-                    predicate = { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId }
-                )
-        })
+                    val mergedFillStyle = PlotBorderStyle(config.plotBlock, config.plotBlock)
+                    repaintCorridors(
+                        world, mergedRegions, config, mergedFillStyle, maxGap, reason,
+                        predicate = { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId },
+                        throwOnMutationFailure = true
+                    )
+                    result.complete(Unit)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(java.util.logging.Level.SEVERE, "Paper merge mutation failed for $worldName", failure)
+                    result.completeExceptionally(failure)
+                }
+            })
+        } catch (failure: Throwable) {
+            result.completeExceptionally(failure)
+        }
+        return result
+    }
+
+    override fun restoreRegionVisualStates(regions: Collection<Region>): CompletableFuture<Unit> {
+        if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
+        val worldName = regions.first().world
+        if (regions.any { it.world != worldName }) {
+            return CompletableFuture.failedFuture(IllegalArgumentException("Restored regions must belong to one Paper world"))
+        }
+        val world = Bukkit.getWorld(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for merge compensation: $worldName"))
+        val config = configStore.loadConfig(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for merge compensation: $worldName"))
+        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
+        val result = CompletableFuture<Unit>()
+
+        try {
+            Bukkit.getScheduler().runTask(plugin, Runnable {
+                try {
+                    val snapshots = regions.toList()
+                    snapshots.forEach { region ->
+                        val siblings = snapshots.filter {
+                            it.id != region.id && region.mergeGroupId != null && it.mergeGroupId == region.mergeGroupId
+                        }
+                        val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
+                        repaintBorder(
+                            world = world,
+                            bounds = region.bounds,
+                            config = config,
+                            style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region)),
+                            reason = MutationReason.ADMIN,
+                            batchId = "paper-mutation:merge-compensation:${region.id.value}",
+                            includeNorth = !shared.north,
+                            includeSouth = !shared.south,
+                            includeWest = !shared.west,
+                            includeEast = !shared.east,
+                            throwOnMutationFailure = true
+                        )
+                    }
+
+                    repaintCorridors(
+                        world, snapshots, config, PlotBorderStyle(config.plotBlock, config.plotBlock), maxGap,
+                        MutationReason.ADMIN,
+                        predicate = { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId },
+                        throwOnMutationFailure = true
+                    )
+                    repaintCorridors(
+                        world, snapshots, config, PlotBorderStyle(config.roadBlock, config.roadBlock), maxGap,
+                        MutationReason.ADMIN,
+                        predicate = { first, second -> first.mergeGroupId != second.mergeGroupId },
+                        throwOnMutationFailure = true
+                    )
+                    result.complete(Unit)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(java.util.logging.Level.SEVERE, "Paper merge compensation failed for $worldName", failure)
+                    result.completeExceptionally(failure)
+                }
+            })
+        } catch (failure: Throwable) {
+            result.completeExceptionally(failure)
+        }
+        return result
     }
 
     override fun handleRegionsUnlinked(

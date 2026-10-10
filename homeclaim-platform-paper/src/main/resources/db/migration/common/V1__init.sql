@@ -113,6 +113,31 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id);
 CREATE INDEX idx_audit_target_created ON audit_log(target_id, created_at);
 
+-- Operational journal for long-running region/world mutations. Active jobs are
+-- marked RECOVERY_REQUIRED at the next startup instead of being mistaken for
+-- completed work after a crash.
+CREATE TABLE plot_mutation_jobs (
+    id UUID PRIMARY KEY,
+    correlation_id UUID NOT NULL,
+    operation VARCHAR(32) NOT NULL,
+    world_id UUID,
+    area_id UUID NOT NULL,
+    world_name VARCHAR(128) NOT NULL,
+    region_ids TEXT NOT NULL,
+    backend VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    completed_units INT NOT NULL DEFAULT 0,
+    total_units INT NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX idx_plot_mutation_jobs_status_created ON plot_mutation_jobs(status, created_at);
+CREATE INDEX idx_plot_mutation_jobs_area_created ON plot_mutation_jobs(area_id, created_at);
+
 CREATE TABLE flag_profiles (
     name VARCHAR(64) PRIMARY KEY,
     flags JSON NOT NULL DEFAULT '{}',

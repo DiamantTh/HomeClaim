@@ -66,6 +66,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var plotResetService: systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService =
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
     private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
+    private var plotMutationJobStore: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore? = null
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
@@ -119,7 +120,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 maxMergedRegions = homeClaimConfig.getInt("homeclaim.limits.maxMergedRegions", -1)
             ),
             services.auditService,
-            worldAreaService = services.worldAreaService
+            worldAreaService = services.worldAreaService,
+            mutationJobStore = plotMutationJobStore
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -342,13 +344,18 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             maxConcurrentMutationsForWorld = mutationLimitForWorld
         )
         plotMutationBackend = backend
+        plotMutationJobStore = services.dataSource?.let { dataSource ->
+            systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore(dataSource)
+        }
         plotMutationService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(
             this,
             mutationBackend = backend
         )
         plotResetService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(
             this,
-            mutationBackend = backend
+            mutationBackend = backend,
+            jobStore = plotMutationJobStore,
+            worldAreaService = services.worldAreaService
         )
 
         dispatcher.registerListener(
@@ -1003,7 +1010,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             plotMutationBackend
         )
         val ownerMetadataResolver = systems.diath.homeclaim.platform.paper.PaperOwnerMetadataResolver()
-        restServer = PlotRestServer(
+        val rest = PlotRestServer(
             regionService = services.regionService,
             plotMemberService = services.plotMemberService,
             zoneService = services.zoneService,
@@ -1035,15 +1042,21 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 )
             },
             roleService = services.roleService
-        ).start()
-        logger.info(
-            i18n.msg(
-                "rest.started",
-                port.toString(),
-                " (token)",
-                if (rateLimit != null) " (rate: $rateLimit/min)" else ""
-            )
         )
+        try {
+            restServer = rest.start()
+            logger.info(
+                i18n.msg(
+                    "rest.started",
+                    port.toString(),
+                    " (token)",
+                    if (rateLimit != null) " (rate: $rateLimit/min)" else ""
+                )
+            )
+        } catch (failure: Throwable) {
+            restServer = null
+            logger.log(java.util.logging.Level.SEVERE, i18n.msg("rest.start.failed", port), failure)
+        }
     }
 
     private fun loadI18n(): I18n {

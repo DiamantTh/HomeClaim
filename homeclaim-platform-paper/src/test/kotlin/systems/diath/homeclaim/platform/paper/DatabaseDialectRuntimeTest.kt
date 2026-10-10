@@ -14,6 +14,9 @@ import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditStatus
 import systems.diath.homeclaim.core.service.RegionRoleService
 import systems.diath.homeclaim.core.store.*
+import systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobRecord
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
 import java.net.ServerSocket
 import java.net.URI
 import java.net.http.HttpClient
@@ -206,6 +209,9 @@ class DatabaseDialectRuntimeTest {
             assertEquals(mergeId, regions.getRegionById(secondId)?.mergeGroupId)
 
             val correlationId = CorrelationId.newId()
+            val olderCorrelation = CorrelationId.newId()
+            val otherTarget = UUID.randomUUID()
+            val auditBaseTime = java.time.Instant.now().plusSeconds(30)
             audit.append(
                 AuditEntry(
                     actorId = claimedBy,
@@ -217,14 +223,40 @@ class DatabaseDialectRuntimeTest {
                     worldId = world.id,
                     areaId = area.id,
                     status = AuditStatus.COMPLETED,
-                    reason = "runtime test"
+                    reason = "runtime latest",
+                    createdAt = auditBaseTime.plusSeconds(1)
                 )
             )
-            val auditReadBack = JdbcAuditService(dataSource).findForTarget(firstId.value, java.time.Instant.EPOCH, 50)
-            assertTrue(auditReadBack.any {
-                it.targetId == firstId.value && it.actorId == claimedBy &&
-                    it.action == HomeClaimOperationActions.REGION_CLAIM.value
-            }, "Audit query should return the persisted record for the region")
+            audit.append(
+                AuditEntry(
+                    actorId = claimedBy,
+                    targetId = firstId.value,
+                    category = "REGION",
+                    action = "homeclaim:older_test_record",
+                    correlationId = olderCorrelation,
+                    status = AuditStatus.COMPLETED,
+                    createdAt = auditBaseTime
+                )
+            )
+            audit.append(
+                AuditEntry(
+                    actorId = claimedBy,
+                    targetId = otherTarget,
+                    category = "REGION",
+                    action = "homeclaim:other_target",
+                    status = AuditStatus.COMPLETED,
+                    createdAt = auditBaseTime.plusSeconds(2)
+                )
+            )
+            val auditReader = JdbcAuditService(dataSource)
+            val auditReadBack = auditReader.findForTarget(firstId.value, java.time.Instant.EPOCH, 50)
+            assertEquals(
+                listOf(HomeClaimOperationActions.REGION_CLAIM.value, "homeclaim:older_test_record"),
+                auditReadBack.map { it.action }.take(2)
+            )
+            assertEquals(correlationId, auditReadBack.first().correlationId)
+            assertEquals(listOf(auditReadBack.first()), auditReader.findForTarget(firstId.value, java.time.Instant.EPOCH, 1))
+            assertTrue(auditReader.findForTarget(UUID.randomUUID(), java.time.Instant.EPOCH, 50).isEmpty())
             dataSource.connection.use { connection ->
                 connection.prepareStatement("SELECT COUNT(*) FROM audit_log WHERE correlation_id = ?").use { statement ->
                     statement.setObject(1, correlationId.value)
@@ -234,6 +266,34 @@ class DatabaseDialectRuntimeTest {
                     }
                 }
             }
+
+            val jobStore = JdbcPlotMutationJobStore(dataSource)
+            val jobId = UUID.randomUUID()
+            val jobCorrelation = CorrelationId.newId()
+            jobStore.create(
+                PlotMutationJobRecord(
+                    id = jobId,
+                    correlationId = jobCorrelation,
+                    operation = "RESET_MANUAL",
+                    worldId = world.id,
+                    areaId = area.id,
+                    worldName = world.name,
+                    regionIds = listOf(firstId),
+                    backend = "runtime-test",
+                    status = PlotMutationJobStatus.QUEUED,
+                    totalUnits = 10
+                )
+            )
+            jobStore.markRunning(jobId)
+            jobStore.updateProgress(jobId, 3, 10)
+            assertEquals(1, jobStore.markInterruptedAsRecoveryRequired())
+            val interruptedJob = jobStore.findRecoveryRequired().single { it.id == jobId }
+            assertEquals(jobId, interruptedJob.id)
+            assertEquals(jobCorrelation, interruptedJob.correlationId)
+            assertEquals(3, interruptedJob.completedUnits)
+            assertEquals(10, interruptedJob.totalUnits)
+            assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, interruptedJob.status)
+            assertEquals(0, jobStore.markInterruptedAsRecoveryRequired())
 
             val roleService = RegionRoleService(regions)
             val restPlayerId = UUID.randomUUID()

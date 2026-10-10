@@ -5,14 +5,17 @@ import org.bukkit.scheduler.BukkitTask
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
+import systems.diath.homeclaim.core.policy.CorrelationId
 import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Region
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
 import systems.diath.homeclaim.platform.paper.plot.sanitized
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
 
 /**
  * Paper-only first cut for heavier plot resets.
@@ -23,10 +26,27 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PaperPlotResetService(
     private val plugin: JavaPlugin,
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
-    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend()
+    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend(),
+    private val jobStore: PlotMutationJobStore? = null,
+    private val worldAreaService: WorldAreaService? = null
 ) : PlotResetService {
     private val queueRegistry = PlotJobRegistry()
     private val activeResets = ConcurrentHashMap<String, () -> Unit>()
+
+    init {
+        jobStore?.let { store ->
+            val interrupted = store.markInterruptedAsRecoveryRequired()
+            if (interrupted > 0) {
+                plugin.logger.severe("$interrupted plot mutation job(s) were interrupted by a previous server shutdown; inspect /plot jobs status")
+            }
+            store.findRecoveryRequired().forEach { job ->
+                plugin.logger.severe(
+                    "Plot mutation ${job.operation} requires recovery: job=${job.id}, region=${job.regionIds.joinToString()}, " +
+                        "world=${job.worldName}, progress=${job.completedUnits}/${job.totalUnits}, correlation=${job.correlationId}"
+                )
+            }
+        }
+    }
 
     override fun shutdown() {
         activeResets.values.toList().forEach { cancel ->
@@ -41,9 +61,20 @@ class PaperPlotResetService(
     }
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
-        return queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+        val active = queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
             "reset:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.RESET.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
         }
+        val recovery = recoveryRequiredDiagnostics(worldName)
+        return active + recovery
+    }
+
+    override fun recoveryRequiredDiagnostics(worldName: String?): List<String> = runCatching {
+        jobStore?.findRecoveryRequired()?.filter { worldName == null || it.worldName == worldName }?.map { record ->
+            "recovery-required:${record.operation}:${record.worldName}:${record.id}:regions=${record.regionIds.joinToString()}:progress=${record.completedUnits}/${record.totalUnits}:correlation=${record.correlationId}"
+        }.orEmpty()
+    }.getOrElse { error ->
+        plugin.logger.log(java.util.logging.Level.SEVERE, "Could not read recovery-required plot jobs", error)
+        listOf("recovery-required:status lookup failed: ${error.message ?: error.javaClass.simpleName}")
     }
 
     override fun activeJobs(worldName: String?): List<PlotJobSnapshot> {
@@ -64,12 +95,19 @@ class PaperPlotResetService(
     }
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
-        return queueReset(region, reason) { }
+        return queueReset(region, reason, CorrelationId.newId()) { }
     }
 
     override fun queueReset(
         region: Region,
         reason: PlotResetReason,
+        onComplete: (PlotResetCompletion) -> Unit
+    ): Boolean = queueReset(region, reason, CorrelationId.newId(), onComplete)
+
+    override fun queueReset(
+        region: Region,
+        reason: PlotResetReason,
+        correlationId: CorrelationId,
         onComplete: (PlotResetCompletion) -> Unit
     ): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
@@ -99,6 +137,27 @@ class PaperPlotResetService(
         val totalColumns = columns.size
         var completedColumns = 0
         var mutationAttempted = false
+        val persistentJobId = UUID.randomUUID()
+        val persistentJob = PlotMutationJobRecord(
+            id = persistentJobId,
+            correlationId = correlationId,
+            operation = "RESET_${reason.name}",
+            worldId = worldAreaService?.getArea(region.areaId)?.worldId,
+            areaId = region.areaId,
+            worldName = region.world,
+            regionIds = listOf(region.id),
+            backend = mutationBackend.backendId,
+            status = PlotMutationJobStatus.QUEUED,
+            totalUnits = totalColumns
+        )
+        try {
+            jobStore?.create(persistentJob)
+        } catch (error: Throwable) {
+            jobHandle.close()
+            plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist reset job before mutation for ${region.id.value}", error)
+            return false
+        }
+        var journalStarted = false
         val completionSent = AtomicBoolean(false)
         var scheduledTask: BukkitTask? = null
         fun finish(status: PlotResetCompletionStatus, error: String? = null) {
@@ -106,11 +165,28 @@ class PaperPlotResetService(
             scheduledTask?.cancel()
             jobHandle.close()
             activeResets.remove(jobKey)
+            val resultPartial = mutationAttempted && (status != PlotResetCompletionStatus.COMPLETED || completedColumns < totalColumns)
+            val persistedStatus = PlotResetCompletion(status, completedColumns, resultPartial, error).persistentJobStatus()
+            val journalError = runCatching {
+                jobStore?.finish(
+                    persistentJobId,
+                    persistedStatus,
+                    completedColumns,
+                    totalColumns,
+                    error
+                )
+            }.exceptionOrNull()
+            val finalStatus = if (journalError != null && status == PlotResetCompletionStatus.COMPLETED) {
+                PlotResetCompletionStatus.FAILED
+            } else status
+            if (journalError != null) {
+                plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist terminal reset state for ${region.id.value}", journalError)
+            }
             val result = PlotResetCompletion(
-                status = status,
+                status = finalStatus,
                 completedColumns = completedColumns,
-                partialMutation = mutationAttempted && (status != PlotResetCompletionStatus.COMPLETED || completedColumns < totalColumns),
-                error = error
+                partialMutation = resultPartial,
+                error = listOfNotNull(error, journalError?.let { "reset journal could not be finalized: ${it.message}" }).joinToString("; ").ifBlank { null }
             )
             runCatching { onComplete(result) }.onFailure { callbackError ->
                 plugin.logger.log(java.util.logging.Level.SEVERE, "Reset completion callback failed for ${region.id.value}", callbackError)
@@ -146,9 +222,16 @@ class PaperPlotResetService(
                             topY = topY,
                             clearUntil = clearUntil
                         )
+                        if (!journalStarted) {
+                            jobStore?.markRunning(persistentJobId)
+                            journalStarted = true
+                        }
                         mutationAttempted = true
                         mutationBackend.submit(batch)
                         completedColumns += batchColumns.size
+                        if (completedColumns % PERSIST_PROGRESS_INTERVAL < batchColumns.size || columns.isEmpty()) {
+                            jobStore?.updateProgress(persistentJobId, completedColumns, totalColumns)
+                        }
                     }
                     if (columns.isEmpty()) {
                         finish(PlotResetCompletionStatus.COMPLETED)
@@ -169,8 +252,23 @@ class PaperPlotResetService(
             true
         }.getOrElse { error ->
             jobHandle.close()
+            runCatching {
+                jobStore?.finish(
+                    persistentJobId,
+                    PlotMutationJobStatus.FAILED,
+                    completedColumns,
+                    totalColumns,
+                    "Could not schedule reset: ${error.message ?: error.javaClass.simpleName}"
+                )
+            }.onFailure { journalError ->
+                plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist failed reset scheduling state for ${region.id.value}", journalError)
+            }
             plugin.logger.warning("Failed to schedule Paper plot reset for ${region.id.value}: ${error.message}")
             false
         }
+    }
+
+    private companion object {
+        const val PERSIST_PROGRESS_INTERVAL = 1024
     }
 }

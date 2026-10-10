@@ -5,7 +5,6 @@ import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.event.PostRegionBuyEvent
 import systems.diath.homeclaim.core.event.PostRegionClaimEvent
 import systems.diath.homeclaim.core.event.PostRegionDeleteEvent
-import systems.diath.homeclaim.core.event.PostRegionMergeEvent
 import systems.diath.homeclaim.core.event.PostRegionUpdateEvent
 import systems.diath.homeclaim.core.service.RegionService
 
@@ -48,8 +47,4 @@ class PlotMutationEventListener(
         }
     }
 
-    fun onPostRegionMergeEvent(event: PostRegionMergeEvent) {
-        val regions = event.regionIds.mapNotNull(regionService::getRegionById)
-        plotMutationService.handleRegionsMerged(regions, MutationReason.MERGE)
-    }
 }

@@ -2,6 +2,7 @@ package systems.diath.homeclaim.core.service
 
 import java.time.Instant
 import java.util.UUID
+import systems.diath.homeclaim.core.policy.CorrelationId
 
 /** A bounded read model for administrative audit views. */
 data class AuditLogRecord(
@@ -9,7 +10,8 @@ data class AuditLogRecord(
     val targetId: UUID?,
     val action: String,
     val payload: Map<String, Any?>,
-    val createdAt: Instant
+    val createdAt: Instant,
+    val correlationId: CorrelationId? = null
 )
 
 interface AuditReader {

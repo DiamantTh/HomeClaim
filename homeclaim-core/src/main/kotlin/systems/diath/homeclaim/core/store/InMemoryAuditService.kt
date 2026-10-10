@@ -31,7 +31,7 @@ class InMemoryAuditService(private val maxEntries: Int = 10_000) : AuditService,
             .filter { it.targetId == targetId && !it.createdAt.isBefore(since) }
             .sortedWith(compareByDescending<AuditEntry> { it.createdAt }.thenByDescending { it.auditId })
             .take(limit)
-            .map { AuditLogRecord(it.actorId, it.targetId, it.action, it.payload, it.createdAt) }
+            .map { AuditLogRecord(it.actorId, it.targetId, it.action, it.payload, it.createdAt, it.correlationId) }
             .toList()
     }
     

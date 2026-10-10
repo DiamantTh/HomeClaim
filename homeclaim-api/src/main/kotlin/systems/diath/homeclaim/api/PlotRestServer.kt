@@ -103,10 +103,19 @@ class PlotRestServer(
     private val policyService: PolicyService? = null,
     private val roleService: RoleService? = null
 ) {
-    fun start(): ApplicationEngine = embeddedServer(Netty, port = port) {
-        configurePlugins()
-        configureRoutes()
-    }.start(wait = false)
+    fun start(): ApplicationEngine {
+        val engine = embeddedServer(Netty, port = port) {
+            configurePlugins()
+            configureRoutes()
+        }
+        return try {
+            engine.start(wait = false)
+        } catch (failure: Throwable) {
+            runCatching { engine.stop(gracePeriodMillis = 500, timeoutMillis = 1_000) }
+                .onFailure(failure::addSuppressed)
+            throw failure
+        }
+    }
     
     private fun Application.configurePlugins() {
         install(ContentNegotiation) {

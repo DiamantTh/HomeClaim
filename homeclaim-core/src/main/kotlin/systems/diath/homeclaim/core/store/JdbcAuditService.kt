@@ -64,7 +64,7 @@ class JdbcAuditService(private val dataSource: DataSource) : AuditService, Audit
     override fun findForTarget(targetId: java.util.UUID, since: Instant, limit: Int): List<AuditLogRecord> {
         require(limit in 1..500) { "Audit query limit must be between 1 and 500" }
         val sql = """
-            SELECT actor_id, target_id, action, payload, created_at
+            SELECT actor_id, target_id, action, payload, created_at, correlation_id
             FROM audit_log
             WHERE target_id = ? AND created_at >= ?
             ORDER BY created_at DESC, audit_id DESC
@@ -87,7 +87,9 @@ class JdbcAuditService(private val dataSource: DataSource) : AuditService, Audit
                                     targetId = result.getString("target_id")?.let { runCatching { java.util.UUID.fromString(it) }.getOrNull() },
                                     action = result.getString("action"),
                                     payload = payload,
-                                    createdAt = result.getTimestamp("created_at").toInstant()
+                                    createdAt = result.getTimestamp("created_at").toInstant(),
+                                    correlationId = result.getString("correlation_id")
+                                        ?.let { runCatching { systems.diath.homeclaim.core.policy.CorrelationId(java.util.UUID.fromString(it)) }.getOrNull() }
                                 )
                             )
                         }

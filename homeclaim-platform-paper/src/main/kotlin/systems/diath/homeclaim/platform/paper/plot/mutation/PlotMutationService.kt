@@ -18,8 +18,18 @@ interface PlotMutationService {
         applyRegionState(region, reason)
     }
 
-    fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason = MutationReason.MERGE) {
+    fun handleRegionsMerged(
+        regions: Collection<Region>,
+        reason: MutationReason = MutationReason.MERGE
+    ): CompletableFuture<Unit> {
         regions.forEach { applyRegionState(it, reason) }
+        return CompletableFuture.completedFuture(Unit)
+    }
+
+    /** Repaint the prior region visual states after a failed merge persistence step. */
+    fun restoreRegionVisualStates(regions: Collection<Region>): CompletableFuture<Unit> {
+        regions.forEach { applyRegionState(it, MutationReason.ADMIN) }
+        return CompletableFuture.completedFuture(Unit)
     }
 
     fun handleRegionsUnlinked(

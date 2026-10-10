@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.model.Region
+import systems.diath.homeclaim.core.policy.CorrelationId
 
 /**
  * Separate, potentially heavier reset path for restoring a plot's interior.
@@ -21,6 +22,15 @@ interface PlotResetService {
      * cannot expose job lifecycle may keep the compatibility behavior below.
      */
     fun queueReset(region: Region, reason: PlotResetReason, onComplete: (PlotResetCompletion) -> Unit): Boolean {
+        return queueReset(region, reason, CorrelationId.newId(), onComplete)
+    }
+
+    fun queueReset(
+        region: Region,
+        reason: PlotResetReason,
+        correlationId: CorrelationId,
+        onComplete: (PlotResetCompletion) -> Unit
+    ): Boolean {
         val queued = queueReset(region, reason)
         if (queued) onComplete(PlotResetCompletion(PlotResetCompletionStatus.COMPLETED, 0, false))
         return queued
@@ -29,6 +39,8 @@ interface PlotResetService {
     fun cancelPendingJobs(worldName: String? = null): Int = 0
 
     fun activeJobDiagnostics(worldName: String? = null): List<String> = emptyList()
+
+    fun recoveryRequiredDiagnostics(worldName: String? = null): List<String> = emptyList()
 
     fun activeJobs(worldName: String? = null): List<PlotJobSnapshot> = emptyList()
 
@@ -48,6 +60,13 @@ data class PlotResetCompletion(
     val partialMutation: Boolean,
     val error: String? = null
 )
+
+internal fun PlotResetCompletion.persistentJobStatus(): PlotMutationJobStatus = when {
+    status == PlotResetCompletionStatus.COMPLETED -> PlotMutationJobStatus.COMPLETED
+    partialMutation -> PlotMutationJobStatus.RECOVERY_REQUIRED
+    status == PlotResetCompletionStatus.CANCELLED -> PlotMutationJobStatus.CANCELLED
+    else -> PlotMutationJobStatus.FAILED
+}
 
 object NoOpPlotResetService : PlotResetService {
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean = false

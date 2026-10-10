@@ -4,6 +4,8 @@ import org.bukkit.Location
 import org.bukkit.World
 import org.bukkit.entity.Player
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.anyString
@@ -20,15 +22,22 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditStatus
 import systems.diath.homeclaim.core.store.InMemoryRegionStore
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
+import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.persistentJobStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 
 class PlotCommandTest {
 
@@ -112,5 +121,218 @@ class PlotCommandTest {
 
         verify(player, atLeastOnce()).sendMessage(contains("mut-1"))
         verify(player, atLeastOnce()).sendMessage(contains("reset-1"))
+    }
+
+    @Test
+    fun `merge waits for world mutation before persisting and reporting completion`() {
+        val regions = mergedPair()
+        val auditService = mock(AuditService::class.java)
+        val world = mock(World::class.java)
+        val player = mergePlayer(world)
+        val mutationFuture = CompletableFuture<Unit>()
+        val mutationService = object : systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason) = mutationFuture
+        }
+        val command = PlotCommand(
+            regions,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            auditService = auditService
+        )
+
+        command.execute(player, arrayOf("merge"))
+
+        assertNull(regions.listAllRegions().first().mergeGroupId)
+        verify(player, never()).sendMessage(contains("Merge completed"))
+        mutationFuture.complete(Unit)
+
+        val merged = regions.listAllRegions().map { it.mergeGroupId }.distinct()
+        assertEquals(1, merged.size)
+        assertTrue(merged.single() != null)
+        val messages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(messages.any { it.contains("group") || it.contains("Gruppe") }, "User should receive the merge completion message only after world mutation")
+        assertTrue(messages.none { it.contains("queued", ignoreCase = true) || it.contains("eingereiht", ignoreCase = true) })
+        val auditRecords = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(listOf(AuditStatus.ATTEMPTED, AuditStatus.ALLOWED, AuditStatus.COMPLETED), auditRecords.map { it.status })
+        assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `failed merge world mutation does not persist a merge and reports recovery state`() {
+        val regions = mergedPair()
+        val auditService = mock(AuditService::class.java)
+        val world = mock(World::class.java)
+        val player = mergePlayer(world)
+        val mutationService = object : systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> =
+                CompletableFuture.failedFuture(IllegalStateException("simulated mutation failure"))
+        }
+        val command = PlotCommand(
+            regions,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            auditService = auditService
+        )
+
+        command.execute(player, arrayOf("merge"))
+
+        assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
+        val messages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(messages.any { it.contains("recovery", ignoreCase = true) })
+        assertTrue(messages.none { it.contains("group") || it.contains("Gruppe") })
+        val auditRecords = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(AuditStatus.FAILED, auditRecords.last().status)
+        assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `merge persistence failure restores the previous world visuals and does not report success`() {
+        val backingStore = mergedPair()
+        val regionService = object : RegionService by backingStore {
+            override fun mergeRegions(regionIds: Collection<RegionId>): systems.diath.homeclaim.core.model.MergeGroupId {
+                throw IllegalStateException("simulated database failure")
+            }
+        }
+        val auditService = mock(AuditService::class.java)
+        val player = mergePlayer(mock(World::class.java))
+        var worldRestored = false
+        val mutationService = object : systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason) = CompletableFuture.completedFuture(Unit)
+            override fun restoreRegionVisualStates(regions: Collection<Region>) = CompletableFuture.completedFuture(Unit).also { worldRestored = true }
+        }
+        val command = PlotCommand(
+            regionService,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            operationLimits = RegionOperationLimitService(regionService),
+            auditService = auditService
+        )
+
+        command.execute(player, arrayOf("merge"))
+
+        assertTrue(worldRestored)
+        assertTrue(backingStore.listAllRegions().all { it.mergeGroupId == null })
+        val messages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(messages.any { it.contains("failed", ignoreCase = true) || it.contains("fehlgeschlagen", ignoreCase = true) })
+        assertTrue(messages.none { it.contains("group") || it.contains("Gruppe") })
+        val auditRecords = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(AuditStatus.ROLLED_BACK, auditRecords.last().status)
+        assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `failed unlink mutation restores persisted merge state and reports rollback`() {
+        val regionService = mergedPair()
+        val originalRegions = regionService.listAllRegions()
+        val mergeGroupId = regionService.mergeRegions(originalRegions.map { it.id })
+        val auditService = mock(AuditService::class.java)
+        val player = mergePlayer(mock(World::class.java))
+        val mutationFuture = CompletableFuture<Unit>()
+        var visualCompensationRan = false
+        val mutationService = object : PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+
+            override fun handleRegionsUnlinked(
+                regions: Collection<Region>,
+                createRoads: Boolean,
+                reason: MutationReason
+            ) = mutationFuture
+
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
+                visualCompensationRan = true
+                return CompletableFuture.completedFuture(Unit)
+            }
+        }
+        val command = PlotCommand(
+            regionService,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            auditService = auditService
+        )
+
+        command.execute(player, arrayOf("unlink"))
+
+        assertTrue(regionService.listAllRegions().all { it.mergeGroupId == null })
+        val preCompletionMessages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(preCompletionMessages.none { it.contains("unlink", ignoreCase = true) && it.contains("success", ignoreCase = true) })
+
+        mutationFuture.completeExceptionally(IllegalStateException("simulated corridor failure"))
+
+        assertTrue(visualCompensationRan)
+        assertTrue(regionService.listAllRegions().all { it.mergeGroupId == mergeGroupId })
+        val messages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(messages.any { it.contains("failed", ignoreCase = true) || it.contains("fehlgeschlagen", ignoreCase = true) })
+        assertTrue(messages.none { it.contains("Unlinked", ignoreCase = true) || it.contains("entknüpft", ignoreCase = true) })
+        val auditRecords = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(AuditStatus.ROLLED_BACK, auditRecords.last().status)
+        assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `partial reset failure and cancellation require recovery after restart`() {
+        assertEquals(
+            PlotMutationJobStatus.RECOVERY_REQUIRED,
+            PlotResetCompletion(PlotResetCompletionStatus.FAILED, 2, partialMutation = true).persistentJobStatus()
+        )
+        assertEquals(
+            PlotMutationJobStatus.RECOVERY_REQUIRED,
+            PlotResetCompletion(PlotResetCompletionStatus.CANCELLED, 2, partialMutation = true).persistentJobStatus()
+        )
+        assertEquals(
+            PlotMutationJobStatus.FAILED,
+            PlotResetCompletion(PlotResetCompletionStatus.FAILED, 0, partialMutation = false).persistentJobStatus()
+        )
+        assertEquals(
+            PlotMutationJobStatus.CANCELLED,
+            PlotResetCompletion(PlotResetCompletionStatus.CANCELLED, 0, partialMutation = false).persistentJobStatus()
+        )
+        assertEquals(
+            PlotMutationJobStatus.COMPLETED,
+            PlotResetCompletion(PlotResetCompletionStatus.COMPLETED, 10, partialMutation = false).persistentJobStatus()
+        )
+    }
+
+    private fun mergedPair(): InMemoryRegionStore {
+        val store = InMemoryRegionStore()
+        val owner = UUID.randomUUID()
+        val ownerId = RegionId(UUID.randomUUID())
+        val neighborId = RegionId(UUID.randomUUID())
+        val base = Region(
+            id = ownerId,
+            world = "plots",
+            shape = RegionShape.PLOT_GRID,
+            bounds = Bounds(0, 15, 0, 255, 0, 15),
+            owner = owner
+        )
+        store.createRegion(base)
+        store.createRegion(base.copy(id = neighborId, bounds = Bounds(16, 31, 0, 255, 0, 15)))
+        return store
+    }
+
+    private fun mergePlayer(world: World): Player {
+        val player = mock(Player::class.java)
+        doReturn(false).`when`(player).isOp
+        doReturn(true).`when`(player).isOnline
+        doReturn(UUID.randomUUID()).`when`(player).uniqueId
+        doReturn(true).`when`(player).hasPermission(anyString())
+        doReturn("plots").`when`(world).name
+        doReturn(Location(world, 5.0, 65.0, 5.0)).`when`(player).location
+        return player
     }
 }
