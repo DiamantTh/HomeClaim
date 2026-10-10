@@ -3,14 +3,18 @@ package systems.diath.homeclaim.core.store
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import systems.diath.homeclaim.core.policy.ActionEndpoint
 import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditLogRecord
+import systems.diath.homeclaim.core.service.AuditReader
 import systems.diath.homeclaim.core.service.AuditService
+import com.fasterxml.jackson.core.type.TypeReference
+import java.time.Instant
 import java.sql.PreparedStatement
 import java.sql.Timestamp
 import java.sql.Types
 import javax.sql.DataSource
 
 /** JDBC implementation of the canonical HomeClaim audit sink. */
-class JdbcAuditService(private val dataSource: DataSource) : AuditService {
+class JdbcAuditService(private val dataSource: DataSource) : AuditService, AuditReader {
     private val mapper = jacksonObjectMapper()
 
     override fun append(entry: AuditEntry) {
@@ -53,6 +57,42 @@ class JdbcAuditService(private val dataSource: DataSource) : AuditService {
                 stmt.setString(35, mapper.writeValueAsString(entry.payload))
                 stmt.setTimestamp(36, Timestamp.from(entry.createdAt))
                 stmt.executeUpdate()
+            }
+        }
+    }
+
+    override fun findForTarget(targetId: java.util.UUID, since: Instant, limit: Int): List<AuditLogRecord> {
+        require(limit in 1..500) { "Audit query limit must be between 1 and 500" }
+        val sql = """
+            SELECT actor_id, target_id, action, payload, created_at
+            FROM audit_log
+            WHERE target_id = ? AND created_at >= ?
+            ORDER BY created_at DESC, audit_id DESC
+            LIMIT ?
+        """.trimIndent()
+        return dataSource.connection.use { connection ->
+            connection.prepareStatement(sql).use { statement ->
+                statement.setObject(1, targetId)
+                statement.setTimestamp(2, Timestamp.from(since))
+                statement.setInt(3, limit)
+                statement.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            val payload = runCatching {
+                                mapper.readValue<Map<String, Any?>>(result.getString("payload"), object : TypeReference<Map<String, Any?>>() {})
+                            }.getOrDefault(emptyMap())
+                            add(
+                                AuditLogRecord(
+                                    actorId = result.getString("actor_id")?.let { runCatching { java.util.UUID.fromString(it) }.getOrNull() },
+                                    targetId = result.getString("target_id")?.let { runCatching { java.util.UUID.fromString(it) }.getOrNull() },
+                                    action = result.getString("action"),
+                                    payload = payload,
+                                    createdAt = result.getTimestamp("created_at").toInstant()
+                                )
+                            )
+                        }
+                    }
+                }
             }
         }
     }

@@ -24,7 +24,15 @@ class PaperCommandTreesTest {
 
         assertEquals(1, dispatcher.execute("plot merge north", source))
         assertEquals(1, dispatcher.execute("plot unlink true", source))
-        assertEquals(listOf("plot" to listOf("merge", "north"), "plot" to listOf("unlink", "true")), calls)
+        assertEquals(1, dispatcher.execute("plot gui", source))
+        assertEquals(
+            listOf(
+                "plot" to listOf("merge", "north"),
+                "plot" to listOf("unlink", "true"),
+                "plot" to listOf("gui")
+            ),
+            calls
+        )
         assertThrows(com.mojang.brigadier.exceptions.CommandSyntaxException::class.java) {
             dispatcher.execute("plot unlink yes", source)
         }

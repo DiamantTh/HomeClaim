@@ -53,6 +53,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     }
     private var bridge: PaperPlatformBridge? = null
     private var eventDispatcher: systems.diath.homeclaim.core.event.EventDispatcher? = null
+    private var plotMutationEventListener: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener? = null
     private var econService: systems.diath.homeclaim.core.economy.SimpleEconService? = null
     private var restServer: io.ktor.server.engine.ApplicationEngine? = null
     private var services: PlatformServices? = null
@@ -74,6 +75,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     internal val homeClaimConfig = HomeClaimTomlConfig(java.io.File("config/HomeClaim.toml"), this)
 
     fun bindServices(services: PlatformServices) {
+        // Some optional integrations resolve services through this runtime field while
+        // bindServices is still constructing listeners and commands.
+        this.services = services
         bridge = PaperPlatformBridge(this, services).also { it.registerListeners() }
         logger.info(i18n.msg("bridge.registered"))
         registerPlotMutationHooks(services)
@@ -86,8 +90,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             services.regionService,
             services.zoneService,
             services.componentService,
-            services.adminService,
-            services.roleService,
+            requireNotNull(services.adminService) { "Region administration service is required for the active GUI" },
+            requireNotNull(services.roleService) { "Region role service is required for the active GUI" },
             services.auditService
         ).also {
             server.pluginManager.registerEvents(it, this)
@@ -114,7 +118,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 maxOwnedRegions = homeClaimConfig.getInt("homeclaim.limits.maxPlotsPerPlayer", -1),
                 maxMergedRegions = homeClaimConfig.getInt("homeclaim.limits.maxMergedRegions", -1)
             ),
-            services.auditService
+            services.auditService,
+            worldAreaService = services.worldAreaService
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -204,9 +209,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     
     /**
      * Check if FastAsyncWorldEdit is installed.
-     * HomeClaim uses FAWE for fast block operations during plot world setup.
+     * FAWE is used only for converting an existing world to a plot world.
      * 
-     * @return true if FAWE is available, false otherwise (runs with limited features)
+     * @return true if FAWE is available
      */
     private fun checkFaweInstalled(): Boolean {
         val fawePlugin = server.pluginManager.getPlugin("FastAsyncWorldEdit")
@@ -312,7 +317,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             bindServices(services)
             
             // Register shutdown hooks
-            registerShutdownHooks(services)
+            registerShutdownHooks()
             
             // Run health check
             HealthCheckService.setDataSource(services.dataSource)
@@ -351,7 +356,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 services.regionService,
                 plotMutationService,
                 plotResetService
-            )
+            ).also { plotMutationEventListener = it }
         )
         server.pluginManager.registerEvents(
             systems.diath.homeclaim.platform.paper.plot.mutation.PlotJobWorldListener(
@@ -377,7 +382,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 jobsFile.writeText(json)
                 val snapshots = registry.snapshot()
                 if (snapshots.isNotEmpty()) {
-                    logger.info("Saved ${snapshots.size} active plot mutation jobs for recovery on reload")
+                    logger.info("Saved ${snapshots.size} active plot mutation job snapshot(s); unfinished jobs are not resumed automatically")
                 }
             }
         } catch (e: Exception) {
@@ -385,17 +390,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
     }
 
-    private fun registerShutdownHooks(services: PlatformServices) {
-        // Player cleanup first
-        ShutdownManager.registerHook("PlayerCleanup", priority = 10) {
-            PlayerCleanupManager.cleanupAll(server.onlinePlayers)
-        }
-        
-        // GUI cleanup
-        ShutdownManager.registerHook("GuiManager", priority = 20) {
-            guiManager?.closeAll()
-        }
-
+    private fun registerShutdownHooks() {
         // Cancel in-flight plot jobs before the rest server/data layer shuts down.
         ShutdownManager.registerHook("PlotJobs", priority = 30) {
             val diagnostics = plotMutationService.activeJobDiagnostics() + plotResetService.activeJobDiagnostics()
@@ -411,19 +406,27 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             restServer?.stop(500, 1000)
         }
 
-        services.auditService?.let { audit ->
-            if (audit is AutoCloseable) {
-                ShutdownManager.registerHook("AuditWriter", priority = 800) { audit.close() }
-            }
+        ShutdownManager.registerHook("AuditWriter", priority = 800) {
+            (services?.auditService as? AutoCloseable)?.close()
         }
         
-        // Database connection pool (last)
-        ShutdownManager.registerDataSource(services.dataSource)
+        // Database connection pool (last). Resolve at shutdown so a supported storage reload
+        // closes the currently active pool rather than only the first startup pool.
+        ShutdownManager.registerHook("DataSource", priority = 900) {
+            closeDataSource(services?.dataSource)
+        }
     }
 
     override fun onDisable() {
         // Save active plot mutation jobs before shutdown
         savePlotMutationJobs()
+
+        // These operations touch Bukkit players/inventories and must run on Paper's server thread.
+        if (org.bukkit.Bukkit.isPrimaryThread()) {
+            PlayerCleanupManager.cleanupAll(server.onlinePlayers)
+            guiManager?.closeAll()
+            plotResetService.shutdown()
+        }
         
         // Execute graceful shutdown with all registered hooks
         val result = ShutdownManager.shutdown()
@@ -437,6 +440,18 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         bridge = null
         restServer = null
         services = null
+    }
+
+    private fun closeDataSource(dataSource: DataSource?) {
+        when (dataSource) {
+            is com.zaxxer.hikari.HikariDataSource -> dataSource.close()
+            is java.io.Closeable -> dataSource.close()
+        }
+    }
+
+    private fun runOnServerThread(action: () -> Unit) {
+        if (org.bukkit.Bukkit.isPrimaryThread()) action()
+        else server.scheduler.runTask(this, Runnable(action))
     }
 
     internal fun dispatchPaperCommand(command: String, sender: CommandSender, args: List<String>): Int {
@@ -485,7 +500,16 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     sender.sendMessage(i18n.msg("storage.changed"))
                     restServer?.stop(500, 1000)
                     restServer = null
+                    guiManager?.closeAll()
+                    plotResetService.shutdown()
+                    plotMutationService.cancelPendingJobs()
                     HandlerList.unregisterAll(this)
+                    plotMutationEventListener?.let { eventDispatcher?.unregisterListener(it) }
+                    plotMutationEventListener = null
+                    plotMutationHooksRegistered = false
+                    val previousServices = services
+                    if (previousServices != null) closeRuntimeServices(previousServices)
+                    eventDispatcher = systems.diath.homeclaim.core.event.EventDispatcher()
                     services = null
                     bridge = null
                     storageType = newStorage.type
@@ -554,9 +578,14 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 } else {
                     systems.diath.homeclaim.platform.paper.command.BukkitCommandSenderAdapter(sender)
                 }
+                val activeServices = services
+                if (activeServices == null) {
+                    sender.sendMessage(i18n.msg("plugin.startup.warnings"))
+                    return true
+                }
                 val auditCmd = systems.diath.homeclaim.platform.paper.command.AuditCommand(
-                    services?.auditService,
-                    services!!.regionService,
+                    activeServices.auditReader,
+                    activeServices.regionService,
                     i18n
                 )
                 return auditCmd.execute(coreSender, args.drop(1).toTypedArray())
@@ -566,6 +595,13 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             }
         }
         return true
+    }
+
+    private fun closeRuntimeServices(services: PlatformServices) {
+        runCatching { (services.auditService as? AutoCloseable)?.close() }
+            .onFailure { logger.log(java.util.logging.Level.WARNING, "Could not close the previous audit writer", it) }
+        runCatching { closeDataSource(services.dataSource) }
+            .onFailure { logger.log(java.util.logging.Level.WARNING, "Could not close the previous database pool", it) }
     }
 
     private fun handleEntryForceCommand(sender: CommandSender, args: List<String>): Boolean {
@@ -697,9 +733,17 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 sender.sendMessage("§eInitializing plot regions for '$worldName'...")
                 val initializer = systems.diath.homeclaim.platform.paper.plot.PlotWorldInitializer(svc, this, services?.worldAreaService)
                 initializer.initializePlots(worldName, cfg).thenAccept { created ->
-                    sender.sendMessage("§a✓ Plot initialization finished for '$worldName' ($created new regions).")
+                    runOnServerThread {
+                        if (sender !is Player || sender.isOnline) {
+                            sender.sendMessage("§a✓ Plot initialization finished for '$worldName' ($created new regions).")
+                        }
+                    }
                 }.exceptionally { ex ->
-                    sender.sendMessage("§cPlot initialization failed for '$worldName': ${ex.message}")
+                    runOnServerThread {
+                        if (sender !is Player || sender.isOnline) {
+                            sender.sendMessage("§cPlot initialization failed for '$worldName': ${ex.message}")
+                        }
+                    }
                     null
                 }
                 return true
@@ -726,11 +770,13 @@ class HomeClaimPaperPlugin : JavaPlugin() {
 
             logger.info("Recovering plot regions for world '${world.name}' ($existing/$expected present)")
             initializer.initializePlots(world.name, cfg).thenAccept { created ->
-                if (created > 0) {
-                    logger.info("Recovered $created missing plot regions for world '${world.name}'")
+                runOnServerThread {
+                    if (created > 0) {
+                        logger.info("Recovered $created missing plot regions for world '${world.name}'")
+                    }
                 }
             }.exceptionally { ex ->
-                logger.warning("Failed to recover plot regions for '${world.name}': ${ex.message}")
+                runOnServerThread { logger.warning("Failed to recover plot regions for '${world.name}': ${ex.message}") }
                 null
             }
         }
@@ -763,8 +809,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             }
         }
         worldAreaRepo.warmRuntimeCache()
+        val auditReader = JdbcAuditService(dataSource)
         val auditService = BoundedAsyncAuditService(
-            sink = JdbcAuditService(dataSource),
+            sink = auditReader,
             onFailure = { message, error ->
                 if (error == null) logger.warning(message)
                 else logger.log(java.util.logging.Level.SEVERE, message, error)
@@ -808,7 +855,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             dataSource = dataSource,
             eventDispatcher = eventDispatcher,
             worldAreaService = worldAreaRepo,
-            roleService = roleRepository
+            roleService = roleRepository,
+            auditReader = auditReader
         )
     }
 

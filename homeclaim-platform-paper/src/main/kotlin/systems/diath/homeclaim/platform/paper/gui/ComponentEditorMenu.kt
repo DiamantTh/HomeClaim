@@ -99,8 +99,14 @@ class ComponentEditorMenu(
                     render(player)
                     player.sendMessage(i18n.msg("gui.component.mode", mode))
                 } else {
-                    // Regenerate LinkId
-                    linkId = UUID.randomUUID().toString()
+                    val existingLinkIds = componentService.listComponents(region.id)
+                        .asSequence()
+                        .filter { it.id != component.id && it.type == ComponentType.TELEPORT_PAD }
+                        .mapNotNull { (it.config as? TeleportConfig)?.linkId }
+                        .toList()
+                    val currentLinkId = linkId.takeIf { it.isNotBlank() }
+                        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    linkId = TeleportLinkIdCycler.next(currentLinkId, existingLinkIds).toString()
                     render(player)
                     player.sendMessage(i18n.msg("gui.component.link_new_id", linkId.take(12)))
                 }

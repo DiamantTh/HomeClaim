@@ -202,13 +202,13 @@ msgid "fawe.warning.line3"
 msgstr "╠════════════════════════════════════════════════════════════════╣"
 
 msgid "fawe.warning.line4"
-msgstr "HomeClaim is running without FAWE support."
+msgstr "FAWE is optional; existing-world conversion requires it."
 
 msgid "fawe.warning.line5"
-msgstr "Some block operations will use a limited fallback mode."
+msgstr "Claims, protection, and native plot resets still work."
 
 msgid "fawe.warning.line7"
-msgstr "For full functionality, install FAWE:"
+msgstr "Install FAWE for existing-world conversion:"
 
 msgid "fawe.warning.line8"
 msgstr "https://hangar.papermc.io/IntellectualSites/FAWE"
@@ -688,7 +688,7 @@ msgid "health.fawe.ok"
 msgstr "  §a✓ FAWE: {0}"
 
 msgid "health.fawe.missing"
-msgstr "  §e⚠ FAWE: Not installed (world conversion uses limited/fallback mode)"
+msgstr "  §e⚠ FAWE: Not installed (existing-world conversion is unavailable)"
 
 msgid "health.plotsquared.ok"
 msgstr "  §a✓ PlotSquared: {0}"

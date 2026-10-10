@@ -11,19 +11,18 @@ internal object PlotMutationExecutor {
      */
     fun apply(world: World, batch: MutationBatch) {
         // Pre-cache all unique materials to avoid repeated lookups
-        val materialCache = mutableMapOf<String, Material?>()
+        val materialCache = mutableMapOf<String, Material>()
         
         for (operation in batch.operations) {
             val material = materialCache.getOrPut(operation.blockStateId) {
-                Material.matchMaterial(operation.blockStateId)
+                resolveMaterial(operation.blockStateId, batch.id, operation.x, operation.y, operation.z)
             }
             
-            if (material != null) {
-                world.getBlockAt(operation.x, operation.y, operation.z).setType(material, false)
-            } else {
-                // Silent ignore unknown material; batch continues
-                // (Could log on first occurrence of unknown material)
-            }
+            world.getBlockAt(operation.x, operation.y, operation.z).setType(material, false)
         }
     }
+
+    internal fun resolveMaterial(stateId: String, batchId: String, x: Int, y: Int, z: Int): Material =
+        Material.matchMaterial(stateId)
+            ?: throw IllegalArgumentException("Unknown block state '$stateId' in mutation batch '$batchId' at $x,$y,$z")
 }

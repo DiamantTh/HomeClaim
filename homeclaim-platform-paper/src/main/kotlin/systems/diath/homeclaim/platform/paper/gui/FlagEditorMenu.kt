@@ -14,7 +14,7 @@ class FlagEditorMenu(
     private var region: Region,
     private val regionService: RegionService,
     private val guiManager: GuiManager,
-    private val adminService: RegionAdminService? = null
+    private val adminService: RegionAdminService
 ) : GuiMenu(systems.diath.homeclaim.platform.paper.I18n().msg("gui.flag.title"), rows = 4) {
     
     /** Reload region from service to get fresh data after mutations */
@@ -59,12 +59,7 @@ class FlagEditorMenu(
                     val (flag, name) = flags[index]
                     val currentValue = region.flags[flag] as? PolicyValue.Bool
                     val newValue = PolicyValue.Bool(!(currentValue?.allowed ?: false))
-                    if (adminService != null) {
-                        adminService.upsertFlag(region.id, flag, newValue)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        regionService.updateRegion(region.copy(flags = region.flags + (flag to newValue)))
-                    }
+                    adminService.upsertFlag(region.id, flag, newValue)
                     refreshRegion()
                     val state = if (newValue.allowed) i18n.msg("gui.flag.enabled") else i18n.msg("gui.flag.disabled")
                     player.sendMessage(i18n.msg("gui.flag.changed", name, state))

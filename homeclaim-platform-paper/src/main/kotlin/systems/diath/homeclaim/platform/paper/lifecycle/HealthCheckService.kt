@@ -120,7 +120,7 @@ object HealthCheckService {
         val server = plugin?.server
         val fawe = server?.pluginManager?.getPlugin("FastAsyncWorldEdit")
         if (fawe == null || !fawe.isEnabled) {
-            warnings.add("FastAsyncWorldEdit not found - plot world conversion will run with limited performance")
+            warnings.add("FastAsyncWorldEdit not found - converting an existing world to a plot world is unavailable")
             log?.warning(i18n.msg("health.fawe.missing"))
         } else {
             log?.info(i18n.msg("health.fawe.ok", fawe.description.version))

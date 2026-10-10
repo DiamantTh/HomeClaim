@@ -23,8 +23,8 @@ class GuiManager(
     val regionService: RegionService,
     val zoneService: ZoneService,
     val componentService: ComponentService,
-    val adminService: RegionAdminService? = null,
-    val roleService: RoleService? = null,
+    val adminService: RegionAdminService,
+    val roleService: RoleService,
     val auditService: AuditService? = null
 ) : Listener {
     private val activeMenus = ConcurrentHashMap<Player, GuiMenu>()

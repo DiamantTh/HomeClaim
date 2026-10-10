@@ -3,12 +3,9 @@ package systems.diath.homeclaim.platform.paper.command
 import systems.diath.homeclaim.core.command.AbstractCommand
 import systems.diath.homeclaim.core.command.CommandSender
 import systems.diath.homeclaim.core.command.PlayerCommandSender
-import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.service.AuditAction
-import systems.diath.homeclaim.core.service.AuditEntry
-import systems.diath.homeclaim.core.service.AuditService
-import systems.diath.homeclaim.core.service.AuditTaxonomy
+import systems.diath.homeclaim.core.service.AuditReader
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.platform.paper.I18n
 import org.bukkit.Bukkit
@@ -31,7 +28,7 @@ import java.util.UUID
  * /homeclaim audit abc123-def4-5678-90ab 6      # Specific plot, last 6 hours
  */
 class AuditCommand(
-    private val auditService: AuditService?,
+    private val auditReader: AuditReader?,
     private val regionService: RegionService,
     i18nImpl: I18n
 ) : AbstractCommand(
@@ -44,7 +41,7 @@ class AuditCommand(
 ) {
     
     override fun onExecute(sender: CommandSender, args: Array<String>): Boolean {
-        if (auditService == null) {
+        if (auditReader == null) {
             sender.sendMessage(i18n.msg("audit.service.not.configured"))
             return true
         }
@@ -82,10 +79,19 @@ class AuditCommand(
         }
         
         // Parse hours filter
-        val hoursBack = args.getOrNull(1)?.toIntOrNull() ?: 24
+        val parsedHours = args.getOrNull(1)?.toIntOrNull() ?: 24
+        if (parsedHours !in 1..(24 * 365)) {
+            sender.sendMessage("§cHours must be between 1 and 8760.")
+            return true
+        }
+        val hoursBack = parsedHours
         
         // Get entries for this region
-        val entries = getAuditEntriesForRegion(auditService, regionId, hoursBack)
+        val entries = auditReader.findForTarget(
+            regionId.value,
+            Instant.now().minus(hoursBack.toLong(), ChronoUnit.HOURS),
+            limit = 50
+        )
         
         if (entries.isEmpty()) {
             sender.sendMessage(i18n.msg("audit.no.logs.found", arrayOf(regionId.toString())))
@@ -148,22 +154,6 @@ class AuditCommand(
         sender.sendMessage(i18n.msg("audit.summary", arrayOf(entries.size.coerceAtMost(50).toString(), entries.size.toString())))
         
         return true
-    }
-    
-    private fun getAuditEntriesForRegion(@Suppress("UNUSED_PARAMETER") auditService: AuditService, @Suppress("UNUSED_PARAMETER") regionId: RegionId, @Suppress("UNUSED_PARAMETER") hoursBack: Int): List<AuditEntry> {
-        // TODO: Implement JDBC query method with region filter
-        // For now, returning empty list as JDBC implementation is needed
-        return emptyList()
-    }
-    
-    private fun isPositionInRegion(entry: AuditEntry, regionId: RegionId): Boolean {
-        val world = entry.payload["world"] as? String ?: return false
-        val x = entry.payload["x"] as? Int ?: return false
-        val y = entry.payload["y"] as? Int ?: return false
-        val z = entry.payload["z"] as? Int ?: return false
-        
-        val foundRegionId = regionService.getRegionAt(world, x, y, z)
-        return foundRegionId == regionId
     }
     
     private fun formatTime(instant: Instant): String {

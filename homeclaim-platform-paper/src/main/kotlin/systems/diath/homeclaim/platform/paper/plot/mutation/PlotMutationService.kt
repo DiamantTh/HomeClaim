@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.model.Region
+import java.util.concurrent.CompletableFuture
 
 /**
  * Platform-specific world mutation hook for plot lifecycle changes.
@@ -21,8 +22,13 @@ interface PlotMutationService {
         regions.forEach { applyRegionState(it, reason) }
     }
 
-    fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean = true, reason: MutationReason = MutationReason.UNCLAIM) {
+    fun handleRegionsUnlinked(
+        regions: Collection<Region>,
+        createRoads: Boolean = true,
+        reason: MutationReason = MutationReason.UNCLAIM
+    ): CompletableFuture<Unit> {
         regions.forEach { applyRegionState(it, reason) }
+        return CompletableFuture.completedFuture(Unit)
     }
 
     fun cancelPendingJobs(worldName: String? = null): Int = 0

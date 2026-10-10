@@ -723,9 +723,8 @@ class PlotRestServer(
                 route("/admin") {
                     get("/stats") {
                         if (!auth.check(call)) return@get
-                        // TODO: Aggregate stats from services
                         call.respond(ServerStats(
-                            uptime = System.currentTimeMillis(), // placeholder
+                            uptime = ApiLogRegistry.getMetrics().uptime,
                             apiVersion = "1.0.0",
                             storageType = healthInfo?.storage ?: "unknown"
                         ))

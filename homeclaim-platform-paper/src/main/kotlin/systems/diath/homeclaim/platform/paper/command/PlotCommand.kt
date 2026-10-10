@@ -2,11 +2,13 @@ package systems.diath.homeclaim.platform.paper.command
 
 import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
+import org.bukkit.World
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.OperationStatus
 import systems.diath.homeclaim.core.service.AreaService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditStatus
@@ -19,6 +21,8 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.store.RatingRepository
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
+import systems.diath.homeclaim.platform.paper.gui.RegionListMenu
+import systems.diath.homeclaim.platform.paper.PaperWorldAreaResolver
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import systems.diath.homeclaim.platform.paper.util.InputValidator
 import systems.diath.homeclaim.platform.paper.util.Permissions
@@ -26,6 +30,7 @@ import systems.diath.homeclaim.platform.paper.I18n
 import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotMutationService
 import systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
 import systems.diath.homeclaim.core.mutation.WorldMutationBackend
@@ -58,7 +63,8 @@ class PlotCommand(
     private val mutationBackend: WorldMutationBackend? = null,
     private val areaService: AreaService? = null,
     private val operationLimits: RegionOperationLimitService = RegionOperationLimitService(regionService),
-    private val auditService: AuditService? = null
+    private val auditService: AuditService? = null,
+    private val worldAreaService: WorldAreaService? = null
 ) {
     /** Compatibility adapter for older in-process callers; Paper uses the lifecycle Brigadier tree. */
     @Deprecated("Paper commands are routed through the lifecycle command tree")
@@ -101,6 +107,10 @@ class PlotCommand(
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_LIST)) return true
                 handleList(sender)
             }
+            "gui", "menu" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_LIST)) return true
+                guiManager.openMenu(sender, RegionListMenu(regionService, guiManager))
+            }
             "visit", "v" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_VISIT)) return true
                 handleVisit(sender, args.getOrNull(1))
@@ -137,7 +147,7 @@ class PlotCommand(
     
     private fun handleClaim(player: Player) {
         val loc = player.location
-        val regionId = regionAt(loc.world.name, loc.blockX, loc.blockY, loc.blockZ)
+        val regionId = regionAt(loc.world, loc.blockX, loc.blockY, loc.blockZ)
         
         if (regionId == null) {
             player.sendMessage(i18n.msg("plot.not_on_plot"))
@@ -198,20 +208,33 @@ class PlotCommand(
             return
         }
 
-        val worldName = player.world.name
+        val location = player.location
+        val area = resolveArea(player.world, location.blockX, location.blockY, location.blockZ)
+        val areaId = area?.id ?: if (areaService == null && worldAreaService == null) {
+            systems.diath.homeclaim.core.model.AreaId.legacyDefault(
+                systems.diath.homeclaim.core.model.WorldId.fromLegacyName(player.world.name)
+            )
+        } else {
+            null
+        }
+        if (areaId == null) {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+
         val nextPlot = regionService.listAllRegions()
             .asSequence()
-            .filter { it.world == worldName && it.owner == UNCLAIMED_UUID }
+            .filter { it.areaId == areaId && it.owner == UNCLAIMED_UUID }
             .minByOrNull { region ->
                 val centerX = (region.bounds.minX + region.bounds.maxX) / 2.0
                 val centerZ = (region.bounds.minZ + region.bounds.maxZ) / 2.0
-                val dx = player.location.x - centerX
-                val dz = player.location.z - centerZ
+                val dx = location.x - centerX
+                val dz = location.z - centerZ
                 (dx * dx) + (dz * dz)
             }
 
         if (nextPlot == null) {
-            player.sendMessage("§cNo unclaimed plot was found in this world.")
+            player.sendMessage("§cNo unclaimed plot was found in this HomeClaim area.")
             return
         }
 
@@ -241,7 +264,7 @@ class PlotCommand(
         }
         
         val firstPlot = plots.first()
-        val world = org.bukkit.Bukkit.getWorld(firstPlot.world)
+        val world = resolvePaperWorld(firstPlot)
         if (world == null) {
             player.sendMessage(i18n.msg("plot.world_not_found"))
             return
@@ -262,7 +285,7 @@ class PlotCommand(
     
     private fun handleInfo(player: Player) {
         val loc = player.location
-        val regionId = regionAt(loc.world.name, loc.blockX, loc.blockY, loc.blockZ)
+        val regionId = regionAt(loc.world, loc.blockX, loc.blockY, loc.blockZ)
         
         if (regionId == null) {
             player.sendMessage(i18n.msg("plot.not_on_plot"))
@@ -320,7 +343,7 @@ class PlotCommand(
         
         player.sendMessage(i18n.msg("plot.info_header"))
         player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString()))
-        player.sendMessage(i18n.msg("plot.info_world", region.world))
+        player.sendMessage(i18n.msg("plot.info_world", homeClaimWorldName(region) ?: region.world))
         player.sendMessage(i18n.msg("plot.info_size", width, depth))
         player.sendMessage(i18n.msg("plot.info_biome", biome))
         val aliasText = region.metadata["alias"] ?: noneText
@@ -356,8 +379,9 @@ class PlotCommand(
         
         player.sendMessage(i18n.msg("plot.list_header", plots.size))
         plots.forEachIndexed { index, region ->
-            val world = org.bukkit.Bukkit.getWorld(region.world)
-            val worldName = world?.name ?: i18n.msg("plot.list_unknown_world")
+            val worldName = homeClaimWorldName(region)
+                ?: org.bukkit.Bukkit.getWorld(region.world)?.name
+                ?: i18n.msg("plot.list_unknown_world")
             val centerX = (region.bounds.minX + region.bounds.maxX) / 2
             val centerZ = (region.bounds.minZ + region.bounds.maxZ) / 2
             player.sendMessage(i18n.msg("plot.list_entry", index + 1, region.id.value, worldName, centerX, centerZ))
@@ -393,7 +417,7 @@ class PlotCommand(
         }
         
         val firstPlot = plots.first()
-        val world = org.bukkit.Bukkit.getWorld(firstPlot.world)
+        val world = resolvePaperWorld(firstPlot)
         if (world == null) {
             player.sendMessage(i18n.msg("plot.visit_world_not_found"))
             return
@@ -431,7 +455,7 @@ class PlotCommand(
         }
 
         val sameOwnerRegions = regionService.listRegionsByOwner(region.owner)
-            .filter { it.world == region.world && it.id != region.id }
+            .filter { it.areaId == region.areaId && it.id != region.id }
         val selected = collectMergeTargets(region, sameOwnerRegions, direction)
         if (selected.isEmpty()) {
             player.sendMessage(i18n.msg("plot.merge_no_adjacent"))
@@ -504,7 +528,7 @@ class PlotCommand(
         }
 
         val groupedRegions = regionService.listAllRegions()
-            .filter { it.world == region.world && it.mergeGroupId == mergeGroupId }
+            .filter { it.areaId == region.areaId && it.mergeGroupId == mergeGroupId }
         if (groupedRegions.size <= 1) {
             player.sendMessage(i18n.msg("plot.unlink_not_merged"))
             return
@@ -519,20 +543,44 @@ class PlotCommand(
         )
         auditOperation(request, AuditStatus.ATTEMPTED, targetCount = groupedRegions.size)
         auditOperation(request, AuditStatus.ALLOWED, targetCount = groupedRegions.size)
-        runCatching {
-            val updatedRegions = groupedRegions.map { grouped ->
-                val updated = grouped.copy(mergeGroupId = null)
-                regionService.updateRegion(updated)
-                updated
+        val originalRegions = groupedRegions.toList()
+        val updatedRegions = originalRegions.map { it.copy(mergeGroupId = null) }
+        try {
+            updatedRegions.forEach(regionService::updateRegion)
+        } catch (error: Throwable) {
+            val rollbackError = runCatching { originalRegions.forEach(regionService::updateRegion) }.exceptionOrNull()
+            val detail = buildString {
+                append(error.message ?: "Unlink persistence failed")
+                if (rollbackError != null) append("; persistence rollback failed: ${rollbackError.message}")
             }
+            auditOperation(request, if (rollbackError == null) AuditStatus.ROLLED_BACK else AuditStatus.FAILED, detail, groupedRegions.size)
+            player.sendMessage("§cPlot unlink failed: $detail")
+            return
+        }
+
+        val mutation = try {
             plotMutationService.handleRegionsUnlinked(updatedRegions, createRoads)
-            updatedRegions
-        }.onSuccess { updatedRegions ->
-            auditOperation(request, AuditStatus.COMPLETED, targetCount = updatedRegions.size)
-            player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
-        }.onFailure { error ->
-            auditOperation(request, AuditStatus.FAILED, error.message ?: "Unlink failed", groupedRegions.size)
-            player.sendMessage("§cPlot unlink failed: ${error.message ?: "unknown error"}")
+        } catch (error: Throwable) {
+            java.util.concurrent.CompletableFuture.failedFuture(error)
+        }
+        mutation.whenComplete { _, mutationError ->
+            if (mutationError == null) {
+                auditOperation(request, AuditStatus.COMPLETED, targetCount = updatedRegions.size)
+                player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
+            } else {
+                val cause = mutationError.cause ?: mutationError
+                val rollbackError = runCatching { originalRegions.forEach(regionService::updateRegion) }.exceptionOrNull()
+                // Repaint the previous merged state as a best-effort compensation. A partial
+                // world edit remains a visible operational failure if either step fails.
+                runCatching { plotMutationService.handleRegionsMerged(originalRegions) }
+                val detail = buildString {
+                    append(cause.message ?: "Unlink world mutation failed")
+                    if (rollbackError != null) append("; persistence rollback failed: ${rollbackError.message}")
+                    else append("; persisted merge state restored; world compensation was requested")
+                }
+                auditOperation(request, AuditStatus.FAILED, detail, groupedRegions.size)
+                player.sendMessage("§cPlot unlink failed: $detail")
+            }
         }
     }
 
@@ -553,7 +601,24 @@ class PlotCommand(
         val request = operationRequest(player, HomeClaimOperationActions.REGION_RESET, region, "plot-reset")
         auditOperation(request, AuditStatus.ATTEMPTED)
         val queued = runCatching {
-            plotResetService.queueReset(region, PlotResetReason.MANUAL)
+            plotResetService.queueReset(region, PlotResetReason.MANUAL) { completion ->
+                when (completion.status) {
+                    PlotResetCompletionStatus.COMPLETED -> {
+                        auditOperation(request, AuditStatus.COMPLETED)
+                        if (player.isOnline) player.sendMessage("§aPlot reset completed.")
+                    }
+                    PlotResetCompletionStatus.FAILED, PlotResetCompletionStatus.CANCELLED -> {
+                        val state = if (completion.partialMutation) {
+                            "partial world changes may remain; retry the reset or inspect the plot"
+                        } else {
+                            "no completed reset batches were recorded"
+                        }
+                        val detail = "${completion.status}: ${completion.error ?: "unknown reset result"}; $state"
+                        auditOperation(request, AuditStatus.FAILED, detail)
+                        if (player.isOnline) player.sendMessage("§cPlot reset ${completion.status.name.lowercase()}: $state")
+                    }
+                }
+            }
         }.getOrElse {
             auditOperation(request, AuditStatus.FAILED, it.message ?: "Reset queue failed")
             player.sendMessage("§cPlot reset failed: ${it.message ?: "unknown error"}")
@@ -703,16 +768,38 @@ class PlotCommand(
 
     private fun currentRegion(player: Player): Region? {
         val loc = player.location
-        val regionId = regionAt(loc.world.name, loc.blockX, loc.blockY, loc.blockZ) ?: return null
+        val regionId = regionAt(loc.world, loc.blockX, loc.blockY, loc.blockZ) ?: return null
         return regionService.getRegionById(regionId)
     }
 
-    private fun regionAt(worldName: String, x: Int, y: Int, z: Int): RegionId? {
-        val area = areaService?.resolveArea(worldName, x, y, z)
+    private fun regionAt(world: World, x: Int, y: Int, z: Int): RegionId? {
+        val area = resolveArea(world, x, y, z)
         return if (area != null) regionService.getRegionAt2D(area.id, x, z)
-        else if (areaService == null) regionService.getRegionAt2D(
-            systems.diath.homeclaim.core.model.WorldId.fromLegacyName(worldName), x, z
+        else if (areaService == null && worldAreaService == null) regionService.getRegionAt2D(
+            systems.diath.homeclaim.core.model.WorldId.fromLegacyName(world.name), x, z
         ) else null
+    }
+
+    private fun resolveArea(world: World, x: Int, y: Int, z: Int): systems.diath.homeclaim.core.model.Area? {
+        worldAreaService?.let { service ->
+            return PaperWorldAreaResolver.resolveArea(service, world.uid, world.name, x, y, z)
+        }
+        return areaService?.resolveArea(world.name, x, y, z)
+    }
+
+    private fun resolvePaperWorld(region: Region): World? {
+        val service = worldAreaService ?: return org.bukkit.Bukkit.getWorld(region.world)
+        val area = service.getArea(region.areaId) ?: return org.bukkit.Bukkit.getWorld(region.world)
+        val homeWorld = service.getWorld(area.worldId) ?: return org.bukkit.Bukkit.getWorld(region.world)
+        val platformId = homeWorld.platformWorldId
+        if (platformId != null) return org.bukkit.Bukkit.getWorld(platformId)
+        return org.bukkit.Bukkit.getWorld(homeWorld.name) ?: org.bukkit.Bukkit.getWorld(region.world)
+    }
+
+    private fun homeClaimWorldName(region: Region): String? {
+        val service = worldAreaService ?: return null
+        val area = service.getArea(region.areaId) ?: return null
+        return service.getWorld(area.worldId)?.name
     }
 
     private fun teleportWithFeedback(player: Player, location: org.bukkit.Location, successMessage: String, failureMessage: String) {
@@ -802,6 +889,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_home"))
         player.sendMessage(i18n.msg("plot.help_info"))
         player.sendMessage(i18n.msg("plot.help_list"))
+        player.sendMessage("§7/plot gui - Manage your plots in the GUI")
         player.sendMessage(i18n.msg("plot.help_visit"))
         player.sendMessage(i18n.msg("plot.help_merge"))
         player.sendMessage(i18n.msg("plot.help_unlink"))
@@ -855,7 +943,7 @@ class PlotCommand(
 
     fun suggestions(sender: CommandSender, args: Array<out String>): List<String> {
         if (args.size == 1) {
-            return listOf("claim", "auto", "home", "info", "list", "visit", "merge", "unlink", "reset", "jobs", "alias", "desc")
+            return listOf("claim", "auto", "home", "info", "list", "gui", "menu", "visit", "merge", "unlink", "reset", "jobs", "alias", "desc")
                 .filter { it.startsWith(args[0].lowercase()) }
         }
         if (args.size == 2 && args[0].lowercase() == "visit") {

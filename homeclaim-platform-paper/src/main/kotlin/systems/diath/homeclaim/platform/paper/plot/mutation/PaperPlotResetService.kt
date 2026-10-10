@@ -11,6 +11,8 @@ import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
 import systems.diath.homeclaim.platform.paper.plot.sanitized
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Paper-only first cut for heavier plot resets.
@@ -24,6 +26,15 @@ class PaperPlotResetService(
     private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend()
 ) : PlotResetService {
     private val queueRegistry = PlotJobRegistry()
+    private val activeResets = ConcurrentHashMap<String, () -> Unit>()
+
+    override fun shutdown() {
+        activeResets.values.toList().forEach { cancel ->
+            runCatching(cancel).onFailure { error ->
+                plugin.logger.log(java.util.logging.Level.SEVERE, "Could not finish a reset during shutdown", error)
+            }
+        }
+    }
 
     override fun cancelPendingJobs(worldName: String?): Int {
         return queueRegistry.requestCancelAll(world = worldName, kind = PlotJobRegistry.JobKind.RESET)
@@ -53,6 +64,14 @@ class PaperPlotResetService(
     }
 
     override fun queueReset(region: Region, reason: PlotResetReason): Boolean {
+        return queueReset(region, reason) { }
+    }
+
+    override fun queueReset(
+        region: Region,
+        reason: PlotResetReason,
+        onComplete: (PlotResetCompletion) -> Unit
+    ): Boolean {
         val world = Bukkit.getWorld(region.world) ?: return false
         val config = configStore.loadConfig(region.world)?.sanitized() ?: return false
         if (reason == PlotResetReason.DELETE && !config.resetOnDelete) return false
@@ -77,6 +96,26 @@ class PaperPlotResetService(
             jobHandle.close()
             return false
         }
+        val totalColumns = columns.size
+        var completedColumns = 0
+        var mutationAttempted = false
+        val completionSent = AtomicBoolean(false)
+        var scheduledTask: BukkitTask? = null
+        fun finish(status: PlotResetCompletionStatus, error: String? = null) {
+            if (!completionSent.compareAndSet(false, true)) return
+            scheduledTask?.cancel()
+            jobHandle.close()
+            activeResets.remove(jobKey)
+            val result = PlotResetCompletion(
+                status = status,
+                completedColumns = completedColumns,
+                partialMutation = mutationAttempted && (status != PlotResetCompletionStatus.COMPLETED || completedColumns < totalColumns),
+                error = error
+            )
+            runCatching { onComplete(result) }.onFailure { callbackError ->
+                plugin.logger.log(java.util.logging.Level.SEVERE, "Reset completion callback failed for ${region.id.value}", callbackError)
+            }
+        }
 
         val generator = PlotWorldChunkGenerator(config)
         val minY = config.minGenHeight ?: region.bounds.minY
@@ -84,12 +123,10 @@ class PaperPlotResetService(
         val clearUntil = region.bounds.maxY
         val columnsPerTick = config.resetBatchColumnsPerTick.coerceAtLeast(1)
 
-        var scheduledTask: BukkitTask? = null
         return runCatching {
             scheduledTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
                 if (jobHandle.isCancellationRequested(config.jobTimeoutMillis)) {
-                    scheduledTask?.cancel()
-                    jobHandle.close()
+                    finish(PlotResetCompletionStatus.CANCELLED, "Reset cancelled after $completedColumns of $totalColumns columns")
                     return@Runnable
                 }
                 runCatching {
@@ -109,18 +146,24 @@ class PaperPlotResetService(
                             topY = topY,
                             clearUntil = clearUntil
                         )
+                        mutationAttempted = true
                         mutationBackend.submit(batch)
+                        completedColumns += batchColumns.size
                     }
                     if (columns.isEmpty()) {
-                        scheduledTask?.cancel()
-                        jobHandle.close()
+                        finish(PlotResetCompletionStatus.COMPLETED)
                     }
                 }.onFailure { error ->
-                    scheduledTask?.cancel()
-                    jobHandle.close()
                     plugin.logger.warning("Paper plot reset failed for ${region.id.value}: ${error.message}")
+                    finish(
+                        PlotResetCompletionStatus.FAILED,
+                        "${error.message ?: error::class.simpleName ?: "mutation failed"}; $completedColumns of $totalColumns columns completed"
+                    )
                 }
             }, 1L, 1L)
+            activeResets[jobKey] = {
+                finish(PlotResetCompletionStatus.CANCELLED, "Reset cancelled by plugin shutdown after $completedColumns of $totalColumns columns")
+            }
 
             plugin.logger.info("Queued plot reset for ${region.id.value} (${reason.name.lowercase()})")
             true

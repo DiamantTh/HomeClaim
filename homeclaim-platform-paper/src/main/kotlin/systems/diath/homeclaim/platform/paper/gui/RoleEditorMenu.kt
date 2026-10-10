@@ -24,7 +24,7 @@ class RoleEditorMenu(
     private var region: Region,
     private val regionService: RegionService,
     private val guiManager: GuiManager,
-    private val roleService: RoleService? = null,
+    private val roleService: RoleService,
     private val auditService: AuditService? = null
 ) : GuiMenu(systems.diath.homeclaim.platform.paper.I18n().msg("gui.role.title"), rows = 6) {
     
@@ -83,18 +83,7 @@ class RoleEditorMenu(
                 }
                 if (slot < players.size) {
                     val playerId = players[slot]
-                    val updated = when (role) {
-                        RegionRole.TRUSTED -> region.copy(roles = region.roles.copy(trusted = region.roles.trusted - playerId))
-                        RegionRole.MEMBER -> region.copy(roles = region.roles.copy(members = region.roles.members - playerId))
-                        RegionRole.BANNED -> region.copy(roles = region.roles.copy(banned = region.roles.banned - playerId))
-                        else -> region
-                    }
-                    if (roleService != null) {
-                        roleService.removeRole(region.id, playerId, role)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        regionService.updateRegion(updated)
-                    }
+                    roleService.removeRole(region.id, playerId, role)
                     val request = ActionRequest(
                         actor = ActionActor.Player(player.uniqueId),
                         actionKey = HomeClaimOperationActions.ROLE_CHANGE,

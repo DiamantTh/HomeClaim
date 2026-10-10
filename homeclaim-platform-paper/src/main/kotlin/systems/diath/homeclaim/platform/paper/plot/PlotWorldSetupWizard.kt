@@ -15,7 +15,7 @@ import java.util.UUID
 enum class SetupMode {
     /** Create a new world with custom generator (default, like PlotSquared) */
     NEW_WORLD,
-    /** Convert an existing world's region to plots (requires FAWE or uses slow fallback) */
+    /** Convert an existing world's region to plots (requires the optional FAWE integration). */
     CONVERT_EXISTING
 }
 
@@ -222,30 +222,35 @@ class PlotWorldSetupWizard(
             progressCallback = { progress ->
                 val percent = (progress * 100).toInt()
                 if (percent % 10 == 0) {
-                    player.sendMessage(i18n.msg("setup.convert_progress", percent))
+                    sendOnServerThread(player, i18n.msg("setup.convert_progress", percent))
                 }
             }
         ).thenAccept { blockCount ->
-            val duration = (System.currentTimeMillis() - startTime) / 1000.0
-            player.sendMessage(i18n.msg("setup.convert_complete"))
-            player.sendMessage(i18n.msg("setup.convert_blocks_set", blockCount))
-            player.sendMessage(i18n.msg("setup.convert_duration", String.format("%.1f", duration)))
-            
-            // Save config
             configStore.persistConfig(cfg)
-            
-            // Set world border
-            if (cfg.plotsPerSide > 0) {
-                val size = (cfg.gridSize() * cfg.plotsPerSide).toDouble()
-                val center = cfg.plotAreaCenterCoordinate()
-                world.worldBorder.center = org.bukkit.Location(world, center, 0.0, center)
-                world.worldBorder.size = size
+
+            runOnServerThread {
+                val duration = (System.currentTimeMillis() - startTime) / 1000.0
+                if (player.isOnline) {
+                    player.sendMessage(i18n.msg("setup.convert_complete"))
+                    player.sendMessage(i18n.msg("setup.convert_blocks_set", blockCount))
+                    player.sendMessage(i18n.msg("setup.convert_duration", String.format("%.1f", duration)))
+                }
+
+                // Paper world state and setup sessions are owned by the server thread.
+                if (cfg.plotsPerSide > 0) {
+                    val size = (cfg.gridSize() * cfg.plotsPerSide).toDouble()
+                    val center = cfg.plotAreaCenterCoordinate()
+                    world.worldBorder.center = org.bukkit.Location(world, center, 0.0, center)
+                    world.worldBorder.size = size
+                }
+
+                sessions.remove(player.uniqueId)
             }
-            
-            sessions.remove(player.uniqueId)
         }.exceptionally { ex ->
-            player.sendMessage(i18n.msg("setup.convert_failed", ex.message ?: "Unknown error"))
-            sessions.remove(player.uniqueId)
+            runOnServerThread {
+                if (player.isOnline) player.sendMessage(i18n.msg("setup.convert_failed", ex.message ?: "Unknown error"))
+                sessions.remove(player.uniqueId)
+            }
             null
         }
     }
@@ -270,15 +275,37 @@ class PlotWorldSetupWizard(
         initializer.initializePlots(world, cfg) { progress ->
             val percent = (progress * 100).toInt()
             if (percent % 20 == 0 && percent > 0) {
-                player.sendMessage("§7Progress: ${percent}%")
+                sendOnServerThread(player, "§7Progress: ${percent}%")
             }
         }.thenAccept { count ->
-            player.sendMessage("§a✓ Initialized $count plots!")
-            player.sendMessage("§7You can now use §e/plot claim §7to claim plots")
+            runOnServerThread {
+                if (player.isOnline) {
+                    player.sendMessage("§a✓ Initialized $count plots!")
+                    player.sendMessage("§7You can now use §e/plot claim §7to claim plots")
+                }
+            }
         }.exceptionally { ex ->
-            player.sendMessage("§cFailed to initialize plots: ${ex.message}")
-            player.sendMessage("§eRun /homeclaim plot init ${cfg.worldName} to retry")
+            runOnServerThread {
+                if (player.isOnline) {
+                    player.sendMessage("§cFailed to initialize plots: ${ex.message}")
+                    player.sendMessage("§eRun /homeclaim plot init ${cfg.worldName} to retry")
+                }
+            }
             null
+        }
+    }
+
+    private fun sendOnServerThread(player: Player, message: String) {
+        runOnServerThread {
+            if (player.isOnline) player.sendMessage(message)
+        }
+    }
+
+    private fun runOnServerThread(action: () -> Unit) {
+        if (Bukkit.isPrimaryThread()) {
+            action()
+        } else {
+            Bukkit.getScheduler().runTask(plugin, Runnable(action))
         }
     }
 

@@ -20,8 +20,8 @@ internal class PaperSynchronousWorldMutationBackend(
     override fun capabilities(): MutationCapabilities {
         return MutationCapabilities(
             supportsAsyncApply = false,
-            supportsChunkBatching = true,
-            supportsUndo = true  // Sync execution allows undo-stack
+            supportsChunkBatching = false,
+            supportsUndo = false
         )
     }
 

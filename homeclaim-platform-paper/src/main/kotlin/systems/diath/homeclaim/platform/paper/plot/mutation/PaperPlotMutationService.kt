@@ -10,6 +10,7 @@ import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
+import java.util.concurrent.CompletableFuture
 
 /**
  * Initial Paper-first implementation.
@@ -98,33 +99,64 @@ class PaperPlotMutationService(
                 fillMaterial = config.plotBlock,
                 capMaterial = config.plotBlock
             )
-                repaintCorridors(world, regions.toList(), config, mergedFillStyle, maxGap, reason) { first, second ->
-                first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId
-            }
+                repaintCorridors(
+                    world, regions.toList(), config, mergedFillStyle, maxGap, reason,
+                    predicate = { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId }
+                )
         })
     }
 
-    override fun handleRegionsUnlinked(regions: Collection<Region>, createRoads: Boolean, reason: MutationReason) {
-        if (regions.isEmpty()) return
+    override fun handleRegionsUnlinked(
+        regions: Collection<Region>,
+        createRoads: Boolean,
+        reason: MutationReason
+    ): CompletableFuture<Unit> {
+        if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
         val worldName = regions.first().world
-        val world = Bukkit.getWorld(worldName) ?: return
-        val config = configStore.loadConfig(worldName) ?: return
+        val world = Bukkit.getWorld(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for unlink mutation: $worldName"))
+        val config = configStore.loadConfig(worldName)
+            ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for unlink mutation: $worldName"))
         val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
+        val result = CompletableFuture<Unit>()
 
-        Bukkit.getScheduler().runTask(plugin, Runnable {
-            regions.forEach { region ->
-                val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
-                repaintBorder(world, region.bounds, config, style, reason, "paper-mutation:unlink-border:${region.id.value}")
-            }
+        try {
+            Bukkit.getScheduler().runTask(plugin, Runnable {
+                try {
+                    regions.forEach { region ->
+                        val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
+                        repaintBorder(
+                            world, region.bounds, config, style, reason,
+                            "paper-mutation:unlink-border:${region.id.value}",
+                            throwOnMutationFailure = true
+                        )
+                    }
 
-            if (createRoads) {
-                val roadStyle = PlotBorderStyle(
-                    fillMaterial = config.roadBlock,
-                    capMaterial = config.roadBlock
-                )
-                repaintCorridors(world, regions.toList(), config, roadStyle, maxGap, reason) { _, _ -> true }
-            }
-        })
+                    if (createRoads) {
+                        val roadStyle = PlotBorderStyle(
+                            fillMaterial = config.roadBlock,
+                            capMaterial = config.roadBlock
+                        )
+                        repaintCorridors(
+                            world, regions.toList(), config, roadStyle, maxGap, reason,
+                            predicate = { _, _ -> true },
+                            throwOnMutationFailure = true
+                        )
+                    }
+                    result.complete(Unit)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(
+                        java.util.logging.Level.SEVERE,
+                        "Paper unlink mutation failed for ${regions.joinToString { it.id.value.toString() }}",
+                        failure
+                    )
+                    result.completeExceptionally(failure)
+                }
+            })
+        } catch (failure: Throwable) {
+            result.completeExceptionally(failure)
+        }
+        return result
     }
 
     private fun repaintBorder(
@@ -137,7 +169,8 @@ class PaperPlotMutationService(
         includeNorth: Boolean = true,
         includeSouth: Boolean = true,
         includeWest: Boolean = true,
-        includeEast: Boolean = true
+        includeEast: Boolean = true,
+        throwOnMutationFailure: Boolean = false
     ) {
         val batch = PlotMutationPlanFactory.borderBatch(
             id = batchId,
@@ -151,17 +184,19 @@ class PaperPlotMutationService(
             includeWest = includeWest,
             includeEast = includeEast
         )
-        applyBatch(world, batch)
+        applyBatch(world, batch, throwOnMutationFailure)
     }
 
     private fun applyBatch(
         @Suppress("UNUSED_PARAMETER") world: org.bukkit.World,
-        batch: MutationBatch
+        batch: MutationBatch,
+        throwOnMutationFailure: Boolean = false
     ) {
         runCatching {
             mutationBackend.submit(batch)
         }.onFailure { error ->
             plugin.logger.warning("Paper plot mutation batch failed for ${batch.id}: ${error.message}")
+            if (throwOnMutationFailure) throw error
         }
     }
 
@@ -172,7 +207,8 @@ class PaperPlotMutationService(
         style: PlotBorderStyle,
         maxGap: Int,
         reason: MutationReason,
-        predicate: (Region, Region) -> Boolean
+        predicate: (Region, Region) -> Boolean,
+        throwOnMutationFailure: Boolean = false
     ) {
         for (i in regions.indices) {
             for (j in i + 1 until regions.size) {
@@ -189,7 +225,7 @@ class PaperPlotMutationService(
                         style = style,
                         reason = reason
                     )
-                    applyBatch(world, batch)
+                    applyBatch(world, batch, throwOnMutationFailure)
                 }
             }
         }

@@ -1527,7 +1527,7 @@ msgid "health.fawe.ok"
 msgstr "  §a✓ FAWE: {0}"
 
 msgid "health.fawe.missing"
-msgstr "  §e⚠ FAWE: Nicht installiert (Weltkonvertierung läuft im eingeschränkten Fallback-Modus)"
+msgstr "  §e⚠ FAWE: Nicht installiert (Konvertierung bestehender Welten ist nicht verfügbar)"
 
 msgid "health.plotsquared.ok"
 msgstr "  §a✓ PlotSquared: {0}"
@@ -1620,7 +1620,7 @@ msgid "fawe.warning.line4"
 msgstr "HomeClaim läuft ohne FAWE-Unterstützung."
 
 msgid "fawe.warning.line5"
-msgstr "Einige Block-Operationen sind eingeschränkt."
+msgstr "Claims, Schutz und native Plot-Resets funktionieren weiterhin."
 
 msgid "fawe.warning.line7"
 msgstr "Für volle Funktionalität, installiere FAWE:"

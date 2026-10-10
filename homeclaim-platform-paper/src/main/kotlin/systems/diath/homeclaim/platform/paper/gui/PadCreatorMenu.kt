@@ -136,8 +136,16 @@ class PadCreatorMenu(
                     PadCreatorStateManager.setState(player.uniqueId, newState)
                     render(player)
                 } else {
-                    // Toggle linkId for teleport pads - just generate new UUID for demo
-                    val newState = state.copy(linkId = UUID.randomUUID().toString())
+                    val existingLinkIds = componentService.listComponents(region.id)
+                        .asSequence()
+                        .filter { it.type == ComponentType.TELEPORT_PAD }
+                        .mapNotNull { (it.config as? TeleportConfig)?.linkId }
+                        .toList()
+                    val currentLinkId = state.linkId.takeIf { it.isNotBlank() }
+                        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    val newState = state.copy(
+                        linkId = TeleportLinkIdCycler.next(currentLinkId, existingLinkIds).toString()
+                    )
                     PadCreatorStateManager.setState(player.uniqueId, newState)
                     render(player)
                 }

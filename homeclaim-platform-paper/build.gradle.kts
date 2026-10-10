@@ -1,4 +1,5 @@
 import groovy.json.JsonSlurper
+import java.util.zip.ZipFile
 import java.net.URI
 import java.net.URL
 
@@ -28,7 +29,7 @@ dependencies {
     compileOnly("com.github.MilkBowl:VaultAPI:1.7.1")
     implementation("com.electronwill.night-config:toml:3.8.3")
     
-    // FAWE - Optional but recommended for fast block operations
+    // FAWE is optional at runtime and is only required by the existing-world conversion wizard.
     compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Core:$faweVersion")
     compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:$faweVersion") { isTransitive = false }
     faweRuntime("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:$faweVersion") { isTransitive = false }
@@ -47,7 +48,6 @@ tasks.shadowJar {
     exclude("ze-ph/**")
     exclude("META-INF/*.RSA", "META-INF/*.SF", "META-INF/*.DSA")
     exclude("META-INF/DEPENDENCIES", "META-INF/NOTICE*", "META-INF/LICENSE*")
-    exclude("**/*.kotlin_metadata", "**/*.kotlin_builtins")
     exclude("**/*.proto")        // Protocol Buffers
     exclude("**/*.md")           // Markdown docs
     exclude("DebugProbesKt.bin") // Kotlin coroutines debug
@@ -75,6 +75,21 @@ tasks.shadowJar {
     mergeServiceFiles()
 
     // Keep subproject build outputs intact so test/IDE classpaths and incremental Kotlin compilation remain stable.
+
+    // Jackson's Kotlin module and kotlin-reflect load these built-ins at runtime.
+    // Excluding them produces an apparently healthy plugin whose REST responses fail to serialize.
+    doLast {
+        ZipFile(archiveFile.get().asFile).use { jar ->
+            val requiredKotlinBuiltins = listOf(
+                "kotlin/kotlin.kotlin_builtins",
+                "kotlin/collections/collections.kotlin_builtins"
+            )
+            val missing = requiredKotlinBuiltins.filter { jar.getEntry(it) == null }
+            check(missing.isEmpty()) {
+                "Shaded HomeClaim JAR is missing Kotlin runtime resources: ${missing.joinToString()}"
+            }
+        }
+    }
 }
 
 tasks.named("build") {

@@ -220,6 +220,11 @@ class DatabaseDialectRuntimeTest {
                     reason = "runtime test"
                 )
             )
+            val auditReadBack = JdbcAuditService(dataSource).findForTarget(firstId.value, java.time.Instant.EPOCH, 50)
+            assertTrue(auditReadBack.any {
+                it.targetId == firstId.value && it.actorId == claimedBy &&
+                    it.action == HomeClaimOperationActions.REGION_CLAIM.value
+            }, "Audit query should return the persisted record for the region")
             dataSource.connection.use { connection ->
                 connection.prepareStatement("SELECT COUNT(*) FROM audit_log WHERE correlation_id = ?").use { statement ->
                     statement.setObject(1, correlationId.value)

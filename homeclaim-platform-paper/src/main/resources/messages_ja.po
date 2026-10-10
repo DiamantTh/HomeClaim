@@ -1247,10 +1247,10 @@ msgid "fawe.warning.line3"
 msgstr "║                                                                  ║"
 
 msgid "fawe.warning.line4"
-msgstr "║  Without FAWE, large block operations will be slower.           ║"
+msgstr "既存ワールドの変換にはFAWEが必要です。"
 
 msgid "fawe.warning.line5"
-msgstr "║  Install FAWE for optimal performance.                          ║"
+msgstr "Claim、保護、ネイティブリセットは引き続き動作します。"
 
 msgid "fawe.warning.line7"
 msgstr "║  https://www.spigotmc.org/resources/fast-async-worldedit.      ║"
