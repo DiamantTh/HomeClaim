@@ -7,7 +7,10 @@ import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
 import com.electronwill.nightconfig.core.file.FileConfig
+import systems.diath.homeclaim.platform.paper.TeleportCompletion
+import systems.diath.homeclaim.platform.paper.awaitSuccessfulTeleports
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 
 /**
  * Setup modes for plot world creation.
@@ -202,11 +205,51 @@ class PlotWorldSetupWizard(
         
         // Teleport all players out of the conversion zone
         val safeLocation = world.spawnLocation.clone().add(0.0, 100.0, 0.0)
-        world.players.forEach { p ->
-            p.teleportAsync(safeLocation)
-            p.sendMessage(i18n.msg("setup.convert_teleport_safe"))
+        val playersToEvacuate = world.players.toList()
+        val evacuations = playersToEvacuate.map { targetPlayer ->
+            runCatching { targetPlayer.teleportAsync(safeLocation) }
+                .getOrElse { CompletableFuture.failedFuture(it) }
         }
-        
+
+        awaitSuccessfulTeleports(evacuations).whenComplete { _, error ->
+            runOnServerThread {
+                if (error != null) {
+                    val failedPlayers = playersToEvacuate.zip(evacuations)
+                        .filter { (_, future) -> future.isCompletedExceptionally || future.getNow(false) != true }
+                        .map { (targetPlayer, _) -> targetPlayer.name }
+                    val completion = TeleportCompletion.resolve(null, error)
+                    val detail = (completion as? TeleportCompletion.Failed)?.detail ?: "Teleport failed"
+                    plugin.logger.log(
+                        java.util.logging.Level.WARNING,
+                        "World conversion evacuation failed for ${world.name}; affected players=${failedPlayers.joinToString()}",
+                        error
+                    )
+                    if (player.isOnline) {
+                        player.sendMessage(
+                            i18n.msg(
+                                "setup.convert_failed",
+                                "Could not evacuate players (${failedPlayers.joinToString()}): $detail"
+                            )
+                        )
+                    }
+                    sessions.remove(player.uniqueId)
+                    return@runOnServerThread
+                }
+
+                playersToEvacuate.filter { it.isOnline }.forEach {
+                    it.sendMessage(i18n.msg("setup.convert_teleport_safe"))
+                }
+                startConversion(player, world, cfg, i18n)
+            }
+        }
+    }
+
+    private fun startConversion(
+        player: Player,
+        world: org.bukkit.World,
+        cfg: PlotWorldConfig,
+        i18n: systems.diath.homeclaim.platform.paper.I18n
+    ) {
         player.sendMessage(i18n.msg("setup.convert_starting"))
         player.sendMessage(i18n.msg("setup.convert_fawe_version", bulkBlockSetter.getFaweVersion()))
         player.sendMessage(i18n.msg("setup.convert_area", cfg.plotsPerSide))

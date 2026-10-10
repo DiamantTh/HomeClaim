@@ -106,7 +106,7 @@ class PlotCommand(
             }
             "home", "h" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_HOME)) return true
-                handleHome(sender)
+                handleHome(sender, args.getOrNull(1))
             }
             "info", "i" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_INFO)) return true
@@ -122,7 +122,7 @@ class PlotCommand(
             }
             "visit", "v" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_VISIT)) return true
-                handleVisit(sender, args.getOrNull(1))
+                handleVisit(sender, args.getOrNull(1), args.getOrNull(2))
             }
             "merge", "m" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_MERGE)) return true
@@ -251,19 +251,34 @@ class PlotCommand(
         val centerZ = (nextPlot.bounds.minZ + nextPlot.bounds.maxZ) / 2.0
         val y = player.world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
 
-        player.teleportAsync(org.bukkit.Location(player.world, centerX, y, centerZ)).thenAccept { success ->
-            if (!success) {
-                player.sendMessage("§cTeleport to the selected plot failed.")
-                return@thenAccept
-            }
-            org.bukkit.Bukkit.getScheduler().runTask(
-                org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java),
-                Runnable { handleClaim(player) }
+        val teleport = runCatching {
+            player.teleportAsync(org.bukkit.Location(player.world, centerX, y, centerZ))
+        }.getOrElse { error ->
+            player.sendMessage("§cTeleport to the selected plot failed.")
+            org.bukkit.Bukkit.getLogger().log(
+                java.util.logging.Level.WARNING,
+                "Auto-claim teleport failed for ${player.uniqueId}",
+                error
             )
+            return
+        }
+        teleport.whenComplete { success, error ->
+            when (val completion = systems.diath.homeclaim.platform.paper.TeleportCompletion.resolve(success, error)) {
+                systems.diath.homeclaim.platform.paper.TeleportCompletion.Succeeded ->
+                    onPaperThread(player, "auto-claim") { handleClaim(player) }
+                is systems.diath.homeclaim.platform.paper.TeleportCompletion.Failed -> {
+                    org.bukkit.Bukkit.getLogger().warning(
+                        "Auto-claim teleport failed for ${player.uniqueId}: ${completion.detail}"
+                    )
+                    onPaperThread(player, "auto-claim") {
+                        player.sendMessage("§cTeleport to the selected plot failed.")
+                    }
+                }
+            }
         }
     }
     
-    private fun handleHome(player: Player) {
+    private fun handleHome(player: Player, selector: String?) {
         val playerId: PlayerId = player.uniqueId
         val plots = regionService.listRegionsByOwner(playerId)
         
@@ -272,16 +287,30 @@ class PlotCommand(
             return
         }
         
-        val firstPlot = plots.first()
-        val world = resolvePaperWorld(firstPlot)
+        val plot = when (val selection = OwnedRegionSelector.select(plots, selector)) {
+            is OwnedRegionSelection.Selected -> selection.region
+            is OwnedRegionSelection.SelectionRequired -> {
+                sendRegionSelection(player, "/plot home", selection.regions)
+                return
+            }
+            OwnedRegionSelection.InvalidSelector -> {
+                player.sendMessage(i18n.msg("plot.region_selector_invalid"))
+                return
+            }
+            OwnedRegionSelection.NoRegions -> {
+                player.sendMessage(i18n.msg("plot.no_plots"))
+                return
+            }
+        }
+        val world = resolvePaperWorld(plot)
         if (world == null) {
             player.sendMessage(i18n.msg("plot.world_not_found"))
             return
         }
         
         // Teleport to center of plot
-        val centerX = (firstPlot.bounds.minX + firstPlot.bounds.maxX) / 2.0
-        val centerZ = (firstPlot.bounds.minZ + firstPlot.bounds.maxZ) / 2.0
+        val centerX = (plot.bounds.minX + plot.bounds.maxX) / 2.0
+        val centerZ = (plot.bounds.minZ + plot.bounds.maxZ) / 2.0
         val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
         
         teleportWithFeedback(
@@ -379,7 +408,7 @@ class PlotCommand(
     
     private fun handleList(player: Player) {
         val playerId: PlayerId = player.uniqueId
-        val plots = regionService.listRegionsByOwner(playerId)
+        val plots = OwnedRegionSelector.order(regionService.listRegionsByOwner(playerId))
         
         if (plots.isEmpty()) {
             player.sendMessage(i18n.msg("plot.list_no_plots"))
@@ -398,9 +427,9 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.list_footer"))
     }
     
-    private fun handleVisit(player: Player, targetName: String?) {
+    private fun handleVisit(player: Player, targetName: String?, selector: String?) {
         if (targetName == null) {
-            player.sendMessage(i18n.msg("plot.visit_usage"))
+            player.sendMessage(i18n.msg("plot.visit_usage_selector"))
             return
         }
         
@@ -425,15 +454,29 @@ class PlotCommand(
             return
         }
         
-        val firstPlot = plots.first()
-        val world = resolvePaperWorld(firstPlot)
+        val plot = when (val selection = OwnedRegionSelector.select(plots, selector)) {
+            is OwnedRegionSelection.Selected -> selection.region
+            is OwnedRegionSelection.SelectionRequired -> {
+                sendRegionSelection(player, "/plot visit ${target.name ?: validation.sanitized}", selection.regions)
+                return
+            }
+            OwnedRegionSelection.InvalidSelector -> {
+                player.sendMessage(i18n.msg("plot.region_selector_invalid"))
+                return
+            }
+            OwnedRegionSelection.NoRegions -> {
+                player.sendMessage(i18n.msg("plot.visit_no_plots", target.name ?: "unknown"))
+                return
+            }
+        }
+        val world = resolvePaperWorld(plot)
         if (world == null) {
             player.sendMessage(i18n.msg("plot.visit_world_not_found"))
             return
         }
         
-        val centerX = (firstPlot.bounds.minX + firstPlot.bounds.maxX) / 2.0
-        val centerZ = (firstPlot.bounds.minZ + firstPlot.bounds.maxZ) / 2.0
+        val centerX = (plot.bounds.minX + plot.bounds.maxX) / 2.0
+        val centerZ = (plot.bounds.minZ + plot.bounds.maxZ) / 2.0
         val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
         
         teleportWithFeedback(
@@ -443,10 +486,18 @@ class PlotCommand(
             "§cTeleport to ${target.name ?: "unknown"}'s plot failed."
         )
     }
+
+    private fun sendRegionSelection(player: Player, command: String, regions: List<Region>) {
+        player.sendMessage(i18n.msg("plot.region_selection_required", command))
+        regions.forEachIndexed { index, region ->
+            player.sendMessage("§7${index + 1}: ${region.id.value}")
+        }
+        player.sendMessage(i18n.msg("plot.region_selection_hint"))
+    }
     
     private fun handleMerge(player: Player, directionArg: String?) {
         val region = runCatching { currentRegion(player) }.getOrElse { error ->
-            org.bukkit.Bukkit.getLogger().log(
+            java.util.logging.Logger.getLogger(PlotCommand::class.java.name).log(
                 java.util.logging.Level.SEVERE,
                 "Could not resolve plot for merge command from ${player.uniqueId}",
                 error
@@ -844,12 +895,7 @@ class PlotCommand(
                 val diagnostics = buildList {
                     addAll(plotMutationService.activeJobDiagnostics(worldName))
                     addAll(plotResetService.activeJobDiagnostics(worldName))
-                    addAll(mutationJobStore?.findRecoveryRequired()
-                        ?.filter { it.operation == "MERGE" }
-                        ?.filter { worldName == null || it.worldName == worldName }
-                        ?.map { record ->
-                            "recovery-required:${record.operation}:${record.worldName}:${record.id}:regions=${record.regionIds.joinToString()}:progress=${record.completedUnits}/${record.totalUnits}:correlation=${record.correlationId}"
-                        }.orEmpty())
+                    addAll(plotResetService.recoveryRequiredDiagnostics(worldName))
                 }
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
                 player.sendMessage("\u00a7aPlot Jobs Status")
@@ -1000,12 +1046,46 @@ class PlotCommand(
     }
 
     private fun teleportWithFeedback(player: Player, location: org.bukkit.Location, successMessage: String, failureMessage: String) {
-        player.teleportAsync(location).thenAccept { success ->
-            if (success) {
-                player.sendMessage(successMessage)
-            } else {
-                player.sendMessage(failureMessage)
+        val teleport = runCatching { player.teleportAsync(location) }.getOrElse { error ->
+            org.bukkit.Bukkit.getLogger().log(
+                java.util.logging.Level.WARNING,
+                "Plot teleport failed for ${player.uniqueId}",
+                error
+            )
+            player.sendMessage(failureMessage)
+            return
+        }
+        teleport.whenComplete { success, error ->
+            val completion = systems.diath.homeclaim.platform.paper.TeleportCompletion.resolve(success, error)
+            if (completion is systems.diath.homeclaim.platform.paper.TeleportCompletion.Failed) {
+                org.bukkit.Bukkit.getLogger().warning("Plot teleport failed for ${player.uniqueId}: ${completion.detail}")
             }
+            onPaperThread(player, "plot-teleport") {
+                player.sendMessage(
+                    if (completion == systems.diath.homeclaim.platform.paper.TeleportCompletion.Succeeded) successMessage
+                    else failureMessage
+                )
+            }
+        }
+    }
+
+    private fun onPaperThread(player: Player, operation: String, action: () -> Unit) {
+        val task = Runnable { if (player.isOnline) action() }
+        runCatching {
+            if (org.bukkit.Bukkit.isPrimaryThread()) {
+                task.run()
+            } else {
+                org.bukkit.Bukkit.getScheduler().runTask(
+                    org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java),
+                    task
+                )
+            }
+        }.onFailure { error ->
+            org.bukkit.Bukkit.getLogger().log(
+                java.util.logging.Level.WARNING,
+                "Could not deliver $operation teleport completion for ${player.uniqueId}",
+                error
+            )
         }
     }
 
@@ -1083,7 +1163,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_header"))
         player.sendMessage(i18n.msg("plot.help_claim"))
         player.sendMessage(i18n.msg("plot.help_auto"))
-        player.sendMessage(i18n.msg("plot.help_home"))
+        player.sendMessage(i18n.msg("plot.help_home_selector"))
         player.sendMessage(i18n.msg("plot.help_info"))
         player.sendMessage(i18n.msg("plot.help_list"))
         player.sendMessage("§7/plot gui - Manage your plots in the GUI")

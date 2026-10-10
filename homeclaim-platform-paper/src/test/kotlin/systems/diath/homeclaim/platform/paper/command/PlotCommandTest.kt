@@ -96,6 +96,42 @@ class PlotCommandTest {
     }
 
     @Test
+    fun `home refuses to choose an arbitrary plot when owner has several`() {
+        val regionService = InMemoryRegionStore()
+        val player = mock(Player::class.java)
+        val playerId = UUID.randomUUID()
+        val plotIds = listOf(
+            RegionId(UUID.fromString("00000000-0000-0000-0000-000000000002")),
+            RegionId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+        )
+        doReturn(false).`when`(player).isOp
+        doReturn(playerId).`when`(player).uniqueId
+        doReturn(true).`when`(player).hasPermission(anyString())
+        plotIds.forEach { id ->
+            regionService.createRegion(
+                Region(
+                    id = id,
+                    world = "plots",
+                    shape = RegionShape.CUBOID,
+                    bounds = Bounds(0, 15, 0, 255, 0, 15),
+                    owner = playerId
+                )
+            )
+        }
+
+        PlotCommand(regionService, mock(GuiManager::class.java), econService = null)
+            .execute(player, arrayOf("home"))
+
+        val messages = Mockito.mockingDetails(player).invocations
+            .filter { it.method.name == "sendMessage" }
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(messages.any { it.contains("multiple plots", ignoreCase = true) || it.contains("mehrere Plots", ignoreCase = true) }, "Unexpected messages: $messages")
+        assertTrue(messages.any { it.contains("00000000-0000-0000-0000-000000000001") })
+        assertTrue(messages.any { it.contains("00000000-0000-0000-0000-000000000002") })
+        assertTrue(messages.none { it.contains("Teleported", ignoreCase = true) })
+    }
+
+    @Test
     fun `jobs status shows queued mutation and reset entries`() {
         val regionService = mock(RegionService::class.java)
         val guiManager = mock(GuiManager::class.java)
@@ -108,6 +144,7 @@ class PlotCommandTest {
         doReturn(true).`when`(player).hasPermission(anyString())
         doReturn(listOf("mutation:plots:mut-1")).`when`(plotMutationService).activeJobDiagnostics("plots")
         doReturn(listOf("reset:plots:reset-1")).`when`(plotResetService).activeJobDiagnostics("plots")
+        doReturn(listOf("recovery-required:MERGE:plots:job-1")).`when`(plotResetService).recoveryRequiredDiagnostics("plots")
 
         val plotCommand = PlotCommand(
             regionService = regionService,
@@ -121,6 +158,7 @@ class PlotCommandTest {
 
         verify(player, atLeastOnce()).sendMessage(contains("mut-1"))
         verify(player, atLeastOnce()).sendMessage(contains("reset-1"))
+        verify(player).sendMessage(contains("recovery-required:MERGE:plots:job-1"))
     }
 
     @Test

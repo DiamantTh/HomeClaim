@@ -25,11 +25,15 @@ class PaperCommandTreesTest {
         assertEquals(1, dispatcher.execute("plot merge north", source))
         assertEquals(1, dispatcher.execute("plot unlink true", source))
         assertEquals(1, dispatcher.execute("plot gui", source))
+        assertEquals(1, dispatcher.execute("plot home 2", source))
+        assertEquals(1, dispatcher.execute("plot visit Alice 12345678-1234-1234-1234-123456789abc", source))
         assertEquals(
             listOf(
                 "plot" to listOf("merge", "north"),
                 "plot" to listOf("unlink", "true"),
-                "plot" to listOf("gui")
+                "plot" to listOf("gui"),
+                "plot" to listOf("home", "2"),
+                "plot" to listOf("visit", "Alice", "12345678-1234-1234-1234-123456789abc")
             ),
             calls
         )

@@ -1068,21 +1068,67 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         services: PlatformServices,
         rule: systems.diath.homeclaim.core.model.EntryDenyRule
     ) {
-        val region = services.regionService.getRegionById(rule.regionId) ?: return
-        val world = server.getWorld(region.world) ?: return
-        val spawn = world.spawnLocation
-        server.onlinePlayers.forEach { player ->
-            if (player.world.name != region.world) return@forEach
-            val loc = player.location
-            val inside = loc.blockX in region.bounds.minX..region.bounds.maxX &&
-                loc.blockY in region.bounds.minY..region.bounds.maxY &&
-                loc.blockZ in region.bounds.minZ..region.bounds.maxZ
-            if (!inside) return@forEach
-            if (systems.diath.homeclaim.platform.paper.util.Permissions.canBypassDeniedEntry(player)) return@forEach
-            if (region.roles.resolve(player.uniqueId, region.owner) == RegionRole.OWNER) return@forEach
-            if (!rule.matches(player.uniqueId, player.name)) return@forEach
-            player.sendMessage(i18n.msg("policy.denied.detail", i18n.msg("policy.reason.entry_deny"), "entry_deny_id=${rule.id.value};reason=${rule.reason}"))
-            player.teleport(spawn)
+        runCatching {
+            runOnServerThread {
+                val region = services.regionService.getRegionById(rule.regionId) ?: return@runOnServerThread
+                val area = services.worldAreaService?.getArea(region.areaId)
+                val homeWorld = area?.let { services.worldAreaService?.getWorld(it.worldId) }
+                val platformWorldId = homeWorld?.platformWorldId
+                val world = when {
+                    platformWorldId != null -> server.getWorld(platformWorldId)
+                    homeWorld != null -> server.getWorld(homeWorld.name) ?: server.getWorld(region.world)
+                    else -> server.getWorld(region.world)
+                } ?: run {
+                    logger.warning("Could not eject entry-denied players for rule ${rule.id.value}: plot world is not loaded")
+                    return@runOnServerThread
+                }
+                val spawn = world.spawnLocation
+                server.onlinePlayers.forEach { player ->
+                    if (player.world.uid != world.uid) return@forEach
+                    val loc = player.location
+                    val inside = loc.blockX in region.bounds.minX..region.bounds.maxX &&
+                        loc.blockY in region.bounds.minY..region.bounds.maxY &&
+                        loc.blockZ in region.bounds.minZ..region.bounds.maxZ
+                    if (!inside) return@forEach
+                    if (Permissions.canBypassDeniedEntry(player)) return@forEach
+                    if (!rule.matches(player.uniqueId, player.name)) return@forEach
+
+                    player.sendMessage(
+                        i18n.msg(
+                            "policy.denied.detail",
+                            i18n.msg("policy.reason.entry_deny"),
+                            "entry_deny_id=${rule.id.value};reason=${rule.reason}"
+                        )
+                    )
+                    val teleport = runCatching { player.teleportAsync(spawn) }
+                        .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
+                    teleport.whenComplete { success, error ->
+                        val completion = TeleportCompletion.resolve(success, error)
+                        if (completion is TeleportCompletion.Failed) {
+                            logger.warning(
+                                "Entry-deny ejection failed for player ${player.uniqueId}, rule=${rule.id.value}: ${completion.detail}"
+                            )
+                            runCatching {
+                                runOnServerThread {
+                                    if (player.isOnline) player.sendMessage(i18n.msg("entrydeny.eject.teleport_failed"))
+                                }
+                            }.onFailure { dispatchError ->
+                                logger.log(
+                                    java.util.logging.Level.WARNING,
+                                    "Could not report entry-deny ejection failure for player ${player.uniqueId}, rule=${rule.id.value}",
+                                    dispatchError
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }.onFailure { error ->
+            logger.log(
+                java.util.logging.Level.SEVERE,
+                "Could not process entry-deny ejection for rule ${rule.id.value}",
+                error
+            )
         }
     }
 }

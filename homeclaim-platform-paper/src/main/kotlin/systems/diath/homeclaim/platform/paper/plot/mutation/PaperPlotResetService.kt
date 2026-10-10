@@ -61,11 +61,9 @@ class PaperPlotResetService(
     }
 
     override fun activeJobDiagnostics(worldName: String?): List<String> {
-        val active = queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
+        return queueRegistry.snapshot(world = worldName, kind = PlotJobRegistry.JobKind.RESET).map { snapshot ->
             "reset:${snapshot.world}:${snapshot.key}:reason=${snapshot.reason?.name ?: MutationReason.RESET.name}:age=${snapshot.ageMillis}ms:cancelled=${snapshot.cancelRequested}"
         }
-        val recovery = recoveryRequiredDiagnostics(worldName)
-        return active + recovery
     }
 
     override fun recoveryRequiredDiagnostics(worldName: String?): List<String> = runCatching {

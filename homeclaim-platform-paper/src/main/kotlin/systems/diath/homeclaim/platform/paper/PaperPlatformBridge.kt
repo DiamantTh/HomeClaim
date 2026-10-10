@@ -37,6 +37,7 @@ class PaperPlatformBridge(
                 services.componentService, 
                 services.regionService, 
                 liftLinkPlanner,
+                plugin,
                 services.auditService
             ),
             plugin

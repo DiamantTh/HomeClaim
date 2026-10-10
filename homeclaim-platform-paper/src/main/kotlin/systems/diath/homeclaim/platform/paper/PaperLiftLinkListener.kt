@@ -5,7 +5,6 @@ import systems.diath.homeclaim.core.model.ComponentType
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.platform.ComponentTriggerHandler
 import systems.diath.homeclaim.core.platform.ComponentTriggerRequest
-import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.ActorKind
 import systems.diath.homeclaim.core.policy.DecisionReason
 import systems.diath.homeclaim.core.policy.PolicyActorContext
@@ -21,19 +20,23 @@ import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
 import systems.diath.homeclaim.platform.paper.protection.toHomeClaimPosition
 import org.bukkit.Material
 import org.bukkit.World
+import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.block.Action as BlockAction
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.plugin.java.JavaPlugin
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import systems.diath.homeclaim.platform.paper.I18n
+import systems.diath.homeclaim.core.policy.Decision
 
 class PaperLiftLinkListener(
     private val componentTriggerHandler: ComponentTriggerHandler,
     private val componentService: ComponentService,
     private val regionService: RegionService,
     private val planner: LiftLinkPlanner,
+    private val plugin: JavaPlugin,
     private val auditService: AuditService? = null
 ) : Listener {
     private val i18n = I18n()
@@ -63,37 +66,47 @@ class PaperLiftLinkListener(
     private fun systems.diath.homeclaim.core.model.Position.toCenterLocation(world: org.bukkit.World) =
         org.bukkit.Location(world, x.toDouble() + 0.5, y.toDouble().coerceAtLeast(0.0), z.toDouble() + 0.5)
     
-    /**
-     * Teleportiere zu einer Position in einer anderen Welt (Cross-World)
-     * Mit World-Checking und Permission-Validation
-     */
-    private fun teleportCrossWorld(player: org.bukkit.entity.Player, target: Position) {
+    private fun resolveDestination(
+        player: Player,
+        target: Position,
+        permission: String,
+        permissionMessage: String
+    ): LiftLinkDestination? {
         val targetWorld = target.toPaperWorld()
         val targetWorldName = target.displayWorldName()
         if (targetWorld == null) {
             player.sendMessage(i18n.msg("liftlink.target.world.not.exists", targetWorldName))
-            return
+            return null
         }
-        
-        // Prüfe Welt-Berechtigung wenn nötig
-        if (hasWorldTeleportRestriction(player)) {
+
+        val crossWorld = targetWorld.uid != player.world.uid
+        if (crossWorld && !player.hasPermission(permission)) {
+            player.sendMessage(i18n.msg(permissionMessage))
+            return null
+        }
+        if (crossWorld && hasWorldTeleportRestriction(player)) {
             player.sendMessage(i18n.msg("liftlink.no.world.access", targetWorldName))
-            return
+            return null
         }
-        
-        val destLocation = target.toCenterLocation(targetWorld)
-        player.teleportAsync(destLocation)
-        player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(i18n.msg("liftlink.teleport.arrow") + " $targetWorldName"))
+
+        return LiftLinkDestination(
+            location = target.toCenterLocation(targetWorld),
+            worldName = targetWorld.name,
+            crossWorld = crossWorld
+        )
     }
+
+    private data class LiftLinkDestination(
+        val location: org.bukkit.Location,
+        val worldName: String,
+        val crossWorld: Boolean
+    )
 
     private fun Position.displayWorldName(): String = legacyWorldName ?: worldId.value.toString()
 
     private fun Position.toPaperWorld(): World? =
         org.bukkit.Bukkit.getWorld(worldId.value) ?: legacyWorldName?.let { org.bukkit.Bukkit.getWorld(it) }
 
-    private fun Position.isIn(world: World): Boolean =
-        legacyWorldName?.let { it == world.name } ?: (worldId.value == world.uid)
-    
     /**
      * Prüfe ob Spieler in die Zielwelt teleportiert darf
      */
@@ -131,40 +144,27 @@ class PaperLiftLinkListener(
         }
         val target = nearby.first()
         
-        // Prüfe Cross-World Teleport
-        val isCrossWorld = !target.position.isIn(player.world)
-        if (isCrossWorld) {
-            // Cross-World Teleport mit Permission-Check
-            if (!player.hasPermission("homeclaim.elevator.crossworld")) {
-                player.sendMessage(i18n.msg("liftlink.elevator.no.crossworld.perm"))
-                e.isCancelled = true
-                return
-            }
-            teleportCrossWorld(player, target.position)
-        } else {
-            // Same-World Teleport
-            val dest = target.position.toCenterLocation(player.world)
-            player.teleportAsync(dest)
-            player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(i18n.msg("liftlink.teleported")))
-        }
-        
-        auditService?.append(
-            AuditEntries.componentUsed(
-                actorId = player.uniqueId,
-                targetId = comp.id.value,
-                action = AuditTaxonomy.Action.ELEVATOR_USED,
-                position = pos,
-                platform = "paper",
-                extra = mapOf(
-                    "sourceId" to comp.id.value.toString(),
-                    "targetId" to target.id.value.toString(),
-                    "mode" to config.mode.name,
-                    "distance" to (target.position.y - pos.y)
-                )
-            )
+        val destination = resolveDestination(
+            player,
+            target.position,
+            "homeclaim.elevator.crossworld",
+            "liftlink.elevator.no.crossworld.perm"
         )
-        
-        e.isCancelled = true
+        if (destination == null) {
+            e.isCancelled = true
+            return
+        }
+        val successMessage = if (destination.crossWorld) {
+            i18n.msg("liftlink.teleport.arrow") + " ${destination.worldName}"
+        } else {
+            i18n.msg("liftlink.teleported")
+        }
+        completeComponentTeleport(
+            player, e, comp, pos, decision, destination.location, AuditTaxonomy.Action.ELEVATOR_USED,
+            successMessage,
+            mapOf("sourceId" to comp.id.value.toString(), "targetId" to target.id.value.toString(),
+                "mode" to config.mode.name, "distance" to (target.position.y - pos.y))
+        )
     }
 
     private fun handleTeleport(player: Player, e: PlayerInteractEvent, comp: systems.diath.homeclaim.core.model.Component, pos: Position) {
@@ -206,40 +206,98 @@ class PaperLiftLinkListener(
         
         val destComp = targets.first()
         
-        // Prüfe Cross-World Teleport
-        val isCrossWorld = !destComp.position.isIn(player.world)
-        if (isCrossWorld) {
-            // Cross-World Teleport mit Permission-Check
-            if (!player.hasPermission("homeclaim.teleporter.crossworld")) {
-                player.sendMessage(i18n.msg("liftlink.teleport.no.crossworld.perm"))
-                e.isCancelled = true
-                return
-            }
-            teleportCrossWorld(player, destComp.position)
-        } else {
-            // Same-World Teleport
-            val dest = destComp.position.toCenterLocation(player.world)
-            player.teleportAsync(dest)
-            player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(i18n.msg("teleport.actionbar")))
-        }
-        
-        auditService?.append(
-            AuditEntries.componentUsed(
-                actorId = player.uniqueId,
-                targetId = comp.id.value,
-                action = AuditTaxonomy.Action.TELEPORT_USED,
-                position = pos,
-                platform = "paper",
-                extra = mapOf(
-                    "sourceId" to comp.id.value.toString(),
-                    "targetId" to destComp.id.value.toString(),
-                    "linkId" to config.linkId.toString(),
-                    "scope" to config.withinScope.name
-                )
-            )
+        val destination = resolveDestination(
+            player,
+            destComp.position,
+            "homeclaim.teleporter.crossworld",
+            "liftlink.teleport.no.crossworld.perm"
         )
-        
-        e.isCancelled = true
+        if (destination == null) {
+            e.isCancelled = true
+            return
+        }
+        val successMessage = if (destination.crossWorld) {
+            i18n.msg("liftlink.teleport.arrow") + " ${destination.worldName}"
+        } else {
+            i18n.msg("teleport.actionbar")
+        }
+        completeComponentTeleport(
+            player, e, comp, pos, decision, destination.location, AuditTaxonomy.Action.TELEPORT_USED,
+            successMessage,
+            mapOf("sourceId" to comp.id.value.toString(), "targetId" to destComp.id.value.toString(),
+                "linkId" to config.linkId.toString(), "scope" to config.withinScope.name)
+        )
+    }
+
+    private fun completeComponentTeleport(
+        player: Player,
+        event: PlayerInteractEvent,
+        component: systems.diath.homeclaim.core.model.Component,
+        position: Position,
+        decision: Decision,
+        destination: org.bukkit.Location,
+        action: String,
+        successMessage: String,
+        extra: Map<String, Any?>
+    ) {
+        event.isCancelled = true
+        val future = runCatching { player.teleportAsync(destination) }
+            .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
+        future.whenComplete { success, error ->
+            val completion = TeleportCompletion.resolve(success, error)
+            val succeeded = completion == TeleportCompletion.Succeeded
+            val request = decision.context.actionRequest
+            val failureDetail = (completion as? TeleportCompletion.Failed)?.detail
+            val auditEntry = AuditEntries.componentUsed(
+                actorId = player.uniqueId,
+                targetId = component.id.value,
+                action = action,
+                position = position,
+                platform = "paper",
+                extra = extra + mapOf("result" to if (succeeded) "COMPLETED" else "FAILED")
+            ).copy(
+                correlationId = request?.correlationId,
+                parentCorrelationId = request?.parentCorrelationId,
+                actorKind = "PLAYER",
+                actorRef = player.uniqueId.toString(),
+                actionKey = request?.actionKey,
+                worldId = decision.context.world ?: request?.worldId,
+                areaId = decision.context.areaId ?: request?.areaId,
+                source = request?.source,
+                target = request?.target,
+                role = decision.trace.role?.let { runCatching { systems.diath.homeclaim.core.model.RegionRole.valueOf(it) }.getOrNull() },
+                policyResult = decision.effect,
+                permissionResult = decision.trace.permissionResult,
+                bypass = decision.trace.bypass,
+                reason = decision.reason,
+                status = if (succeeded) AuditStatus.COMPLETED else AuditStatus.FAILED,
+                targetCount = 1,
+                error = failureDetail
+            )
+            runCatching { auditService?.append(auditEntry) }.onFailure { auditError ->
+                plugin.logger.log(java.util.logging.Level.SEVERE, "Could not audit LiftLink teleport for ${component.id.value}", auditError)
+            }
+            if (!succeeded) {
+                plugin.logger.warning("LiftLink teleport failed for ${player.uniqueId}, component=${component.id.value}: $failureDetail")
+            }
+            runOnServerThread(player) {
+                if (succeeded) {
+                    player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(successMessage))
+                } else {
+                    player.sendMessage(i18n.msg("liftlink.teleport.failed"))
+                }
+            }
+        }
+    }
+
+    private fun runOnServerThread(player: Player, action: () -> Unit) {
+        val task = Runnable { if (player.isOnline) action() }
+        runCatching {
+            if (Bukkit.isPrimaryThread()) task.run()
+            else plugin.server.scheduler.runTask(plugin, task)
+        }.onFailure { error ->
+            plugin.logger.log(java.util.logging.Level.WARNING, "Could not deliver LiftLink completion to ${player.uniqueId}", error)
+        }
     }
 
     private fun checkComponentUse(

@@ -26,10 +26,25 @@ internal object PaperCommandTrees {
         val root = Commands.literal("plot")
             .executes { context -> dispatch(context.source.sender, "plot", emptyList()) }
 
-        listOf("claim", "c", "auto", "a", "home", "h", "info", "i", "list", "l", "gui", "menu", "reset", "clear")
+        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear")
             .forEach { name ->
                 root.then(Commands.literal(name).executes { context -> dispatch(context.source.sender, "plot", listOf(name)) })
             }
+
+        listOf("home", "h").forEach { name ->
+            root.then(Commands.literal(name)
+                .executes { context -> dispatch(context.source.sender, "plot", listOf(name)) }
+                .then(Commands.argument("plot", StringArgumentType.word())
+                    .executes { context ->
+                        dispatch(
+                            context.source.sender,
+                            "plot",
+                            listOf(name, StringArgumentType.getString(context, "plot"))
+                        )
+                    }
+                )
+            )
+        }
 
         listOf("visit", "v").forEach { name ->
             root.then(Commands.literal(name).then(
@@ -43,6 +58,19 @@ internal object PaperCommandTrees {
                     .executes { context ->
                         dispatch(context.source.sender, "plot", listOf(name, StringArgumentType.getString(context, "player")))
                     }
+                    .then(Commands.argument("plot", StringArgumentType.word())
+                        .executes { context ->
+                            dispatch(
+                                context.source.sender,
+                                "plot",
+                                listOf(
+                                    name,
+                                    StringArgumentType.getString(context, "player"),
+                                    StringArgumentType.getString(context, "plot")
+                                )
+                            )
+                        }
+                    )
             ))
         }
 

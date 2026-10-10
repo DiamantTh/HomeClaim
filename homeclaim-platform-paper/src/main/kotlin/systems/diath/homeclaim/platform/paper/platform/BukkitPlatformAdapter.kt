@@ -53,8 +53,7 @@ class BukkitPlayerAdapter(private val player: BukkitPlayer) : Player {
             location.yaw,
             location.pitch
         )
-        player.teleportAsync(bukkitLoc)
-        return true
+        return runCatching { player.teleport(bukkitLoc) }.getOrDefault(false)
     }
     
     override fun getWorld(): String {
