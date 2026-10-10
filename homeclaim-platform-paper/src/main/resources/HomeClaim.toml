@@ -3,6 +3,9 @@ locale = "en"
 
 [homeclaim.storage]
 type = "JDBC"
+# SQLite is the zero-configuration local/single-server default. PostgreSQL is the
+# recommended production/reference database; MariaDB is a supported alternative.
+# MySQL is experimental and is not an officially supported production target.
 driver = "SQLITE"
 sqliteFile = "plugins/HomeClaim/homeclaim.db"
 encoding = "UTF-8"

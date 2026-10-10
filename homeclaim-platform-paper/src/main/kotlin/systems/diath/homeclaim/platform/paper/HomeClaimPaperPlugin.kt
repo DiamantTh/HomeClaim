@@ -737,6 +737,12 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     }
 
     private fun createJdbcServices(config: StorageConfig): PlatformServices {
+        if (config.driver == DriverType.MYSQL) {
+            logger.warning(
+                "MySQL storage is experimental and not an officially supported HomeClaim database. " +
+                    "Use PostgreSQL, MariaDB, or SQLite for supported deployments."
+            )
+        }
         val dataSource = buildDataSource(config)
         if (config.driver != DriverType.SQLITE && (config.username.isNullOrBlank() || config.password.isNullOrBlank())) {
             logger.warning(i18n.msg("jdbc.warn.no.creds"))

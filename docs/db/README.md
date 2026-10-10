@@ -1,0 +1,60 @@
+# HomeClaim database support
+
+This page records the database support contract and the runtime checks for the Paper plugin. The pre-release Flyway baseline is still development schema, not a published upgrade history. Until the first release, schema corrections belong in the canonical baseline or dialect-specific repeatables; do not add an artificial `V6`, `V7`, and so on for unreleased states.
+
+## Support policy
+
+| Database | Status | Intended use |
+| --- | --- | --- |
+| PostgreSQL | Recommended production database and canonical development/reference database | New server deployments and first verification target for new database features |
+| MariaDB | Supported production alternative | Minecraft hosting and installations that already operate MariaDB |
+| SQLite | Supported zero-configuration database | Development, tests, and small single-instance servers |
+| MySQL | Experimental and not officially supported | The connector and configuration option exist, but HomeClaim has no dedicated, end-to-end verified MySQL schema/runtime path |
+
+Domain behavior should be consistent across supported databases. Physical SQL may differ. PostgreSQL is not limited to the smallest common SQL subset: use a PostgreSQL feature when it supports a real HomeClaim query or invariant and retain a fitting implementation for MariaDB or SQLite.
+
+MySQL must not be described as supported based on Connector/J being packaged, configuration parsing, or a Flyway module being present. That status requires an isolated MySQL verification of fresh schema initialization, restart, domain CRUD, audit/correlation, claim/merge, and relevant REST mutations. MariaDB SQL is not presumed to work unchanged on MySQL.
+
+## Current schema and dialect implementation
+
+The common pre-release initial schema is `homeclaim-platform-paper/src/main/resources/db/migration/common/V1__init.sql`. It is followed by dialect-specific repeatables where configured. Domain UUID columns use `UUID`, including World/Area identity and references, region/role/component/zone identifiers, and structured audit UUID fields. Opaque resource references and external actor references remain strings because they are not necessarily HomeClaim UUIDs. This keeps a stable domain identity distinct from world names and arbitrary external resource keys.
+
+JSON-shaped columns currently use the common `JSON` type. The PostgreSQL path uses a typed JDBC JSON parameter; MariaDB and SQLite bind the serialized text through their JSON-compatible column behavior. No JSONB/GIN index is currently installed: the runtime repositories fetch JSON by relational keys and decode it into snapshots rather than using JSON containment filters. Do not add a JSON index until a concrete query uses it.
+
+MariaDB's repeatable script (`R__mariadb_extras.sql`) adds selected generated columns from JSON flag/limit values and indexes them. Those columns are an optimization for relationally keyed values and do not change HomeClaim policy semantics. The runtime verification below uses MariaDB 11.4.13, which is the currently verified release for this checkout; check the exact database version and repeatable requirements before promising a wider version range.
+
+SQLite uses the common baseline and the same repository/domain behavior needed for the single-server use case. It is not a reason to avoid useful PostgreSQL or MariaDB capabilities.
+
+## Persistence and runtime reads
+
+The configured supported relational database is canonical persistence. Protection reads are served from JDBC repository runtime snapshots and spatial indexes after startup loading:
+
+- HomeClaim worlds and Areas, with per-world Area resolvers;
+- Regions grouped by Area and chunk candidates, including loaded roles, flags, and limits;
+- Zones indexed by Area and chunk/priority;
+- Components indexed by region and world/chunk/position;
+- Entry-deny rules grouped by region;
+- named flag profiles in an immutable runtime snapshot.
+
+Ordinary protection evaluation must not perform SQL reads for those records. PostgreSQL's shared buffers or the OS page cache cannot replace HomeClaim's in-memory hot-path state. Do not add arbitrary TTLs to roles, policies, Areas, denies, or limits. A successful domain write should update or invalidate the relevant snapshot; a direct SQL edit outside HomeClaim requires an explicit reload or server restart. Redis is not part of a single-server cache design.
+
+The Area/Region lookup has an Area/chunk candidate index and still applies exact spatial checks. Use and measure this path before introducing a second spatial index.
+
+## Runtime verification
+
+`DatabaseDialectRuntimeTest` exercises fresh Flyway initialization, world/Area resolution, profile persistence, region CRUD and spatial lookup, roles, flags, limits, zone defaults, components, entry-deny, claim and merge, audit correlation, a mutating REST trust request, and reconstruction of runtime repository snapshots from persisted records. The PostgreSQL and MariaDB cases are opt-in and require isolated disposable databases. The SQLite case creates and removes a temporary local database.
+
+To run the three dialect cases against throwaway databases, provide these variables to the Paper test task:
+
+```text
+HOMECLAIM_TEST_POSTGRES_JDBC_URL
+HOMECLAIM_TEST_POSTGRES_USERNAME
+HOMECLAIM_TEST_POSTGRES_PASSWORD
+HOMECLAIM_TEST_MARIADB_JDBC_URL
+HOMECLAIM_TEST_MARIADB_USERNAME
+HOMECLAIM_TEST_MARIADB_PASSWORD
+```
+
+The external databases must be disposable because Flyway and the test write schema and domain records. Never point these variables at production.
+
+The current local verification for this support-policy change ran the complete runtime exercise on PostgreSQL 17.11, MariaDB 11.4.13, and a fresh SQLite database. It verified successful REST mutation and persisted audit on each, plus persisted-state reload after repository snapshots were recreated. It did not run MySQL, Paper/Purpur server smoke tests, or external REST denial/error response matrices; those outcomes must not be inferred from these database tests. Record future database version changes and any failures here when runtime support changes.

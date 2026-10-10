@@ -30,7 +30,7 @@ This section records the repository state observed after architecture Steps 1–
 - Paper protection is split into block, automation, entity, explosion, movement, and vehicle listeners behind a shared Paper adapter and the central policy guard. This is broad event coverage, not proof that every Minecraft mutation is protected. Inspect each current listener and its tests before changing behavior.
 - The main HomeClaim, plot, and zone command trees use Paper's lifecycle command registration. `ImportCommand` and a generic Bukkit executor bridge remain as inactive legacy classes; verify registration before treating either as an active entry point. Active claim and merge mutations route through structured `RegionOperationLimitService` operations, while command-side target selection, presentation, and parts of authorization remain in `PlotCommand`; unlink, reset, transfer, and administration are not yet unified behind the same operation contract.
 - Plot-world setup and recovery, reset/mutation planning, a Paper synchronous mutation backend, and job tracking exist. FAWE is optional at runtime; setup conversion specifically requires it. The default `runPaper` task no longer downloads FAWE automatically.
-- The pre-release Flyway schema has one common initial migration (`V1__init.sql`) plus dialect-specific MariaDB/PostgreSQL repeatable scripts. These are not published upgrade history. The connection configuration recognizes MySQL and the plugin artifact includes Connector/J, but there is no MySQL-specific migration directory; verify the common baseline and UUID handling before describing MySQL as fully supported. `docs/db/schema.sql` is a broader reference and also contains REST account/authentication tables. Verify dialect behavior before persistence changes.
+- The pre-release Flyway schema has one common initial migration (`V1__init.sql`) plus dialect-specific MariaDB/PostgreSQL repeatable scripts. These are not published upgrade history. Domain UUID identifiers, including World/Area and structured audit UUID references, use `UUID`; opaque resource references and external actor references remain strings where they are not guaranteed domain UUIDs. JSON-shaped values use the common `JSON` type. PostgreSQL intentionally has no default GIN expression indexes because active repositories filter by relational keys and load JSON into runtime snapshots; MariaDB's repeatable uses JSON-derived generated columns and selected indexes. The connection configuration and plugin artifact include MySQL Connector/J, but MySQL has no dedicated migration path and has not been verified as an end-to-end runtime dialect. Do not call it supported because a driver is present. `docs/db/schema.sql` is a broader reference and also contains REST account/authentication tables. Verify dialect behavior before persistence changes.
 - `homeclaim-api` is a Ktor REST implementation; `homeclaim-api-client` is a separately published extension/client module. Its `Models.kt` still defines a separate string-valued `WorldId`, distinct from core's UUID-backed identity, and its action/component registries are separate extension points. Treat these as public compatibility contracts; do not silently substitute core types or claim that the API boundary has been fully consolidated. `homeclaim-webux` contains a Svelte frontend and server/template resources. Existing public API and REST behavior must be checked before changing models, routes, authentication, or module boundaries.
 - The current source has JDBC repositories, in-memory implementations for some services, typed audit taxonomies, a structured audit lifecycle with correlation and source/target columns, a bounded asynchronous Paper audit writer, a PlotSquared import adapter, and tests across core, Paper setup/mutation/protection, UX, and LiftLink. Audit lifecycle is only partially wired: command claim/merge/unlink/reset and role edits have hooks, while flag/profile operations and asynchronous reset completion do not yet share one end-to-end operation service.
 - The current plugin has LuckPerms-related permission nodes/documentation and a native Bukkit permission provider. Do not infer an implemented LuckPerms or PowerRanks API integration from permission nodes or docs alone.
@@ -101,6 +101,44 @@ Do not assume that current listener coverage is complete. For protection changes
 
 The active policy path separates actor capability from local resource policy: explicit resource DENY wins over ordinary permissions, and locked DENY also constrains owners. A Paper capability grant can satisfy an inherited rule, while a named bypass is recorded as the decision source. The active Decision model includes `ALLOW`, `DENY`, `INHERIT`, and `NOT_APPLICABLE`, with a legacy Boolean projection. Numeric claim/merge quotas are evaluated by `RegionOperationLimitService`, separately from policy flags. The broader policy matrix and complete action registry remain out of scope unless explicitly requested.
 
+### Database support policy
+
+Treat database support as an explicit product contract. The persistent database is HomeClaim's canonical source of truth, but the database implementations do not need to share identical SQL or physical types. New database features should first be designed and verified against PostgreSQL, the reference server database. Keep the same HomeClaim domain behavior on supported alternatives while using each database's appropriate implementation. Do not reduce PostgreSQL to the weakest SQL subset merely to force one shared statement across every dialect.
+
+| Database | Product status | Intended use |
+| --- | --- | --- |
+| PostgreSQL | Recommended production database and canonical development/reference database | New server installations and new database features |
+| MariaDB | Supported production alternative | Existing Minecraft hosting and server infrastructures |
+| SQLite | Supported zero-configuration option | Local development, tests, and small single-instance servers; it is not the scaling reference for large or distributed installations |
+| MySQL | Experimental and not officially supported until an end-to-end runtime matrix passes | Do not advertise or promise production compatibility based on Connector/J, a JDBC URL, or Flyway's MySQL module alone |
+
+PostgreSQL may use native `UUID`, `JSONB`, GIN, expression or partial indexes, checks, foreign keys, and transactions where an actual HomeClaim query or invariant benefits. Keep frequently filtered identity, status, time, and ownership fields as typed columns. Use JSON/JSONB for flexible documents rather than hiding relational data in a document. Add indexes to serve concrete repository/API queries; do not index every JSON field speculatively.
+
+MariaDB is a first-class supported alternative, not a best-effort fallback. It may use JSON, generated columns, and ordinary indexes where that produces the same domain behavior as PostgreSQL's JSONB/GIN strategy. Verify the minimum MariaDB version for every used feature and exercise its Flyway script, repositories, audit, and REST path. Differences in native UUID support and driver conversion must be tested rather than inferred from PostgreSQL behavior.
+
+SQLite remains useful and must keep its advertised basic local/single-server workflows reliable. Its limitations must not determine how PostgreSQL or MariaDB features are modeled. A shared domain contract can have separate SQL and binding code per database. In particular, do not claim external-database runtime coverage based only on SQLite Flyway tests or JDBC driver class loading.
+
+The MySQL connector and `flyway-mysql` dependency currently exist and the configuration parser accepts `mysql`, but those facts are not a support test. Until an isolated MySQL version passes fresh initialization, restart, CRUD for the HomeClaim domain models, audit/correlation persistence, claim/merge, and relevant REST operations, describe MySQL as experimental/unverified and not a supported production target. Do not add MySQL-specific behavior or announce support without that evidence. MariaDB SQL is not automatically MySQL SQL.
+
+The active pre-release schema is a shared baseline with dialect-specific repeatable scripts. Domain UUID columns, including World/Area IDs, area references, and structured audit UUID fields, use `UUID`; opaque source/target resource references and external actor references remain strings. JSON-shaped columns use the common `JSON` type, not stored `JSONB`. PostgreSQL has no default JSON GIN index because current reads use relational keys and do not run JSON containment predicates; MariaDB has selected JSON-derived generated columns/indexes in its repeatable. The PostgreSQL, MariaDB, and SQLite runtime paths have been exercised by the opt-in Paper database runtime test. This is an observed schema shape, not a reason to copy it blindly into new designs. Before changing physical types, trace JDBC bind/read code across every advertised dialect and run fresh-schema tests. Pre-release schema corrections belong in the canonical baseline/repeatables, not an artificial next migration.
+
+### Persistent database and runtime cache
+
+Database persistence and event-time lookup are separate layers:
+
+```text
+Paper protection event -> in-memory runtime snapshot/index -> domain decision
+Domain/admin/REST operation -> repository -> PostgreSQL / MariaDB / SQLite
+```
+
+The configured supported database is the persistent source of truth (PostgreSQL is the recommended server and reference database). Protection events must not synchronously query it (or another JDBC database) for ordinary scope, region, zone, role, flag, limit, component, entry-deny, or named-profile decisions. PostgreSQL shared buffers and operating-system page cache reduce the cost of an SQL query; they do not remove that query from HomeClaim's event path.
+
+The current JDBC runtime uses startup-loaded in-memory state: World/Area repository snapshots and a per-WorldId area resolver; Region records grouped by AreaId and chunk candidates, including the loaded roles, flags, and limits; Zone records indexed by AreaId/chunk and priority; Components indexed by region, world/chunk, and position; Entry-Deny rules grouped by RegionId; and flag profiles as an immutable named-profile snapshot. Normal reads for those policy/protection decisions are memory reads. These structures are not a distributed cache and do not use arbitrary TTLs for domain state.
+
+Update or invalidate only the affected runtime state after the corresponding database write succeeds. The active region/zone/component/world-area/entry-deny/profile services publish updates through their mutation methods; startup warming/reload populates snapshots before listeners serve events. Any direct SQL edit that bypasses those services needs an explicit reload or plugin restart to become visible. Do not add a periodic TTL that leaves a role, deny, area, or policy change stale for an arbitrary interval.
+
+An Area/Region chunk index is already present in the JDBC runtime lookup path. Reuse it and measure it before adding another spatial structure. If later measurements justify a more detailed WorldId + chunkX + chunkZ candidate index, keep exact bounds/policy checks and mutation invalidation. Do not add Redis for a normal single Paper/Purpur process. A distributed invalidation or coordination layer is only a future multi-instance concern and requires a separate task.
+
 ### Roles, permissions, and actions
 
 HomeClaim roles are domain roles such as Owner, Trusted, Member, Visitor, and Banned. They are not external permission groups. Native Paper permissions and optional external permission providers answer capability questions; they do not replace HomeClaim ownership or role state.
@@ -147,7 +185,7 @@ Do not migrate every command, plugin hook, or module just because one platform l
 
 Validate the actual distributable plugin artifact, not only Gradle compile or test classpaths. Inspect the packaged metadata, Flyway resources, JDBC drivers for every database advertised as supported, Kotlin runtime, Jackson, connection pool, server/runtime libraries, and `META-INF` service resources. Decide intentionally which libraries are shaded and which are supplied by Paper; check relocation and duplicate-resource behavior. A dependency that appears only in a test or development configuration is not available to a production plugin. FAWE is optional: the native Paper path must support ordinary HomeClaim operation when FAWE is absent.
 
-For database work, verify the runtime configuration and SQL against SQLite, PostgreSQL, and MariaDB/MySQL paths that the product actually claims to support. Do not report an unrun external database as tested. Use isolated local temporary databases or containers if available; never use a production database for verification. Keep migration resource locations aligned with runtime discovery and update schema documentation when it is part of the change.
+For database work, verify the runtime configuration and SQL against SQLite, PostgreSQL, and MariaDB paths that the product claims to support. MySQL is experimental and excluded from the support matrix until it passes a separately requested end-to-end runtime verification. Do not report an unrun external database as tested. Use isolated local temporary databases or containers if available; never use a production database for verification. Keep migration resource locations aligned with runtime discovery and update schema documentation when it is part of the change.
 
 ### Web and REST behavior
 
@@ -187,6 +225,7 @@ These items are not implementation tasks. Do not implement them unless a separat
 - Richer public API for addons and external services.
 - Paper/Purpur CI matrix and optional Leaf/Leaves/Gale compatibility CI.
 - Additional external audit sinks.
+- PostGIS-backed complex geometry or map queries. This is an option to preserve for a later spatial product need, not a current dependency or task.
 
 Do not implement any item from this section unless the current user/task explicitly requests it.
 
@@ -215,6 +254,11 @@ Do not implement any item from this section unless the current user/task explici
 - every limit is a permission;
 - every Paper fork behaves internally exactly like Paper;
 - database access is acceptable in event hot paths;
+- a bundled JDBC connector proves a database dialect is supported;
+- MySQL and MariaDB can use each other's migrations or generated-column SQL unchanged;
+- PostgreSQL's internal cache makes synchronous SQL appropriate for protection events;
+- every JSON column needs a GIN/generated-column index;
+- a TTL is an acceptable substitute for targeted domain-cache invalidation;
 - an existing model, API route, command, UI, or migration is fully wired just because its type/file exists;
 - older docs describe the current source accurately.
 

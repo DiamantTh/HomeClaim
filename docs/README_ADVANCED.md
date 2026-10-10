@@ -30,7 +30,7 @@ Aktueller Entkopplungsstand:
 
 - Config: `homeclaim-platform-paper/src/main/resources/HomeClaim.toml` (runtime file: `plugins/HomeClaim/config/HomeClaim.toml`)
 - Locale: `homeclaim.locale` (`en`, `de`, ...)
-- Storage: JDBC (SQLite default, alternativ PostgreSQL/MySQL/MariaDB)
+- Storage: PostgreSQL (empfohlene Produktions- und Referenzdatenbank), MariaDB (unterstuetzte Produktionsalternative), SQLite (Zero-Configuration fuer Entwicklung und kleine Einzelserver). MySQL ist experimentell und nicht offiziell unterstuetzt; Connector/J allein ist kein Supportnachweis. Details und Verifikation: `docs/db/README.md`.
 - Migrationen: Flyway via `homeclaim.migrations.*`
 - REST: optional via `homeclaim.rest.enabled`
 

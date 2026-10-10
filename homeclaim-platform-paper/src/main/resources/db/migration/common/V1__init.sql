@@ -1,4 +1,5 @@
--- HomeClaim schema (Postgres empfohlen; MariaDB/SQLite evtl. Anpassungen noetig)
+-- Shared pre-release baseline. PostgreSQL is the reference dialect; MariaDB and SQLite
+-- have explicit runtime verification and dialect-specific Flyway locations where needed.
 
 CREATE TABLE regions (
     id UUID PRIMARY KEY,
@@ -71,27 +72,27 @@ CREATE TABLE components (
 );
 
 CREATE TABLE audit_log (
-    audit_id VARCHAR(36) PRIMARY KEY,
-    actor_id VARCHAR(36),
-    target_id VARCHAR(36),
+    audit_id UUID PRIMARY KEY,
+    actor_id UUID,
+    target_id UUID,
     category VARCHAR(64) NOT NULL,
     action VARCHAR(64) NOT NULL,
-    correlation_id VARCHAR(36),
-    parent_correlation_id VARCHAR(36),
+    correlation_id UUID,
+    parent_correlation_id UUID,
     actor_kind VARCHAR(32),
     actor_ref VARCHAR(128),
     action_key VARCHAR(255),
-    world_id VARCHAR(36),
-    area_id VARCHAR(36),
-    source_world_id VARCHAR(36),
-    source_area_id VARCHAR(36),
+    world_id UUID,
+    area_id UUID,
+    source_world_id UUID,
+    source_area_id UUID,
     source_x INT,
     source_y INT,
     source_z INT,
     source_resource_type VARCHAR(64),
     source_resource_id VARCHAR(36),
-    target_world_id VARCHAR(36),
-    target_area_id VARCHAR(36),
+    target_world_id UUID,
+    target_area_id UUID,
     target_x INT,
     target_y INT,
     target_z INT,
@@ -165,15 +166,15 @@ CREATE INDEX idx_region_entry_denies_active ON region_entry_denies(region_id, st
 CREATE INDEX idx_region_entry_denies_target ON region_entry_denies(target_type, target_value);
 
 CREATE TABLE worlds (
-    id VARCHAR(36) PRIMARY KEY,
-    platform_uuid VARCHAR(36) UNIQUE,
+    id UUID PRIMARY KEY,
+    platform_uuid UUID UNIQUE,
     name VARCHAR(128) NOT NULL,
     metadata JSON
 );
 
 CREATE TABLE areas (
-    id VARCHAR(36) PRIMARY KEY,
-    world_id VARCHAR(36) NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY,
+    world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
     area_key VARCHAR(128) NOT NULL,
     whole_world BOOLEAN NOT NULL DEFAULT FALSE,
     min_x INT,
@@ -192,8 +193,8 @@ CREATE TABLE areas (
     )
 );
 
-ALTER TABLE regions ADD COLUMN area_id VARCHAR(36) REFERENCES areas(id);
-ALTER TABLE zones ADD COLUMN area_id VARCHAR(36) REFERENCES areas(id);
+ALTER TABLE regions ADD COLUMN area_id UUID REFERENCES areas(id);
+ALTER TABLE zones ADD COLUMN area_id UUID REFERENCES areas(id);
 
 CREATE INDEX idx_areas_world_priority ON areas(world_id, priority);
 CREATE INDEX idx_regions_area_bounds ON regions(area_id, min_x, max_x, min_z, max_z);

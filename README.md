@@ -13,7 +13,8 @@ HomeClaim ist ein modulares Plot-/Regionen-Framework fuer Minecraft-Server. Der 
 - `homeclaim-ux`: Referenz-Wiring fuer In-Game-/Web-UX, nutzt Core-Services.
 - `homeclaim-liftlink`: Bewegungs-Komponenten (Elevator-/Teleport-Pads) auf Basis des Core-Component-Service.
 - `homeclaim-platform-paper`: Paper-Adapter fuer Minecraft/Paper 26.3.x+ (Java 25); Purpur ist ein wichtiges Kompatibilitaetsziel. Folia wird nicht unterstuetzt.
-- `docs/db/schema.sql`: SQL-Schema fuer Postgres/MariaDB/SQLite-lesbar (Regionen, Zonen, Komponenten, Rollen, Flags/Limits, Audit).
+- Datenbank-Supportmatrix und Laufzeitgrenzen: `docs/db/README.md`. PostgreSQL ist die empfohlene Server- und Referenzdatenbank, MariaDB eine unterstuetzte Produktionsalternative, SQLite die einfache lokale/single-server Option. MySQL ist experimentell und nicht offiziell unterstuetzt.
+- `docs/db/schema.sql`: erweiterte Schema-Referenz; das kanonische Initialschema fuer die Plugin-Runtime liegt unter `homeclaim-platform-paper/src/main/resources/db/migration/common/`.
 
 ## Quickstart
 

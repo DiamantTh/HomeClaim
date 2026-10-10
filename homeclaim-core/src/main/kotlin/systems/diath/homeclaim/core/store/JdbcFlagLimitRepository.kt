@@ -24,7 +24,7 @@ class JdbcFlagLimitRepository(
                         flags.forEach { (key, value) ->
                             ps.setObject(1, regionId.value)
                             ps.setString(2, key.value)
-                            ps.setString(3, Serialization.toJson(value))
+                            ps.setJsonString(3, Serialization.toJson(value))
                             ps.addBatch()
                         }
                         ps.executeBatch()
@@ -53,7 +53,7 @@ class JdbcFlagLimitRepository(
                         limits.forEach { (key, value) ->
                             ps.setObject(1, regionId.value)
                             ps.setString(2, key.value)
-                            ps.setString(3, Serialization.toJson(value))
+                            ps.setJsonString(3, Serialization.toJson(value))
                             ps.addBatch()
                         }
                         ps.executeBatch()
@@ -111,7 +111,7 @@ class JdbcFlagLimitRepository(
             conn.prepareStatement("INSERT INTO region_flags (region_id, flag_key, flag_value) VALUES (?, ?, ?)").use { ps ->
                 ps.setObject(1, regionId.value)
                 ps.setString(2, key.value)
-                ps.setString(3, Serialization.toJson(value))
+                ps.setJsonString(3, Serialization.toJson(value))
                 ps.executeUpdate()
             }
         }
@@ -127,7 +127,7 @@ class JdbcFlagLimitRepository(
             conn.prepareStatement("INSERT INTO region_limits (region_id, limit_key, limit_value) VALUES (?, ?, ?)").use { ps ->
                 ps.setObject(1, regionId.value)
                 ps.setString(2, key.value)
-                ps.setString(3, Serialization.toJson(value))
+                ps.setJsonString(3, Serialization.toJson(value))
                 ps.executeUpdate()
             }
         }

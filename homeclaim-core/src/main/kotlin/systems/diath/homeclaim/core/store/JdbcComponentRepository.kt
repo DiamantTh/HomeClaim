@@ -48,8 +48,8 @@ class JdbcComponentRepository(
                 setInt(6, position.y)
                 setInt(7, position.z)
                 setString(8, ComponentState.ENABLED.name)
-                setString(9, Serialization.toJson(policy))
-                setString(10, Serialization.toJson(config))
+                setJsonString(9, Serialization.toJson(policy))
+                setJsonString(10, Serialization.toJson(config))
                 setObject(11, UUID(0, 0))
             }.executeUpdate()
         }
@@ -74,17 +74,19 @@ class JdbcComponentRepository(
     override fun updateComponent(componentId: ComponentId, config: ComponentConfig?, policy: ComponentPolicy?, state: ComponentState?) {
         if (config == null && policy == null && state == null) return
         val assignments = mutableListOf<String>()
-        val params = mutableListOf<Any>()
-        config?.let { assignments += "config = ?"; params += Serialization.toJson(it) }
-        policy?.let { assignments += "policy = ?"; params += Serialization.toJson(it) }
-        state?.let { assignments += "state = ?"; params += it.name }
-        assignments += "updated_at = now()"
+        val params = mutableListOf<Pair<Any, Boolean>>()
+        config?.let { assignments += "config = ?"; params += Serialization.toJson(it) to true }
+        policy?.let { assignments += "policy = ?"; params += Serialization.toJson(it) to true }
+        state?.let { assignments += "state = ?"; params += it.name to false }
+        assignments += "updated_at = CURRENT_TIMESTAMP"
 
         dataSource.connection.use { conn ->
             conn.prepareStatement(
                 "UPDATE components SET ${assignments.joinToString(", ")} WHERE id = ?"
             ).apply {
-                params.forEachIndexed { idx, value -> setObject(idx + 1, value) }
+                params.forEachIndexed { idx, (value, isJson) ->
+                    if (isJson) setJsonString(idx + 1, value as String) else setObject(idx + 1, value)
+                }
                 setObject(params.size + 1, componentId.value)
             }.executeUpdate()
         }
@@ -146,7 +148,7 @@ class JdbcComponentRepository(
             state = ComponentState.valueOf(getString("state")),
             policy = Serialization.fromJson(getString("policy")),
             config = Serialization.fromJson(getString("config")),
-            createdBy = getObject("created_by", UUID::class.java),
+            createdBy = getRequiredUuid("created_by"),
             createdAt = getTimestamp("created_at").toInstant(),
             updatedAt = getTimestamp("updated_at").toInstant()
         )

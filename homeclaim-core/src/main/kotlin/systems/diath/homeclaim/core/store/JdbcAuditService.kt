@@ -27,18 +27,18 @@ class JdbcAuditService(private val dataSource: DataSource) : AuditService {
 
         dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { stmt ->
-                stmt.setString(1, entry.auditId.toString())
-                stmt.setString(2, entry.actorId?.toString())
-                stmt.setString(3, entry.targetId?.toString())
+                stmt.setObject(1, entry.auditId)
+                stmt.setObject(2, entry.actorId)
+                stmt.setObject(3, entry.targetId)
                 stmt.setString(4, entry.category)
                 stmt.setString(5, entry.action)
-                stmt.setString(6, entry.correlationId?.toString())
-                stmt.setString(7, entry.parentCorrelationId?.toString())
+                stmt.setObject(6, entry.correlationId?.value)
+                stmt.setObject(7, entry.parentCorrelationId?.value)
                 stmt.setString(8, entry.actorKind)
                 stmt.setString(9, entry.actorRef)
                 stmt.setString(10, entry.actionKey?.value)
-                stmt.setString(11, entry.worldId?.value?.toString())
-                stmt.setString(12, entry.areaId?.value?.toString())
+                stmt.setObject(11, entry.worldId?.value)
+                stmt.setObject(12, entry.areaId?.value)
                 setEndpoint(stmt, 13, entry.source)
                 setEndpoint(stmt, 20, entry.target)
                 stmt.setString(27, entry.role?.name)
@@ -58,9 +58,9 @@ class JdbcAuditService(private val dataSource: DataSource) : AuditService {
     }
 
     private fun setEndpoint(stmt: PreparedStatement, start: Int, endpoint: ActionEndpoint?) {
-        stmt.setString(start, endpoint?.worldId?.value?.toString())
-        stmt.setString(start + 1, endpoint?.areaId?.value?.toString()
-            ?: (endpoint?.resource as? systems.diath.homeclaim.core.policy.ActionResourceRef.Area)?.areaId?.value?.toString())
+        stmt.setObject(start, endpoint?.worldId?.value)
+        stmt.setObject(start + 1, endpoint?.areaId?.value
+            ?: (endpoint?.resource as? systems.diath.homeclaim.core.policy.ActionResourceRef.Area)?.areaId?.value)
         val position = endpoint?.position
         if (position == null) {
             stmt.setNull(start + 2, Types.INTEGER)

@@ -183,19 +183,19 @@ class JdbcEntryDenyRepository(
 
     private fun ResultSet.toEntryDenyRule(): EntryDenyRule {
         return EntryDenyRule(
-            id = EntryDenyId(getObject("id", UUID::class.java)),
-            regionId = RegionId(getObject("region_id", UUID::class.java)),
+            id = EntryDenyId(getRequiredUuid("id")),
+            regionId = RegionId(getRequiredUuid("region_id")),
             targetType = EntryDenyTargetType.valueOf(getString("target_type")),
             targetValue = getString("target_value"),
             reason = getString("reason"),
-            createdBy = getObject("created_by", UUID::class.java),
+            createdBy = getRequiredUuid("created_by"),
             createdAt = getTimestamp("created_at").toInstant(),
             expiresAt = getTimestamp("expires_at")?.toInstant(),
             status = EntryDenyStatus.valueOf(getString("status")),
-            reportedBy = getObject("reported_by", UUID::class.java),
+            reportedBy = getUuid("reported_by"),
             reportedAt = getTimestamp("reported_at")?.toInstant(),
             reportReason = getString("report_reason"),
-            revokedBy = getObject("revoked_by", UUID::class.java),
+            revokedBy = getUuid("revoked_by"),
             revokedAt = getTimestamp("revoked_at")?.toInstant(),
             revokeReason = getString("revoke_reason")
         )

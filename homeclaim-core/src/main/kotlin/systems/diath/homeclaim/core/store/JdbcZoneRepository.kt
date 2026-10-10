@@ -48,7 +48,7 @@ class JdbcZoneRepository(
             ).apply {
                 setObject(1, zone.id.value)
                 setString(2, zone.world)
-                setString(3, zone.areaId.value.toString())
+                setObject(3, zone.areaId.value)
                 setString(4, zone.shape.name)
                 setInt(5, zone.bounds.minX)
                 setInt(6, zone.bounds.maxX)
@@ -57,11 +57,11 @@ class JdbcZoneRepository(
                 setInt(9, zone.bounds.minZ)
                 setInt(10, zone.bounds.maxZ)
                 setInt(11, zone.priority)
-                setString(12, Serialization.toJson(zone.lockedFlags.map { it.value }))
-                setString(13, Serialization.toJson(zone.tags))
-                setString(14, Serialization.toJson(zone.defaults.defaultFlags.mapKeys { it.key.value }))
-                setString(15, Serialization.toJson(zone.defaults.defaultLimits.mapKeys { it.key.value }))
-                setString(16, Serialization.toJson(zone.defaults.allowedTriggerBlocks))
+                setJsonString(12, Serialization.toJson(zone.lockedFlags.map { it.value }))
+                setJsonString(13, Serialization.toJson(zone.tags))
+                setJsonString(14, Serialization.toJson(zone.defaults.defaultFlags.mapKeys { it.key.value }))
+                setJsonString(15, Serialization.toJson(zone.defaults.defaultLimits.mapKeys { it.key.value }))
+                setJsonString(16, Serialization.toJson(zone.defaults.allowedTriggerBlocks))
             }.executeUpdate()
         }
         replaceCachedZones { it + (zone.id to zone) }

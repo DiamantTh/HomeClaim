@@ -34,16 +34,16 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
             conn.createStatement().use { statement ->
                 statement.execute(
                     """CREATE TABLE IF NOT EXISTS worlds (
-                        id VARCHAR(36) PRIMARY KEY,
-                        platform_uuid VARCHAR(36) UNIQUE,
+                        id UUID PRIMARY KEY,
+                        platform_uuid UUID UNIQUE,
                         name VARCHAR(128) NOT NULL,
                         metadata JSON
                     )""".trimIndent()
                 )
                 statement.execute(
                     """CREATE TABLE IF NOT EXISTS areas (
-                        id VARCHAR(36) PRIMARY KEY,
-                        world_id VARCHAR(36) NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+                        id UUID PRIMARY KEY,
+                        world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
                         area_key VARCHAR(128) NOT NULL,
                         whole_world BOOLEAN NOT NULL DEFAULT FALSE,
                         min_x INT, max_x INT, min_y INT, max_y INT,
@@ -59,14 +59,14 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
                     )""".trimIndent()
                 )
             }
-            ensureColumn(conn, "regions", "area_id", "VARCHAR(36) REFERENCES areas(id)")
-            ensureColumn(conn, "zones", "area_id", "VARCHAR(36) REFERENCES areas(id)")
+            ensureColumn(conn, "regions", "area_id", "UUID REFERENCES areas(id)")
+            ensureColumn(conn, "zones", "area_id", "UUID REFERENCES areas(id)")
         }
     }
 
     override fun getWorld(id: WorldId): HomeClaimWorld? = dataSource.connection.use { conn ->
         conn.prepareStatement("SELECT * FROM worlds WHERE id = ?").use { ps ->
-            ps.setString(1, id.value.toString())
+            ps.setObject(1, id.value)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
         }
     }
@@ -86,7 +86,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
 
     override fun getWorldByPlatformId(platformWorldId: UUID): HomeClaimWorld? = dataSource.connection.use { conn ->
         conn.prepareStatement("SELECT * FROM worlds WHERE platform_uuid = ?").use { ps ->
-            ps.setString(1, platformWorldId.toString())
+            ps.setObject(1, platformWorldId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
         }
     }
@@ -101,10 +101,10 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
         val world = HomeClaimWorld(WorldId.newId(), platformWorldId, name)
         dataSource.connection.use { conn ->
             conn.prepareStatement("INSERT INTO worlds (id, platform_uuid, name, metadata) VALUES (?, ?, ?, ?)").use { ps ->
-                ps.setString(1, world.id.value.toString())
-                ps.setString(2, platformWorldId?.toString())
+                ps.setObject(1, world.id.value)
+                ps.setObject(2, platformWorldId)
                 ps.setString(3, name)
-                ps.setString(4, "{}")
+                ps.setJsonString(4, "{}")
                 ps.executeUpdate()
             }
         }
@@ -123,9 +123,9 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
                     if (currentName == null) value else value.renamed(currentName)
                 }
                 conn.prepareStatement("UPDATE worlds SET platform_uuid = ?, name = ? WHERE id = ?").use { ps ->
-                    ps.setString(1, platformWorldId.toString())
+                    ps.setObject(1, platformWorldId)
                     ps.setString(2, bound.name)
-                    ps.setString(3, id.value.toString())
+                    ps.setObject(3, id.value)
                     ps.executeUpdate()
                 }
                 conn.commit()
@@ -142,7 +142,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
     override fun renameWorld(id: WorldId, newName: String): HomeClaimWorld = dataSource.connection.use { conn ->
         conn.prepareStatement("UPDATE worlds SET name = ? WHERE id = ?").use { ps ->
             ps.setString(1, newName)
-            ps.setString(2, id.value.toString())
+            ps.setObject(2, id.value)
             if (ps.executeUpdate() == 0) throw NoSuchElementException("HomeClaim world ${id.value} not found")
         }
         getWorld(id)!!
@@ -152,7 +152,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
 
     override fun listAreas(worldId: WorldId): List<Area> = areaSnapshot[worldId] ?: dataSource.connection.use { conn ->
         conn.prepareStatement("SELECT * FROM areas WHERE world_id = ? ORDER BY priority DESC, id").use { ps ->
-            ps.setString(1, worldId.value.toString())
+            ps.setObject(1, worldId.value)
             ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toArea()) } }
         }
     }.also { loaded -> areaSnapshot.putIfAbsent(worldId, loaded) }
@@ -181,7 +181,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
             conn.prepareStatement(
                 "UPDATE areas SET world_id = ?, area_key = ?, whole_world = ?, min_x = ?, max_x = ?, min_y = ?, max_y = ?, min_z = ?, max_z = ?, priority = ?, metadata = ? WHERE id = ?"
             ).use { ps ->
-                ps.setString(1, area.worldId.value.toString())
+                ps.setObject(1, area.worldId.value)
                 ps.setString(2, area.key)
                 ps.setBoolean(3, scope.wholeWorld)
                 scope.bounds?.let { ps.setInt(4, it.minX) } ?: ps.setNull(4, java.sql.Types.INTEGER)
@@ -191,8 +191,8 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
                 scope.bounds?.let { ps.setInt(8, it.minZ) } ?: ps.setNull(8, java.sql.Types.INTEGER)
                 scope.bounds?.let { ps.setInt(9, it.maxZ) } ?: ps.setNull(9, java.sql.Types.INTEGER)
                 ps.setInt(10, area.priority)
-                ps.setString(11, Serialization.toJson(area.metadata))
-                ps.setString(12, area.id.value.toString())
+                ps.setJsonString(11, Serialization.toJson(area.metadata))
+                ps.setObject(12, area.id.value)
                 if (ps.executeUpdate() == 0) throw NoSuchElementException("Area ${area.id.value} not found")
             }
         }
@@ -204,7 +204,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
     override fun deleteArea(id: AreaId) {
         dataSource.connection.use { conn ->
             conn.prepareStatement("DELETE FROM areas WHERE id = ?").use { ps ->
-                ps.setString(1, id.value.toString())
+                ps.setObject(1, id.value)
                 ps.executeUpdate()
             }
         }
@@ -256,12 +256,12 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
                     conn.insertLegacyWorldIfMissing(worldId, name)
                     conn.insertLegacyAreaIfMissing(areaId, worldId)
                     conn.prepareStatement("UPDATE regions SET area_id = ? WHERE world = ? AND area_id IS NULL").use { ps ->
-                        ps.setString(1, areaId.value.toString())
+                        ps.setObject(1, areaId.value)
                         ps.setString(2, name)
                         ps.executeUpdate()
                     }
                     conn.prepareStatement("UPDATE zones SET area_id = ? WHERE world = ? AND area_id IS NULL").use { ps ->
-                        ps.setString(1, areaId.value.toString())
+                        ps.setObject(1, areaId.value)
                         ps.setString(2, name)
                         ps.executeUpdate()
                     }
@@ -326,19 +326,19 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
 
     private fun Connection.selectWorld(id: WorldId): HomeClaimWorld? =
         prepareStatement("SELECT * FROM worlds WHERE id = ?").use { ps ->
-            ps.setString(1, id.value.toString())
+            ps.setObject(1, id.value)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
         }
 
     private fun Connection.selectWorldByPlatformId(id: UUID): HomeClaimWorld? =
         prepareStatement("SELECT * FROM worlds WHERE platform_uuid = ?").use { ps ->
-            ps.setString(1, id.toString())
+            ps.setObject(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
         }
 
     private fun Connection.selectArea(id: AreaId): Area? =
         prepareStatement("SELECT * FROM areas WHERE id = ?").use { ps ->
-            ps.setString(1, id.value.toString())
+            ps.setObject(1, id.value)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toArea() else null }
         }
 
@@ -347,8 +347,8 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
         prepareStatement(
             "INSERT INTO areas (id, world_id, area_key, whole_world, min_x, max_x, min_y, max_y, min_z, max_z, priority, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).use { ps ->
-            ps.setString(1, area.id.value.toString())
-            ps.setString(2, area.worldId.value.toString())
+            ps.setObject(1, area.id.value)
+            ps.setObject(2, area.worldId.value)
             ps.setString(3, area.key)
             ps.setBoolean(4, scope.wholeWorld)
             scope.bounds?.let { ps.setInt(5, it.minX) } ?: ps.setNull(5, java.sql.Types.INTEGER)
@@ -358,7 +358,7 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
             scope.bounds?.let { ps.setInt(9, it.minZ) } ?: ps.setNull(9, java.sql.Types.INTEGER)
             scope.bounds?.let { ps.setInt(10, it.maxZ) } ?: ps.setNull(10, java.sql.Types.INTEGER)
             ps.setInt(11, area.priority)
-            ps.setString(12, Serialization.toJson(area.metadata))
+            ps.setJsonString(12, Serialization.toJson(area.metadata))
             ps.executeUpdate()
         }
     }
@@ -382,9 +382,9 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
     private fun Connection.insertLegacyWorldIfMissing(id: WorldId, name: String) {
         if (selectWorld(id) != null) return
         prepareStatement("INSERT INTO worlds (id, platform_uuid, name, metadata) VALUES (?, NULL, ?, ?)").use { ps ->
-            ps.setString(1, id.value.toString())
+            ps.setObject(1, id.value)
             ps.setString(2, name)
-            ps.setString(3, "{}")
+            ps.setJsonString(3, "{}")
             ps.executeUpdate()
         }
     }
@@ -394,8 +394,8 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
         prepareStatement(
             "INSERT INTO areas (id, world_id, area_key, whole_world, priority, metadata) VALUES (?, ?, 'legacy-default', TRUE, 0, '{}')"
         ).use { ps ->
-            ps.setString(1, id.value.toString())
-            ps.setString(2, worldId.value.toString())
+            ps.setObject(1, id.value)
+            ps.setObject(2, worldId.value)
             ps.executeUpdate()
         }
     }

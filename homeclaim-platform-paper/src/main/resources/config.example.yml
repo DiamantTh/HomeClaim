@@ -3,8 +3,10 @@
 # This file does not describe the supported Paper runtime configuration contract.
 #
 # STORAGE:
-# - Nur JDBC verfügbar (SQLite, PostgreSQL, MySQL, MariaDB)
-# - SQLite ist Standard (keine externe Datenbank nötig)
+# - PostgreSQL: empfohlene Produktions- und Referenzdatenbank
+# - MariaDB: unterstützte Produktionsalternative
+# - SQLite: unterstützte Zero-Configuration-Option für lokale/single-server Setups
+# - MySQL: experimentell, nicht offiziell unterstützt oder end-to-end verifiziert
 
 # =====================================================================
 # JDBC mit SQLite (empfohlen für einfache Setups)
@@ -63,12 +65,12 @@ homeclaim:
 #    maximumPoolSize: 10
 
 # =====================================================================
-# MYSQL
+# MYSQL (experimental / not officially supported)
 # =====================================================================
 #homeclaim:
 #  storage:
 #    type: JDBC
-#    driver: "mysql"                        # com.mysql.cj.jdbc.Driver
+#    driver: "mysql"                        # experimental only; not a supported target
 #    host: "localhost"
 #    port: 3306
 #    database: "homeclaim"

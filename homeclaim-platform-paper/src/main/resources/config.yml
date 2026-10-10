@@ -6,8 +6,10 @@ homeclaim:
     type: JDBC
     driver: SQLITE
     sqliteFile: "plugins/HomeClaim/homeclaim.db"
-    # For PostgreSQL/MySQL, uncomment and configure:
-    # driver: POSTGRES  # or MYSQL, MARIADB
+    # PostgreSQL is the recommended server/reference database; MariaDB is supported.
+    # SQLite is the zero-configuration option. MySQL is experimental and unverified.
+    # To use PostgreSQL, uncomment and configure:
+    # driver: POSTGRES
     # host: "localhost"
     # port: 5432
     # database: "homeclaim"

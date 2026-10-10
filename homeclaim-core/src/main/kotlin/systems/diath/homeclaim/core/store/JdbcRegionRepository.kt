@@ -129,7 +129,7 @@ class JdbcRegionRepository(
                 ).apply {
                     setObject(1, region.id.value)
                     setString(2, region.world)
-                    setString(3, region.areaId.value.toString())
+                    setObject(3, region.areaId.value)
                     setString(4, region.shape.name)
                     setInt(5, bounds.minX)
                     setInt(6, bounds.maxX)
@@ -140,7 +140,7 @@ class JdbcRegionRepository(
                     setObject(11, region.owner)
                     setObject(12, region.mergeGroupId?.value)
                     setDouble(13, region.price)
-                    setString(14, Serialization.toJson(region.metadata))
+                    setJsonString(14, Serialization.toJson(region.metadata))
                 }.executeUpdate()
 
                 replaceRoles(conn, region.id, region.roles)
@@ -260,7 +260,7 @@ class JdbcRegionRepository(
                     """.trimIndent()
                 ).apply {
                     setString(1, region.world)
-                    setString(2, region.areaId.value.toString())
+                    setObject(2, region.areaId.value)
                     setString(3, region.shape.name)
                     setInt(4, region.bounds.minX)
                     setInt(5, region.bounds.maxX)
@@ -271,7 +271,7 @@ class JdbcRegionRepository(
                     setObject(10, region.owner)
                     setObject(11, region.mergeGroupId?.value)
                     setDouble(12, region.price)
-                    setString(13, Serialization.toJson(region.metadata))
+                    setJsonString(13, Serialization.toJson(region.metadata))
                     setObject(14, region.id.value)
                 }.executeUpdate()
 
@@ -323,11 +323,11 @@ class JdbcRegionRepository(
                 minZ = getInt("min_z"),
                 maxZ = getInt("max_z")
             ),
-            owner = getObject("owner", UUID::class.java),
+            owner = getRequiredUuid("owner"),
             roles = conn.fetchRoles(regionId),
             flags = conn.fetchFlags(regionId),
             limits = conn.fetchLimits(regionId),
-            mergeGroupId = getObject("merge_group_id", UUID::class.java)?.let { MergeGroupId(it) },
+            mergeGroupId = getUuid("merge_group_id")?.let { MergeGroupId(it) },
             metadata = Serialization.fromJson(getString("metadata")),
             price = getDouble("price")
         )
@@ -423,7 +423,7 @@ class JdbcRegionRepository(
             val members = mutableSetOf<UUID>()
             val banned = mutableSetOf<UUID>()
             while (rs.next()) {
-                val player = rs.getObject("player_id", UUID::class.java)
+                val player = rs.getRequiredUuid("player_id")
                 when (systems.diath.homeclaim.core.model.RegionRole.valueOf(rs.getString("role"))) {
                     systems.diath.homeclaim.core.model.RegionRole.TRUSTED -> trusted += player
                     systems.diath.homeclaim.core.model.RegionRole.MEMBER -> members += player
@@ -501,7 +501,7 @@ class JdbcRegionRepository(
             flags.forEach { (key, value) ->
                 ps.setObject(1, regionId.value)
                 ps.setString(2, key.value)
-                ps.setString(3, Serialization.toJson(value))
+                ps.setJsonString(3, Serialization.toJson(value))
                 ps.addBatch()
             }
             ps.executeBatch()
@@ -518,7 +518,7 @@ class JdbcRegionRepository(
             limits.forEach { (key, value) ->
                 ps.setObject(1, regionId.value)
                 ps.setString(2, key.value)
-                ps.setString(3, Serialization.toJson(value))
+                ps.setJsonString(3, Serialization.toJson(value))
                 ps.addBatch()
             }
             ps.executeBatch()
