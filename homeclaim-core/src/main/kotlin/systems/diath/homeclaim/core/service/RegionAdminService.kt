@@ -19,6 +19,9 @@ interface RegionAdminService {
         OperationResult.rejected(OperationStatus.FAILED, "ACTOR_AWARE_PROFILE_OPERATION_UNAVAILABLE")
     fun setPrice(context: RegionMutationContext, regionId: RegionId, price: Double): OperationResult<Region> =
         OperationResult.rejected(OperationStatus.FAILED, "ACTOR_AWARE_PRICE_OPERATION_UNAVAILABLE")
+    /** Changes the supported region presentation metadata (`alias` or `description`). */
+    fun mutateMetadata(context: RegionMutationContext, regionId: RegionId, key: String, value: String?): OperationResult<Region> =
+        OperationResult.rejected(OperationStatus.FAILED, "ACTOR_AWARE_METADATA_OPERATION_UNAVAILABLE")
 
     @Deprecated("Use actor-aware mutation methods")
     fun upsertFlag(regionId: RegionId, key: FlagKey, value: FlagValue)

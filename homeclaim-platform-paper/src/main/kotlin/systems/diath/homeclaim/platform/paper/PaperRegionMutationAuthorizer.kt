@@ -24,6 +24,9 @@ class PaperRegionMutationAuthorizer : RegionMutationAuthorizer {
         if (capability == RegionMutationCapability.GLOBAL_PROFILE_CHANGE) return false
         val target = region ?: return false
         if (target.owner == playerId) return true
-        return capability == RegionMutationCapability.COMPONENT_CHANGE && playerId in target.roles.trusted
+        return capability in setOf(
+            RegionMutationCapability.COMPONENT_CHANGE,
+            RegionMutationCapability.METADATA_CHANGE
+        ) && playerId in target.roles.trusted
     }
 }

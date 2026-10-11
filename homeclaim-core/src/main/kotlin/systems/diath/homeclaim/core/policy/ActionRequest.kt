@@ -46,6 +46,7 @@ object HomeClaimOperationActions {
     val COMPONENT_CHANGE = ActionKey("homeclaim:component_change")
     val ENTRY_DENY_CHANGE = ActionKey("homeclaim:entry_deny_change")
     val PRICE_CHANGE = ActionKey("homeclaim:price_change")
+    val METADATA_CHANGE = ActionKey("homeclaim:metadata_change")
 }
 
 @JvmInline

@@ -141,6 +141,7 @@ object AuditPolicy {
         HomeClaimOperationActions.PROFILE_CHANGE.value,
         HomeClaimOperationActions.COMPONENT_CHANGE.value,
         HomeClaimOperationActions.ENTRY_DENY_CHANGE.value,
-        HomeClaimOperationActions.PRICE_CHANGE.value
+        HomeClaimOperationActions.PRICE_CHANGE.value,
+        HomeClaimOperationActions.METADATA_CHANGE.value
     )
 }

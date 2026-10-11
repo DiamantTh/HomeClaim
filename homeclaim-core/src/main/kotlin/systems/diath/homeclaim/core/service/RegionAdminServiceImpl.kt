@@ -168,6 +168,45 @@ class RegionAdminServiceImpl(
         return persistRegionMutation(request) { region.copy(price = price) }
     }
 
+    @Synchronized
+    override fun mutateMetadata(
+        context: RegionMutationContext,
+        regionId: RegionId,
+        key: String,
+        value: String?
+    ): OperationResult<Region> {
+        val region = regionService.getRegionById(regionId)
+        val normalizedKey = key.lowercase()
+        val request = context.actionRequest(
+            HomeClaimOperationActions.METADATA_CHANGE,
+            regionId,
+            region,
+            mapOf("metadataKey" to normalizedKey, "operation" to if (value == null) "clear" else "set")
+        )
+        auditService?.append(AuditEntries.operationResult(request, AuditStatus.ATTEMPTED, targetCount = 1))
+        fun reject(status: OperationStatus, detail: String) = finishRejected<Region>(request, status, detail)
+        if (region == null) return reject(OperationStatus.NOT_FOUND, "REGION_NOT_FOUND")
+        if (!authorizer.isAuthorized(context.actor, region, RegionMutationCapability.METADATA_CHANGE)) {
+            return reject(OperationStatus.DENIED, "METADATA_CHANGE_DENIED")
+        }
+        if (normalizedKey !in setOf("alias", "description")) return reject(OperationStatus.INVALID, "UNSUPPORTED_METADATA_KEY")
+        val sanitized = value?.trim()?.takeIf(String::isNotEmpty)
+        if (sanitized != null && (sanitized.length > (if (normalizedKey == "alias") 32 else 120) || sanitized.any(Char::isISOControl))) {
+            return reject(OperationStatus.INVALID, "INVALID_METADATA_VALUE")
+        }
+        if (normalizedKey == "alias" && sanitized != null && !sanitized.matches(Regex("[A-Za-z0-9 _.-]+"))) {
+            return reject(OperationStatus.INVALID, "INVALID_ALIAS")
+        }
+        val updatedMetadata = if (sanitized == null) region.metadata - normalizedKey else region.metadata + (normalizedKey to sanitized)
+        if (updatedMetadata == region.metadata) {
+            auditService?.append(AuditEntries.operationResult(request.copy(context = request.context.copy(
+                attributes = request.context.attributes + ("changed" to "false")
+            )), AuditStatus.COMPLETED, targetCount = 1))
+            return OperationResult.success(region, "UNCHANGED")
+        }
+        return persistRegionMutation(request) { region.copy(metadata = updatedMetadata) }
+    }
+
     private fun validateProfile(profile: FlagProfile): String? {
         if (profile.name.isBlank() || profile.name.length > 64 || profile.name.any(Char::isISOControl)) {
             return "INVALID_PROFILE_NAME"

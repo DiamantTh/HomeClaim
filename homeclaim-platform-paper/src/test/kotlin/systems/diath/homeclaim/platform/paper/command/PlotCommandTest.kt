@@ -21,6 +21,7 @@ import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.RegionShape
+import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.AuditEntry
@@ -35,6 +36,10 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.persistentJobStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobRecord
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore
+import systems.diath.homeclaim.core.policy.CorrelationId
+import java.time.Instant
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -159,6 +164,40 @@ class PlotCommandTest {
         verify(player, atLeastOnce()).sendMessage(contains("mut-1"))
         verify(player, atLeastOnce()).sendMessage(contains("reset-1"))
         verify(player).sendMessage(contains("recovery-required:MERGE:plots:job-1"))
+    }
+
+    @Test
+    fun `jobs inspect presents persisted recovery details without resuming work`() {
+        val regionService = mock(RegionService::class.java)
+        val guiManager = mock(GuiManager::class.java)
+        val player = mock(Player::class.java)
+        val jobStore = mock(PlotMutationJobStore::class.java)
+        val record = PlotMutationJobRecord(
+            id = UUID.randomUUID(),
+            correlationId = CorrelationId.newId(),
+            operation = "RESET",
+            worldId = null,
+            areaId = AreaId(UUID.randomUUID()),
+            worldName = "plots",
+            regionIds = listOf(RegionId(UUID.randomUUID())),
+            backend = "paper-native",
+            status = PlotMutationJobStatus.RECOVERY_REQUIRED,
+            completedUnits = 4,
+            totalUnits = 12,
+            error = "simulated mutation failure",
+            createdAt = Instant.now()
+        )
+        doReturn(false).`when`(player).isOp
+        doReturn(UUID.randomUUID()).`when`(player).uniqueId
+        doReturn(true).`when`(player).hasPermission(anyString())
+        doReturn(listOf(record)).`when`(jobStore).findRecoveryRequired()
+
+        PlotCommand(regionService, guiManager, econService = null, mutationJobStore = jobStore)
+            .execute(player, arrayOf("jobs", "inspect", record.id.toString()))
+
+        verify(player, atLeastOnce()).sendMessage(contains(record.correlationId.toString()))
+        verify(player, atLeastOnce()).sendMessage(contains("Diagnostic only"))
+        verify(jobStore).findRecoveryRequired()
     }
 
     @Test

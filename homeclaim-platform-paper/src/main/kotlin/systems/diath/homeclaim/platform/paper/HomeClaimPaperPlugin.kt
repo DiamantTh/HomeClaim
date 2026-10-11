@@ -122,7 +122,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             ),
             services.auditService,
             worldAreaService = services.worldAreaService,
-            mutationJobStore = plotMutationJobStore
+            mutationJobStore = plotMutationJobStore,
+            adminService = services.adminService
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,

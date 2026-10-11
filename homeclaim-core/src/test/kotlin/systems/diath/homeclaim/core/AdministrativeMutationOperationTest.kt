@@ -142,6 +142,33 @@ class AdministrativeMutationOperationTest {
     }
 
     @Test
+    fun `metadata operations are actor aware validated and correlated`() {
+        val audit = CapturingAudit()
+        val fixture = fixture(audit)
+        audit.entries.clear()
+        val service = RegionAdminServiceImpl(
+            fixture.regionService,
+            InMemoryFlagProfileService(),
+            auditService = audit,
+            authorizer = RegionMutationAuthorizer { _, _, _ -> true }
+        )
+        val context = RegionMutationContext(
+            ActionActor.Player(fixture.actorId),
+            "test",
+            "metadata",
+            CorrelationId.newId()
+        )
+
+        assertTrue(service.mutateMetadata(context, fixture.region.id, "alias", "My Plot").succeeded)
+        assertEquals("My Plot", fixture.regionService.getRegionById(fixture.region.id)?.metadata?.get("alias"))
+        assertEquals(OperationStatus.INVALID, service.mutateMetadata(context, fixture.region.id, "alias", "bad/alias").status)
+        assertTrue(service.mutateMetadata(context, fixture.region.id, "alias", null).succeeded)
+        assertNull(fixture.regionService.getRegionById(fixture.region.id)?.metadata?.get("alias"))
+        assertTrue(audit.entries.all { it.actionKey == HomeClaimOperationActions.METADATA_CHANGE })
+        assertTrue(audit.entries.all { it.correlationId == context.correlationId })
+    }
+
+    @Test
     fun `component operations persist player creator and audit create update remove`() {
         val fixture = fixture()
         val audit = CapturingAudit()

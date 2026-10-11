@@ -119,6 +119,7 @@ internal object PaperCommandTrees {
                 .then(jobAction("status", name, dispatch))
                 .then(jobAction("cancel", name, dispatch))
                 .then(jobAction("stop", name, dispatch))
+                .then(jobIdAction("inspect", name, dispatch))
             root.then(jobs)
         }
 
@@ -147,6 +148,22 @@ internal object PaperCommandTrees {
                 }
                 .executes { context ->
                     dispatch(context.source.sender, "plot", listOf(commandName, action, StringArgumentType.getString(context, "world")))
+                }
+            )
+
+    private fun jobIdAction(
+        action: String,
+        commandName: String,
+        dispatch: (CommandSender, String, List<String>) -> Int
+    ): LiteralArgumentBuilder<CommandSourceStack> =
+        Commands.literal(action)
+            .then(Commands.argument("jobId", StringArgumentType.word())
+                .executes { context ->
+                    dispatch(context.source.sender, "plot", listOf(
+                        commandName,
+                        action,
+                        StringArgumentType.getString(context, "jobId")
+                    ))
                 }
             )
 

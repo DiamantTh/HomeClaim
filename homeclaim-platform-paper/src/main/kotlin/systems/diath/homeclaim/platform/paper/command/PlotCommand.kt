@@ -6,6 +6,8 @@ import org.bukkit.World
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
+import systems.diath.homeclaim.core.service.RegionAdminService
+import systems.diath.homeclaim.core.service.RegionMutationContext
 import systems.diath.homeclaim.core.service.OperationStatus
 import systems.diath.homeclaim.core.service.AreaService
 import systems.diath.homeclaim.core.service.WorldAreaService
@@ -23,6 +25,7 @@ import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.store.RatingRepository
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.gui.RegionListMenu
+import systems.diath.homeclaim.platform.paper.gui.showOperationFailure
 import systems.diath.homeclaim.platform.paper.PaperWorldAreaResolver
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import systems.diath.homeclaim.platform.paper.util.InputValidator
@@ -70,7 +73,8 @@ class PlotCommand(
     private val operationLimits: RegionOperationLimitService = RegionOperationLimitService(regionService),
     private val auditService: AuditService? = null,
     private val worldAreaService: WorldAreaService? = null,
-    private val mutationJobStore: PlotMutationJobStore? = null
+    private val mutationJobStore: PlotMutationJobStore? = null,
+    private val adminService: RegionAdminService? = null
 ) {
     private val operationReservationLock = Any()
     private val operationReservations = mutableSetOf<RegionId>()
@@ -879,6 +883,30 @@ class PlotCommand(
     private fun handleJobs(player: Player, args: Array<out String>) {
         val action = args.getOrNull(1)?.lowercase()
         when (action) {
+            "inspect" -> {
+                val jobId = args.getOrNull(2)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                if (jobId == null) {
+                    player.sendMessage("§cUsage: /plot jobs inspect <job-id>")
+                    return
+                }
+                val record = mutationJobStore?.findRecoveryRequired()?.firstOrNull { it.id == jobId }
+                if (record == null) {
+                    player.sendMessage("§eNo recovery-required mutation job with that id was found.")
+                    return
+                }
+                player.sendMessage("§6§m───────────§r")
+                player.sendMessage("§aHomeClaim recovery job")
+                player.sendMessage("§7Job: §f${record.id}")
+                player.sendMessage("§7Operation: §f${record.operation}  §7Status: §e${record.status}")
+                player.sendMessage("§7Region(s): §f${record.regionIds.joinToString { it.value.toString() }}")
+                player.sendMessage("§7Area: §f${record.areaId.value}  §7World: §f${record.worldName}")
+                player.sendMessage("§7Backend: §f${record.backend}  §7Progress: §f${record.completedUnits}/${record.totalUnits}")
+                player.sendMessage("§7Correlation: §f${record.correlationId}")
+                player.sendMessage("§7Updated: §f${record.updatedAt}")
+                record.error?.let { player.sendMessage("§cError: §f$it") }
+                player.sendMessage("§eDiagnostic only: inspect the plot and start a new explicit operation if recovery is safe. HomeClaim does not resume this job automatically.")
+                player.sendMessage("§6§m───────────§r")
+            }
             "cancel", "stop" -> {
                 val worldName = args.getOrNull(2)
                 val cancelled = plotMutationService.cancelPendingJobs(worldName) +
@@ -925,6 +953,7 @@ class PlotCommand(
                 player.sendMessage("\u00a79Usage:")
                 player.sendMessage("\u00a7f  /plot jobs status [world]\u00a77 - Show active queued jobs")
                 player.sendMessage("\u00a7f  /plot jobs cancel [world]\u00a77 - Cancel queued jobs")
+                player.sendMessage("\u00a7f  /plot jobs inspect <job-id>\u00a77 - Inspect recovery-required job details")
                 player.sendMessage("\u00a79API:")
                 player.sendMessage("\u00a7f  GET /api/v1/metrics\u00a77 - Full server metrics")
                 player.sendMessage("\u00a7f  GET /api/v1/metrics/plots\u00a77 - Plot-specific metrics")
@@ -939,31 +968,26 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
         }
-        if (!canEditMetadata(player, region)) {
-            player.sendMessage(i18n.msg("permission.denied"))
-            return
-        }
-
         val raw = args.drop(1).joinToString(" ").trim()
         if (raw.isEmpty()) {
             player.sendMessage(i18n.msg("plot.alias_usage"))
             return
         }
-
-        val updatedMetadata = if (raw.equals("clear", ignoreCase = true) || raw == "-") {
-            region.metadata - "alias"
-        } else {
-            val validation = InputValidator.validateName(raw, maxLength = 32)
-            if (!validation.valid) {
-                player.sendMessage(i18n.msg("plot.alias_invalid"))
-                return
-            }
-            region.metadata + ("alias" to validation.sanitized!!)
+        val service = adminService ?: run {
+            player.showOperationFailure("REGION_ADMIN_OPERATIONS_UNAVAILABLE")
+            return
         }
-
-        regionService.updateRegion(region.copy(metadata = updatedMetadata))
-        if (updatedMetadata.containsKey("alias")) {
-            player.sendMessage(i18n.msg("plot.alias_set", updatedMetadata["alias"] ?: ""))
+        val value = raw.takeUnless { it.equals("clear", ignoreCase = true) || it == "-" }
+        val result = service.mutateMetadata(
+            RegionMutationContext(ActionActor.Player(player.uniqueId), "paper", "plot_alias"),
+            region.id,
+            "alias",
+            value
+        )
+        if (!result.succeeded) {
+            player.showOperationFailure(result.detail)
+        } else if (value != null) {
+            player.sendMessage(i18n.msg("plot.alias_set", result.value?.metadata?.get("alias") ?: ""))
         } else {
             player.sendMessage(i18n.msg("plot.alias_cleared"))
         }
@@ -974,39 +998,29 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
         }
-        if (!canEditMetadata(player, region)) {
-            player.sendMessage(i18n.msg("permission.denied"))
-            return
-        }
-
         val raw = args.drop(1).joinToString(" ").trim()
         if (raw.isEmpty()) {
             player.sendMessage(i18n.msg("plot.description_usage"))
             return
         }
-
-        val updatedMetadata = if (raw.equals("clear", ignoreCase = true) || raw == "-") {
-            region.metadata - "description"
-        } else {
-            if (raw.length > 120 || InputValidator.containsInjection(raw)) {
-                player.sendMessage(i18n.msg("plot.description_invalid"))
-                return
-            }
-            region.metadata + ("description" to InputValidator.sanitizeForDisplay(raw).take(120))
+        val service = adminService ?: run {
+            player.showOperationFailure("REGION_ADMIN_OPERATIONS_UNAVAILABLE")
+            return
         }
-
-        regionService.updateRegion(region.copy(metadata = updatedMetadata))
-        if (updatedMetadata.containsKey("description")) {
-            player.sendMessage(i18n.msg("plot.description_set", updatedMetadata["description"] ?: ""))
+        val value = raw.takeUnless { it.equals("clear", ignoreCase = true) || it == "-" }
+        val result = service.mutateMetadata(
+            RegionMutationContext(ActionActor.Player(player.uniqueId), "paper", "plot_description"),
+            region.id,
+            "description",
+            value
+        )
+        if (!result.succeeded) {
+            player.showOperationFailure(result.detail)
+        } else if (value != null) {
+            player.sendMessage(i18n.msg("plot.description_set", result.value?.metadata?.get("description") ?: ""))
         } else {
             player.sendMessage(i18n.msg("plot.description_cleared"))
         }
-    }
-
-    private fun canEditMetadata(player: Player, region: Region): Boolean {
-        if (Permissions.canEditAnyPlot(player)) return true
-        val role = region.roles.resolve(player.uniqueId, region.owner)
-        return role == RegionRole.OWNER || role == RegionRole.TRUSTED
     }
 
     private fun currentRegion(player: Player): Region? {
@@ -1178,6 +1192,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_description"))
         player.sendMessage("§7/plot jobs status [world] - Show queued plot jobs")
         player.sendMessage("§7/plot jobs cancel [world] - Cancel queued plot jobs")
+        player.sendMessage("§7/plot jobs inspect <job-id> - Inspect recovery-required job details")
     }
 
     private fun operationRequest(
@@ -1240,7 +1255,7 @@ class PlotCommand(
                 .filter { it.startsWith(args[1].lowercase()) }
         }
         if (args.size == 2 && args[0].lowercase() == "jobs") {
-            return listOf("status", "cancel") +
+            return listOf("status", "cancel", "inspect") +
                 org.bukkit.Bukkit.getWorlds().map { it.name }
                     .filter { it.lowercase().startsWith(args[1].lowercase()) }
         }
