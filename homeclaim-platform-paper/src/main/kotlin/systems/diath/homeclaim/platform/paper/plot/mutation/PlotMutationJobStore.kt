@@ -45,6 +45,11 @@ interface PlotMutationJobStore {
     fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int)
     fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String? = null)
     fun markInterruptedAsRecoveryRequired(): Int
+    /**
+     * Looks up one persisted job for operational diagnostics. This is deliberately
+     * read-only: inspection never resumes, acknowledges, or changes a job.
+     */
+    fun findById(id: UUID): PlotMutationJobRecord?
     fun findRecoveryRequired(limit: Int = 100): List<PlotMutationJobRecord>
 }
 
@@ -135,6 +140,21 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
         }
     }
 
+    override fun findById(id: UUID): PlotMutationJobRecord? = dataSource.connection.use { connection ->
+        connection.prepareStatement("""
+            SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
+                   world_id, status, completed_units, total_units, error, created_at, started_at,
+                   updated_at, completed_at
+            FROM plot_mutation_jobs
+            WHERE id = ?
+        """.trimIndent()).use { statement ->
+            statement.setObject(1, id)
+            statement.executeQuery().use { result ->
+                if (result.next()) result.toRecordOrNull() else null
+            }
+        }
+    }
+
     override fun findRecoveryRequired(limit: Int): List<PlotMutationJobRecord> {
         require(limit in 1..500)
         return dataSource.connection.use { connection ->
@@ -153,34 +173,37 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.executeQuery().use { result ->
                     buildList {
                         while (result.next()) {
-                            val regionIds = result.getString("region_ids")
-                                .split(',').mapNotNull { raw -> raw.takeIf(String::isNotBlank)?.let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() } }
-                            add(
-                                PlotMutationJobRecord(
-                                    id = UUID.fromString(result.getString("id")),
-                                    correlationId = CorrelationId(UUID.fromString(result.getString("correlation_id"))),
-                                    operation = result.getString("operation"),
-                                    worldId = result.getString("world_id")?.let { WorldId(UUID.fromString(it)) },
-                                    areaId = AreaId(UUID.fromString(result.getString("area_id"))),
-                                    worldName = result.getString("world_name"),
-                                    regionIds = regionIds,
-                                    backend = result.getString("backend"),
-                                    status = PlotMutationJobStatus.valueOf(result.getString("status")),
-                                    completedUnits = result.getInt("completed_units"),
-                                    totalUnits = result.getInt("total_units"),
-                                    error = result.getString("error"),
-                                    createdAt = result.getTimestamp("created_at").toInstant(),
-                                    startedAt = result.getTimestamp("started_at")?.toInstant(),
-                                    updatedAt = result.getTimestamp("updated_at").toInstant(),
-                                    completedAt = result.getTimestamp("completed_at")?.toInstant()
-                                )
-                            )
+                            result.toRecordOrNull()?.let(::add)
                         }
                     }
                 }
             }
         }
     }
+
+    /** A malformed historical row is unavailable to diagnostics, not a command crash. */
+    private fun java.sql.ResultSet.toRecordOrNull(): PlotMutationJobRecord? = runCatching {
+        val regionIds = getString("region_ids")
+            .split(',').mapNotNull { raw -> raw.takeIf(String::isNotBlank)?.let { RegionId(UUID.fromString(it)) } }
+        PlotMutationJobRecord(
+            id = UUID.fromString(getString("id")),
+            correlationId = CorrelationId(UUID.fromString(getString("correlation_id"))),
+            operation = getString("operation"),
+            worldId = getString("world_id")?.let { WorldId(UUID.fromString(it)) },
+            areaId = AreaId(UUID.fromString(getString("area_id"))),
+            worldName = getString("world_name"),
+            regionIds = regionIds,
+            backend = getString("backend"),
+            status = PlotMutationJobStatus.valueOf(getString("status")),
+            completedUnits = getInt("completed_units"),
+            totalUnits = getInt("total_units"),
+            error = getString("error"),
+            createdAt = getTimestamp("created_at").toInstant(),
+            startedAt = getTimestamp("started_at")?.toInstant(),
+            updatedAt = getTimestamp("updated_at").toInstant(),
+            completedAt = getTimestamp("completed_at")?.toInstant()
+        )
+    }.getOrNull()
 
     private fun update(sql: String, vararg values: Any?) {
         dataSource.connection.use { connection ->

@@ -13,13 +13,13 @@ interface EntryDenyService {
         targetType: EntryDenyTargetType,
         targetValue: String,
         reason: String,
-        createdBy: PlayerId,
+        createdBy: PlayerId?,
         expiresAt: Instant? = null
     ): EntryDenyRule
 
     fun getRule(id: EntryDenyId): EntryDenyRule?
     fun listRules(regionId: RegionId, includeInactive: Boolean = false): List<EntryDenyRule>
     fun findActiveDeny(regionId: RegionId, playerId: PlayerId, playerName: String? = null): EntryDenyRule?
-    fun reportRule(id: EntryDenyId, reportedBy: PlayerId, reason: String): Boolean
-    fun revokeRule(id: EntryDenyId, revokedBy: PlayerId, reason: String): Boolean
+    fun reportRule(id: EntryDenyId, reportedBy: PlayerId?, reason: String): Boolean
+    fun revokeRule(id: EntryDenyId, revokedBy: PlayerId?, reason: String): Boolean
 }

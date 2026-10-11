@@ -63,7 +63,8 @@ private class MemoryComponentService(
         type: ComponentType,
         position: Position,
         config: ComponentConfig,
-        policy: ComponentPolicy
+        policy: ComponentPolicy,
+        createdBy: UUID
     ) = ComponentId(UUID.randomUUID()).also { id ->
         storage += Component(
             id = id,
@@ -73,7 +74,7 @@ private class MemoryComponentService(
             state = ComponentState.ENABLED,
             policy = policy,
             config = config,
-            createdBy = UUID.randomUUID(),
+            createdBy = createdBy,
             createdAt = Instant.now(),
             updatedAt = Instant.now()
         )

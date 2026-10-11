@@ -12,6 +12,8 @@ import systems.diath.homeclaim.core.model.*
 import systems.diath.homeclaim.core.policy.*
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditStatus
+import systems.diath.homeclaim.core.service.EntryDenyOperationService
+import systems.diath.homeclaim.core.service.RegionMutationContext
 import systems.diath.homeclaim.core.service.RegionRoleService
 import systems.diath.homeclaim.core.store.*
 import systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore
@@ -181,7 +183,8 @@ class DatabaseDialectRuntimeTest {
                 ComponentType.ELEVATOR_PAD,
                 componentPosition,
                 ElevatorConfig(),
-                ComponentPolicy()
+                ComponentPolicy(),
+                UUID.randomUUID()
             )
             assertEquals(componentId, components.getComponentAt(componentPosition)?.id)
             components.updateComponent(componentId, state = ComponentState.DISABLED)
@@ -196,6 +199,16 @@ class DatabaseDialectRuntimeTest {
                 UUID.randomUUID()
             )
             assertEquals(deny.id, denies.listRules(firstId).single().id)
+            val systemDeny = EntryDenyOperationService(denies, regions).create(
+                RegionMutationContext(ActionActor.System("runtime-test"), "runtime-test", "entry_deny"),
+                firstId,
+                EntryDenyTargetType.PLAYER,
+                UUID.randomUUID().toString(),
+                "system runtime verification"
+            )
+            assertTrue(systemDeny.succeeded)
+            assertEquals(null, systemDeny.value?.createdBy)
+            assertEquals(null, denies.getRule(requireNotNull(systemDeny.value).id)?.createdBy)
 
             val claimedBy = UUID.randomUUID()
             assertTrue(regions.claimRegion(firstId, claimedBy, 0.0, SimpleEconService()))
@@ -288,7 +301,9 @@ class DatabaseDialectRuntimeTest {
             jobStore.updateProgress(jobId, 3, 10)
             assertEquals(1, jobStore.markInterruptedAsRecoveryRequired())
             val interruptedJob = jobStore.findRecoveryRequired().single { it.id == jobId }
+            val inspectedJob = jobStore.findById(jobId)
             assertEquals(jobId, interruptedJob.id)
+            assertEquals(interruptedJob, inspectedJob)
             assertEquals(jobCorrelation, interruptedJob.correlationId)
             assertEquals(3, interruptedJob.completedUnits)
             assertEquals(10, interruptedJob.totalUnits)
@@ -303,7 +318,6 @@ class DatabaseDialectRuntimeTest {
             val port = ServerSocket(0).use { it.localPort }
             val rest = PlotRestServer(
                 regionService = regions,
-                plotMemberService = null,
                 zoneService = zones,
                 componentService = components,
                 adminService = null,
@@ -371,7 +385,9 @@ class DatabaseDialectRuntimeTest {
                 )
                 assertTrue(restartedRegions.getRegionById(firstId)?.roles?.trusted?.contains(restPlayerId) == true)
                 assertEquals(ComponentState.DISABLED, JdbcComponentRepository(dataSource).getComponentAt(componentPosition)?.state)
-                assertEquals(deny.id, JdbcEntryDenyRepository(dataSource).listRules(firstId).single().id)
+                val restartedDenies = JdbcEntryDenyRepository(dataSource).listRules(firstId)
+                assertTrue(restartedDenies.any { it.id == deny.id })
+                assertTrue(restartedDenies.any { it.id == requireNotNull(systemDeny.value).id && it.createdBy == null })
                 assertEquals(profile, JdbcFlagProfileService(dataSource).getProfile("runtime"))
             } finally {
                 engine.stop(100, 1_000)
@@ -380,7 +396,6 @@ class DatabaseDialectRuntimeTest {
             val forbiddenPort = ServerSocket(0).use { it.localPort }
             val forbiddenServer = PlotRestServer(
                 regionService = regions,
-                plotMemberService = null,
                 zoneService = zones,
                 componentService = components,
                 adminService = null,
@@ -405,7 +420,6 @@ class DatabaseDialectRuntimeTest {
             val failedPort = ServerSocket(0).use { it.localPort }
             val failedServer = PlotRestServer(
                 regionService = regions,
-                plotMemberService = null,
                 zoneService = zones,
                 componentService = components,
                 adminService = null,
@@ -413,15 +427,7 @@ class DatabaseDialectRuntimeTest {
                 port = failedPort,
                 authToken = "homeclaim-isolated-runtime-test",
                 allowLocalhost = true,
-                roleService = object : systems.diath.homeclaim.core.service.RoleService {
-                    override fun setRole(regionId: RegionId, playerId: UUID, role: RegionRole) {
-                        throw IllegalStateException("simulated role persistence failure")
-                    }
-
-                    override fun removeRole(regionId: RegionId, playerId: UUID, role: RegionRole) {
-                        throw IllegalStateException("simulated role persistence failure")
-                    }
-                }
+                roleService = object : systems.diath.homeclaim.core.service.RoleService {}
             )
             val failedEngine = failedServer.start()
             try {

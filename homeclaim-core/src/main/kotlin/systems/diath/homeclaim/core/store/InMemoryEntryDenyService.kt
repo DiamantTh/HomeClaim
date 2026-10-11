@@ -19,7 +19,7 @@ class InMemoryEntryDenyService : EntryDenyService {
         targetType: EntryDenyTargetType,
         targetValue: String,
         reason: String,
-        createdBy: PlayerId,
+        createdBy: PlayerId?,
         expiresAt: Instant?
     ): EntryDenyRule {
         val rule = EntryDenyRule(
@@ -48,7 +48,7 @@ class InMemoryEntryDenyService : EntryDenyService {
         return listRules(regionId).firstOrNull { it.matches(playerId, playerName) }
     }
 
-    override fun reportRule(id: EntryDenyId, reportedBy: PlayerId, reason: String): Boolean {
+    override fun reportRule(id: EntryDenyId, reportedBy: PlayerId?, reason: String): Boolean {
         val existing = rules[id] ?: return false
         rules[id] = existing.copy(
             status = EntryDenyStatus.REPORTED,
@@ -59,7 +59,7 @@ class InMemoryEntryDenyService : EntryDenyService {
         return true
     }
 
-    override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId, reason: String): Boolean {
+    override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId?, reason: String): Boolean {
         val existing = rules[id] ?: return false
         rules[id] = existing.copy(
             status = EntryDenyStatus.REVOKED,

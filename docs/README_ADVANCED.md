@@ -13,7 +13,7 @@ HomeClaim trennt Fachlogik von Plattform-Adaptercode:
 
 Aktueller Entkopplungsstand:
 
-- `PolicyActionRequest` als plattformneutrales Policy-Mapping.
+- `ActionRequest` ist der kanonische plattformneutrale Policy-Request; `PolicyActionRequest` bleibt nur als deprecated Kompatibilitaetsadapter fuer alte Aufrufer erhalten.
 - `PolicyActorContext` + `ModPolicyDefaults` fuer modded-sichere Auswertung.
 - `WorldMutationBackend`-SPI fuer FAWE-/non-FAWE-/Fabric-native Backends.
 

@@ -24,7 +24,8 @@ data class EntryDenyRule(
     val targetType: EntryDenyTargetType,
     val targetValue: String,
     val reason: String,
-    val createdBy: PlayerId,
+    /** Null denotes a system-originated rule; it is never a synthetic player UUID. */
+    val createdBy: PlayerId?,
     val createdAt: Instant,
     val expiresAt: Instant? = null,
     val status: EntryDenyStatus = EntryDenyStatus.ACTIVE,

@@ -868,7 +868,6 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         return PlatformServices(
             policyService = policy,
             regionService = regionRepo,
-            plotMemberService = null, // TODO: Implement PlotMemberService
             componentService = componentRepo,
             componentOperationService = componentOperations,
             zoneService = zoneRepo,
@@ -1030,7 +1029,6 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val ownerMetadataResolver = systems.diath.homeclaim.platform.paper.PaperOwnerMetadataResolver()
         val rest = PlotRestServer(
             regionService = services.regionService,
-            plotMemberService = services.plotMemberService,
             zoneService = services.zoneService,
             componentService = services.componentService,
             entryDenyService = services.entryDenyService,

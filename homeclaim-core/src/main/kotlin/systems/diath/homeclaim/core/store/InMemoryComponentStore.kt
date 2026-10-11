@@ -23,14 +23,6 @@ class InMemoryComponentStore : ComponentService {
         type: ComponentType,
         position: Position,
         config: ComponentConfig,
-        policy: ComponentPolicy
-    ): ComponentId = createComponent(regionId, type, position, config, policy, UUID.randomUUID())
-
-    override fun createComponent(
-        regionId: RegionId,
-        type: ComponentType,
-        position: Position,
-        config: ComponentConfig,
         policy: ComponentPolicy,
         createdBy: PlayerId
     ): ComponentId {

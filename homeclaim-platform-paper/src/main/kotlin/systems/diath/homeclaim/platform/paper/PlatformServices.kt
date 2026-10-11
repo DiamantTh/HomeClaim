@@ -8,7 +8,6 @@ import systems.diath.homeclaim.core.service.ComponentOperationService
 import systems.diath.homeclaim.core.service.EntryDenyService
 import systems.diath.homeclaim.core.service.EntryDenyOperationService
 import systems.diath.homeclaim.core.service.FlagProfileService
-import systems.diath.homeclaim.core.service.PlotMemberService
 import systems.diath.homeclaim.core.service.RegionAdminService
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
@@ -17,14 +16,12 @@ import systems.diath.homeclaim.core.service.ZoneService
 import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.config.SensorRegistry
-import systems.diath.homeclaim.core.ui.ComponentCreationService
 import systems.diath.homeclaim.core.event.LiftEventDispatcher
 import javax.sql.DataSource
 
 data class PlatformServices(
     val policyService: PolicyService,
     val regionService: RegionService,
-    val plotMemberService: PlotMemberService?,
     val componentService: ComponentService,
     val zoneService: ZoneService,
     val entryDenyService: EntryDenyService? = null,
@@ -35,7 +32,6 @@ data class PlatformServices(
     val eventDispatcher: EventDispatcher? = null,
     val econService: EconService? = null,
     val sensorRegistry: SensorRegistry? = null,
-    val componentCreationService: ComponentCreationService? = null,
     val liftEventDispatcher: LiftEventDispatcher? = null,
     val worldAreaService: WorldAreaService? = null,
     val roleService: RoleService? = null,

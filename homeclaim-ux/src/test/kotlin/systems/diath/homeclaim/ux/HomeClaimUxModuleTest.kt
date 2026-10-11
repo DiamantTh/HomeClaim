@@ -11,7 +11,6 @@ import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
-import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.AreaId
@@ -36,7 +35,7 @@ class HomeClaimUxModuleTest {
     )
 
     private val regionService = InMemoryRegionService(mapOf(owner to listOf(region)))
-    private val roleService = RecordingRoleService()
+    private val roleService = object : RoleService {}
     private val componentService = InMemoryComponentService()
     private val module = HomeClaimUxModule(regionService, roleService, componentService)
 
@@ -46,11 +45,6 @@ class HomeClaimUxModuleTest {
         assertEquals(listOf(region), result)
     }
 
-    @Test
-    fun `delegates role updates`() {
-        module.updateRole(regionId, owner, RegionRole.TRUSTED)
-        assertEquals(listOf(Triple(regionId, owner, RegionRole.TRUSTED)), roleService.setCalls)
-    }
 }
 
 private class InMemoryRegionService(
@@ -72,15 +66,6 @@ private class InMemoryRegionService(
     override fun getEventDispatcher(): systems.diath.homeclaim.core.event.EventDispatcher? = null
 }
 
-private class RecordingRoleService : RoleService {
-    val setCalls = mutableListOf<Triple<RegionId, PlayerId, RegionRole>>()
-    override fun setRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {
-        setCalls += Triple(regionId, playerId, role)
-    }
-
-    override fun removeRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {}
-}
-
 private class InMemoryComponentService : ComponentService {
     private val components = mutableListOf<Component>()
 
@@ -89,7 +74,8 @@ private class InMemoryComponentService : ComponentService {
         type: ComponentType,
         position: Position,
         config: ComponentConfig,
-        policy: ComponentPolicy
+        policy: ComponentPolicy,
+        createdBy: PlayerId
     ): ComponentId {
         val component = Component(
             id = ComponentId(UUID.randomUUID()),
@@ -98,7 +84,7 @@ private class InMemoryComponentService : ComponentService {
             position = position,
             policy = policy,
             config = config,
-            createdBy = UUID.randomUUID(),
+            createdBy = createdBy,
             createdAt = Instant.now(),
             updatedAt = Instant.now()
         )

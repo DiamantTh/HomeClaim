@@ -12,11 +12,6 @@ interface RoleService {
     fun mutateRole(request: RoleMutationRequest): OperationResult<Region> =
         OperationResult.rejected(OperationStatus.FAILED, "ACTOR_AWARE_ROLE_OPERATION_UNAVAILABLE")
 
-    @Deprecated("Use mutateRole with an actor-aware request")
-    fun setRole(regionId: RegionId, playerId: PlayerId, role: RegionRole)
-
-    @Deprecated("Use mutateRole with an actor-aware request")
-    fun removeRole(regionId: RegionId, playerId: PlayerId, role: RegionRole)
 }
 
 enum class RoleMutationKind { ADD, REMOVE }

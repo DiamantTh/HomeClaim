@@ -15,7 +15,6 @@ class PlotRestServerStartupTest {
         val port = occupiedPort.localPort
         val server = PlotRestServer(
             regionService = InMemoryRegionStore(),
-            plotMemberService = null,
             zoneService = null,
             componentService = null,
             adminService = null,

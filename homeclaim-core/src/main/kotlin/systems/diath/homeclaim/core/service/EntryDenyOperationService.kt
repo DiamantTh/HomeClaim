@@ -42,7 +42,7 @@ class EntryDenyOperationService(
             return reject(request, OperationStatus.INVALID, "ENTRY_DENY_EXPIRY_MUST_BE_IN_FUTURE")
         }
         return try {
-            val rule = entryDenies.createRule(regionId, targetType, targetValue, reason, legacyActorId(context.actor), expiresAt)
+            val rule = entryDenies.createRule(regionId, targetType, targetValue, reason, persistedActorId(context.actor), expiresAt)
             audit?.append(AuditEntries.operationResult(request.copy(context = request.context.copy(
                 attributes = request.context.attributes + ("entryDenyId" to rule.id.value.toString())
             )), AuditStatus.COMPLETED, targetCount = 1))
@@ -78,7 +78,7 @@ class EntryDenyOperationService(
         id: EntryDenyId,
         operation: String,
         reason: String,
-        mutate: (PlayerId) -> Boolean
+        mutate: (PlayerId?) -> Boolean
     ): OperationResult<EntryDenyRule> {
         val current = entryDenies.getRule(id)
             ?: return reject(context.actionRequest(HomeClaimOperationActions.ENTRY_DENY_CHANGE, regionId,
@@ -97,7 +97,7 @@ class EntryDenyOperationService(
         }
         if (operation == "REPORT" && reason.isBlank()) return reject(request, OperationStatus.INVALID, "ENTRY_DENY_REPORT_REASON_REQUIRED")
         return try {
-            if (!mutate(legacyActorId(context.actor))) return reject(request, OperationStatus.CONFLICT, "ENTRY_DENY_ALREADY_UPDATED")
+            if (!mutate(persistedActorId(context.actor))) return reject(request, OperationStatus.CONFLICT, "ENTRY_DENY_ALREADY_UPDATED")
             val updated = entryDenies.getRule(id)
                 ?: return reject(request, OperationStatus.FAILED, "ENTRY_DENY_NOT_VISIBLE_AFTER_UPDATE")
             audit?.append(AuditEntries.operationResult(request, AuditStatus.COMPLETED, targetCount = 1))
@@ -109,11 +109,11 @@ class EntryDenyOperationService(
         }
     }
 
-    private fun legacyActorId(actor: ActionActor): PlayerId = when (actor) {
+    private fun persistedActorId(actor: ActionActor): PlayerId? = when (actor) {
         is ActionActor.Player -> actor.playerId
         is ActionActor.Entity -> actor.entityId
         is ActionActor.Automation -> UUID.nameUUIDFromBytes("${actor.id}:${actor.source.orEmpty()}".toByteArray())
-        is ActionActor.System -> UUID(0, 0) // Legacy schema stores a UUID; typed audit retains SYSTEM identity.
+        is ActionActor.System -> null
     }
 
     private fun <T> reject(

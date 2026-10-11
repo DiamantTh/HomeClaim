@@ -83,7 +83,6 @@ import java.time.Instant
  */
 class PlotRestServer(
     private val regionService: RegionService,
-    private val plotMemberService: PlotMemberService?,
     private val zoneService: ZoneService?,
     private val componentService: ComponentService?,
     private val entryDenyService: EntryDenyService? = null,

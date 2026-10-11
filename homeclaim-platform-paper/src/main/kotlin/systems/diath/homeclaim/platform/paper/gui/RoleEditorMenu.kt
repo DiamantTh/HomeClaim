@@ -23,6 +23,7 @@ class RoleEditorMenu(
     
     private var selectedRole: RegionRole? = null
     private var selectingTarget = false
+    private var renderedCandidates: List<RoleTargetCandidate> = emptyList()
     
     /** Reload region from service to get fresh data after mutations */
     private fun refreshRegion() {
@@ -38,9 +39,10 @@ class RoleEditorMenu(
             setItem(15, createItem(Material.REDSTONE, i18n.msg("gui.role.banned", region.roles.banned.size)))
         } else if (selectingTarget) {
             val candidates = onlineCandidates(player)
+            renderedCandidates = candidates
             setItem(4, createItem(Material.PLAYER_HEAD, "§a${selectedRole!!.name}: choose online player", listOf("§7Only currently online players are selectable.")))
             candidates.take(45).forEachIndexed { index, candidate ->
-                setItem(index, createItem(Material.PLAYER_HEAD, "§f${candidate.name}", listOf("§7${candidate.uniqueId}")))
+                setItem(index, createItem(Material.PLAYER_HEAD, "§f${candidate.displayName}", listOf("§7${candidate.playerId}")))
             }
             if (candidates.isEmpty()) {
                 setItem(22, createItem(Material.BARRIER, "§eNo eligible online players", listOf("§7The region owner cannot receive another role.")))
@@ -83,9 +85,14 @@ class RoleEditorMenu(
                 render(player)
             }
             selectingTarget && slot in 0..44 -> {
-                val target = onlineCandidates(player).getOrNull(slot) ?: return true
+                val target = renderedCandidates.getOrNull(slot)
+                if (target == null || Bukkit.getPlayer(target.playerId) == null) {
+                    player.sendMessage("§eSelected player is no longer online.")
+                    render(player)
+                    return true
+                }
                 selectingTarget = false
-                mutate(player, target.uniqueId, selectedRole!!, RoleMutationKind.ADD)
+                mutate(player, target.playerId, selectedRole!!, RoleMutationKind.ADD)
             }
             slot in 0..44 -> {
                 val role = selectedRole!!
@@ -103,12 +110,12 @@ class RoleEditorMenu(
         return true
     }
 
-    private fun onlineCandidates(actor: Player): List<Player> = Bukkit.getOnlinePlayers()
-        .asSequence()
-        .filter { it.uniqueId != region.owner }
-        .filter { it.uniqueId != actor.uniqueId || selectedRole != RegionRole.BANNED }
-        .sortedBy { it.name.lowercase() }
-        .toList()
+    private fun onlineCandidates(actor: Player): List<RoleTargetCandidate> = RoleTargetSelection.eligible(
+        Bukkit.getOnlinePlayers().map { RoleTargetCandidate(it.uniqueId, it.name) },
+        region.owner,
+        actor.uniqueId,
+        requireNotNull(selectedRole)
+    )
 
     private fun mutate(player: Player, targetPlayerId: java.util.UUID, role: RegionRole, kind: RoleMutationKind) {
         val result = roleService.mutateRole(RoleMutationRequest(

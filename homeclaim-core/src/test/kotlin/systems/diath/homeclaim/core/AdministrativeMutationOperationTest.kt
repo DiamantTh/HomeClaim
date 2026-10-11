@@ -30,7 +30,7 @@ class AdministrativeMutationOperationTest {
     private class InMemoryEntryDenies : EntryDenyService {
         private val rules = linkedMapOf<EntryDenyId, EntryDenyRule>()
         override fun createRule(regionId: RegionId, targetType: EntryDenyTargetType, targetValue: String, reason: String,
-                                createdBy: PlayerId, expiresAt: Instant?): EntryDenyRule {
+                                createdBy: PlayerId?, expiresAt: Instant?): EntryDenyRule {
             val rule = EntryDenyRule(EntryDenyId(UUID.randomUUID()), regionId, targetType, targetValue, reason,
                 createdBy, Instant.now(), expiresAt)
             rules[rule.id] = rule
@@ -41,12 +41,12 @@ class AdministrativeMutationOperationTest {
             rules.values.filter { it.regionId == regionId && (includeInactive || it.isEffective()) }
         override fun findActiveDeny(regionId: RegionId, playerId: PlayerId, playerName: String?): EntryDenyRule? =
             listRules(regionId).firstOrNull { it.matches(playerId, playerName) }
-        override fun reportRule(id: EntryDenyId, reportedBy: PlayerId, reason: String): Boolean {
+        override fun reportRule(id: EntryDenyId, reportedBy: PlayerId?, reason: String): Boolean {
             val current = rules[id] ?: return false
             rules[id] = current.copy(status = EntryDenyStatus.REPORTED, reportedBy = reportedBy, reportReason = reason)
             return true
         }
-        override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId, reason: String): Boolean {
+        override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId?, reason: String): Boolean {
             val current = rules[id] ?: return false
             if (current.status == EntryDenyStatus.REVOKED) return false
             rules[id] = current.copy(status = EntryDenyStatus.REVOKED, revokedBy = revokedBy, revokeReason = reason)
@@ -232,9 +232,10 @@ class AdministrativeMutationOperationTest {
             "test reason"
         )
         assertTrue(created.succeeded)
-        assertEquals(UUID(0, 0), created.value?.createdBy) // legacy row identity; audit stores typed System actor.
-        assertTrue(service.report(context, fixture.region.id, requireNotNull(created.value?.id), "review").succeeded)
-        assertTrue(service.revoke(context, fixture.region.id, requireNotNull(created.value?.id), "resolved").succeeded)
+        val rule = requireNotNull(created.value)
+        assertNull(rule.createdBy)
+        assertTrue(service.report(context, fixture.region.id, rule.id, "review").succeeded)
+        assertTrue(service.revoke(context, fixture.region.id, rule.id, "resolved").succeeded)
         assertTrue(audit.entries.all { it.correlationId == correlation })
         assertTrue(audit.entries.all { it.actorKind == "SYSTEM" && it.actorRef == "rest-admin-token" })
     }

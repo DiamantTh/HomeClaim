@@ -190,14 +190,44 @@ class PlotCommandTest {
         doReturn(false).`when`(player).isOp
         doReturn(UUID.randomUUID()).`when`(player).uniqueId
         doReturn(true).`when`(player).hasPermission(anyString())
-        doReturn(listOf(record)).`when`(jobStore).findRecoveryRequired()
+        doReturn(record).`when`(jobStore).findById(record.id)
 
         PlotCommand(regionService, guiManager, econService = null, mutationJobStore = jobStore)
             .execute(player, arrayOf("jobs", "inspect", record.id.toString()))
 
         verify(player, atLeastOnce()).sendMessage(contains(record.correlationId.toString()))
         verify(player, atLeastOnce()).sendMessage(contains("Diagnostic only"))
-        verify(jobStore).findRecoveryRequired()
+        verify(jobStore).findById(record.id)
+    }
+
+    @Test
+    fun `jobs inspect shows completed historical jobs without recovery guidance`() {
+        val regionService = mock(RegionService::class.java)
+        val guiManager = mock(GuiManager::class.java)
+        val player = mock(Player::class.java)
+        val jobStore = mock(PlotMutationJobStore::class.java)
+        val record = PlotMutationJobRecord(
+            id = UUID.randomUUID(),
+            correlationId = CorrelationId.newId(),
+            operation = "UNLINK",
+            worldId = null,
+            areaId = AreaId(UUID.randomUUID()),
+            worldName = "plots",
+            regionIds = listOf(RegionId(UUID.randomUUID())),
+            backend = "paper-native",
+            status = PlotMutationJobStatus.COMPLETED
+        )
+        doReturn(false).`when`(player).isOp
+        doReturn(UUID.randomUUID()).`when`(player).uniqueId
+        doReturn(true).`when`(player).hasPermission(anyString())
+        doReturn(record).`when`(jobStore).findById(record.id)
+
+        PlotCommand(regionService, guiManager, econService = null, mutationJobStore = jobStore)
+            .execute(player, arrayOf("jobs", "inspect", record.id.toString()))
+
+        verify(player, atLeastOnce()).sendMessage(contains("COMPLETED"))
+        verify(player, atLeastOnce()).sendMessage(contains("historical job"))
+        verify(player, never()).sendMessage(contains("Diagnostic only"))
     }
 
     @Test

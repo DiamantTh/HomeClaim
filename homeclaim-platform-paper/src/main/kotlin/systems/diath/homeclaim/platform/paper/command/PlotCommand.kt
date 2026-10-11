@@ -889,9 +889,9 @@ class PlotCommand(
                     player.sendMessage("§cUsage: /plot jobs inspect <job-id>")
                     return
                 }
-                val record = mutationJobStore?.findRecoveryRequired()?.firstOrNull { it.id == jobId }
+                val record = mutationJobStore?.findById(jobId)
                 if (record == null) {
-                    player.sendMessage("§eNo recovery-required mutation job with that id was found.")
+                    player.sendMessage("§eNo persisted mutation job with that id was found.")
                     return
                 }
                 player.sendMessage("§6§m───────────§r")
@@ -904,7 +904,11 @@ class PlotCommand(
                 player.sendMessage("§7Correlation: §f${record.correlationId}")
                 player.sendMessage("§7Updated: §f${record.updatedAt}")
                 record.error?.let { player.sendMessage("§cError: §f$it") }
-                player.sendMessage("§eDiagnostic only: inspect the plot and start a new explicit operation if recovery is safe. HomeClaim does not resume this job automatically.")
+                if (record.status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
+                    player.sendMessage("§eDiagnostic only: inspect the plot and start a new explicit operation if recovery is safe. HomeClaim does not resume this job automatically.")
+                } else {
+                    player.sendMessage("§7This is a historical job record. Inspection does not change its state.")
+                }
                 player.sendMessage("§6§m───────────§r")
             }
             "cancel", "stop" -> {

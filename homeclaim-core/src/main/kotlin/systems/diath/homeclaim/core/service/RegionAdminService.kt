@@ -23,13 +23,5 @@ interface RegionAdminService {
     fun mutateMetadata(context: RegionMutationContext, regionId: RegionId, key: String, value: String?): OperationResult<Region> =
         OperationResult.rejected(OperationStatus.FAILED, "ACTOR_AWARE_METADATA_OPERATION_UNAVAILABLE")
 
-    @Deprecated("Use actor-aware mutation methods")
-    fun upsertFlag(regionId: RegionId, key: FlagKey, value: FlagValue)
-    @Deprecated("Use actor-aware mutation methods")
-    fun upsertLimit(regionId: RegionId, key: LimitKey, value: LimitValue)
-    @Deprecated("Use actor-aware mutation methods")
-    fun applyProfile(regionId: RegionId, profileName: String)
-    @Deprecated("Use actor-aware mutation methods")
-    fun upsertProfile(profile: FlagProfile)
     fun listProfiles(): List<FlagProfile>
 }

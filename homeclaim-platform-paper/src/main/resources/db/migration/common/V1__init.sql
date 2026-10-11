@@ -174,7 +174,7 @@ CREATE TABLE region_entry_denies (
     target_type VARCHAR(24) NOT NULL,
     target_value VARCHAR(128) NOT NULL,
     reason VARCHAR(512) NOT NULL,
-    created_by UUID NOT NULL,
+    created_by UUID,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',

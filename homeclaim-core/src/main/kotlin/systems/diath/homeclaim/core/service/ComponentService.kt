@@ -11,15 +11,7 @@ import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.RegionId
 
 interface ComponentService {
-    fun createComponent(
-        regionId: RegionId,
-        type: ComponentType,
-        position: Position,
-        config: ComponentConfig,
-        policy: ComponentPolicy
-    ): ComponentId
-
-    /** Actor-aware creation; legacy implementations may temporarily delegate to the old method. */
+    /** Component provenance is explicit even though authorization is region/policy-based. */
     fun createComponent(
         regionId: RegionId,
         type: ComponentType,
@@ -27,7 +19,7 @@ interface ComponentService {
         config: ComponentConfig,
         policy: ComponentPolicy,
         createdBy: PlayerId
-    ): ComponentId = createComponent(regionId, type, position, config, policy)
+    ): ComponentId
 
     fun getComponentAt(position: Position): Component?
     fun getComponent(id: ComponentId): Component? = null

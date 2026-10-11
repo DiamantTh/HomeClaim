@@ -28,7 +28,7 @@ class JdbcEntryDenyRepository(
         targetType: EntryDenyTargetType,
         targetValue: String,
         reason: String,
-        createdBy: PlayerId,
+        createdBy: PlayerId?,
         expiresAt: Instant?
     ): EntryDenyRule {
         require(reason.isNotBlank()) { "Entry deny reason is required" }
@@ -83,7 +83,7 @@ class JdbcEntryDenyRepository(
         return listRules(regionId).firstOrNull { it.matches(playerId, playerName) }
     }
 
-    override fun reportRule(id: EntryDenyId, reportedBy: PlayerId, reason: String): Boolean {
+    override fun reportRule(id: EntryDenyId, reportedBy: PlayerId?, reason: String): Boolean {
         require(reason.isNotBlank()) { "Report reason is required" }
         val updated = dataSource.connection.use { conn ->
             conn.prepareStatement(
@@ -106,7 +106,7 @@ class JdbcEntryDenyRepository(
         return updated
     }
 
-    override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId, reason: String): Boolean {
+    override fun revokeRule(id: EntryDenyId, revokedBy: PlayerId?, reason: String): Boolean {
         val updated = dataSource.connection.use { conn ->
             conn.prepareStatement(
                 """
@@ -188,7 +188,7 @@ class JdbcEntryDenyRepository(
             targetType = EntryDenyTargetType.valueOf(getString("target_type")),
             targetValue = getString("target_value"),
             reason = getString("reason"),
-            createdBy = getRequiredUuid("created_by"),
+            createdBy = getUuid("created_by"),
             createdAt = getTimestamp("created_at").toInstant(),
             expiresAt = getTimestamp("expires_at")?.toInstant(),
             status = EntryDenyStatus.valueOf(getString("status")),
