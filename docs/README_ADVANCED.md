@@ -14,6 +14,7 @@ HomeClaim trennt Fachlogik von Plattform-Adaptercode:
 Aktueller Entkopplungsstand:
 
 - `ActionRequest` ist der kanonische plattformneutrale Policy-Request. Der unreleaste interne `PolicyActionRequest`-Adapter wurde mangels aktivem oder oeffentlichem Consumer entfernt.
+- `DecisionEffect` (`ALLOW`, `DENY`, `INHERIT`, `NOT_APPLICABLE`) ist die einzige Decision-Ergebnissemantik; die verlustbehaftete `Decision.allowed`-Projektion und der Boolean-Konstruktor wurden entfernt. `ActionKey` ist namespaced und speicherbar, aber unbekannte Keys haben ohne definierte HomeClaim-Policy-Metadaten noch keine aktive Evaluierungssemantik.
 - `WorldId` und `AreaId` sind die kanonischen Domain-IDs. Paper bindet Welten ueber `World#getUID()`; Namen bleiben Anzeige-, Konfigurations- und Legacy-Eingaben. `RegionOwnership` kapselt das historische Zero-UUID-Encoding fuer unclaimed Regionen; es ist keine Actor-ID.
 - Paper-Positionen koennen an der Adapterkante zunaechst die Plattform-UUID enthalten. `PolicyGuard` loest diese ueber die gespeicherte Paper-Bindung auf und gibt nur die interne HomeClaim-`WorldId` und `AreaId` an die Domain-Auswertung weiter.
 - `PolicyActorContext` + `ModPolicyDefaults` fuer modded-sichere Auswertung.

@@ -79,25 +79,4 @@ data class Decision(
     val context: DecisionContext,
     val source: DecisionSource = DecisionSource.POLICY,
     val trace: DecisionTrace = DecisionTrace()
-) {
-    /** Compatibility projection for existing event listeners and integrations. */
-    val allowed: Boolean get() = effect == DecisionEffect.ALLOW || effect == DecisionEffect.NOT_APPLICABLE
-
-    @Deprecated("Use DecisionEffect in the primary constructor")
-    constructor(
-        allowed: Boolean,
-        reason: String,
-        detail: String? = null,
-        context: DecisionContext
-    ) : this(
-        effect = when {
-            reason == DecisionReason.NOT_APPLICABLE -> DecisionEffect.NOT_APPLICABLE
-            allowed -> DecisionEffect.ALLOW
-            else -> DecisionEffect.DENY
-        },
-        reason = reason,
-        detail = detail,
-        context = context,
-        source = if (reason == DecisionReason.NOT_APPLICABLE) DecisionSource.SCOPE else DecisionSource.LEGACY
-    )
-}
+)

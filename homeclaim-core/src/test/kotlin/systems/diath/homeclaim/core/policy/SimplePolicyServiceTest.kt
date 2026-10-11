@@ -20,7 +20,6 @@ import systems.diath.homeclaim.core.store.InMemoryEntryDenyService
 import systems.diath.homeclaim.core.service.InMemoryWorldAreaService
 import java.util.UUID
 import kotlin.test.Test
-import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -51,7 +50,7 @@ class SimplePolicyServiceTest {
 
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position("main", 1000, 64, 1000))
 
-        assertTrue(decision.allowed)
+        assertEquals(DecisionEffect.NOT_APPLICABLE, decision.effect)
         assertEquals(DecisionReason.NOT_APPLICABLE, decision.reason)
     }
 
@@ -62,7 +61,7 @@ class SimplePolicyServiceTest {
         val service = SimplePolicyService(regionStore, zoneStore, roleResolver = { _, _ -> RegionRole.OWNER })
 
         val decision = service.evaluate(owner, Action.REGION_BUILD, Position(world, 5, 5, 5))
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
         assertEquals(DecisionReason.FLAG_DENY, decision.reason)
     }
 
@@ -79,7 +78,7 @@ class SimplePolicyServiceTest {
         })
 
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position(world, 5, 5, 5))
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
         assertEquals(DecisionReason.FLAG_DENY, decision.reason)
     }
 
@@ -103,7 +102,7 @@ class SimplePolicyServiceTest {
 
         val service = SimplePolicyService(regionStore, zoneStore, roleResolver = { _, _ -> RegionRole.VISITOR })
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position(world, 5, 5, 5))
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
         assertEquals(DecisionReason.FLAG_DENY, decision.reason)
     }
 
@@ -132,7 +131,7 @@ class SimplePolicyServiceTest {
         }
         val service = SimplePolicyService(regionStore, zoneStore, roleResolver = { _, _ -> RegionRole.VISITOR })
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position(world, 5, 5, 5))
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
     }
 
     @Test
@@ -149,8 +148,8 @@ class SimplePolicyServiceTest {
         val first = service.evaluate(visitor, Action.COMPONENT_USE, Position(world, 5, 5, 5), extraContext = mapOf("componentId" to componentId, "regionId" to regionId))
         val second = service.evaluate(visitor, Action.COMPONENT_USE, Position(world, 5, 5, 5), extraContext = mapOf("componentId" to componentId, "regionId" to regionId))
 
-        assertTrue(first.allowed)
-        assertFalse(second.allowed)
+        assertEquals(DecisionEffect.ALLOW, first.effect)
+        assertEquals(DecisionEffect.DENY, second.effect)
         assertEquals(DecisionReason.COOLDOWN_ACTIVE, second.reason)
         assertTrue(second.detail?.contains("wait_ms=") == true)
     }
@@ -166,7 +165,7 @@ class SimplePolicyServiceTest {
         val service = SimplePolicyService(regionStore, zoneStore, roleResolver = { _, _ -> RegionRole.VISITOR })
 
         val decision = service.evaluate(visitor, Action.REGION_BUILD, Position(world, 5, 5, 5), extraContext = mapOf("flagProfile" to profile, "regionId" to regionId))
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
         assertEquals(DecisionReason.FLAG_DENY, decision.reason)
     }
 
@@ -193,7 +192,7 @@ class SimplePolicyServiceTest {
 
         val decision = service.evaluate(visitor, Action.REGION_ENTER, Position(world, 5, 5, 5), extraContext = mapOf("regionId" to regionId))
 
-        assertFalse(decision.allowed)
+        assertEquals(DecisionEffect.DENY, decision.effect)
         assertEquals(DecisionReason.ENTRY_DENY, decision.reason)
         assertTrue(decision.detail?.contains("entry_deny_id=") == true)
     }
@@ -217,6 +216,6 @@ class SimplePolicyServiceTest {
             extraContext = mapOf("regionId" to regionId, "entryBypass" to true)
         )
 
-        assertTrue(decision.allowed)
+        assertEquals(DecisionEffect.ALLOW, decision.effect)
     }
 }
