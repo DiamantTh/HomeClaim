@@ -9,6 +9,7 @@ import org.bukkit.event.inventory.InventoryCloseEvent
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.ZoneService
 import systems.diath.homeclaim.core.service.ComponentService
+import systems.diath.homeclaim.core.service.ComponentOperationService
 import systems.diath.homeclaim.core.service.RegionAdminService
 import systems.diath.homeclaim.core.service.RoleService
 import systems.diath.homeclaim.core.service.AuditService
@@ -25,7 +26,8 @@ class GuiManager(
     val componentService: ComponentService,
     val adminService: RegionAdminService,
     val roleService: RoleService,
-    val auditService: AuditService? = null
+    val auditService: AuditService? = null,
+    val componentOperationService: ComponentOperationService? = null
 ) : Listener {
     private val activeMenus = ConcurrentHashMap<Player, GuiMenu>()
     

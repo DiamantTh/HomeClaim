@@ -8,6 +8,7 @@ import systems.diath.homeclaim.core.model.ComponentState
 import systems.diath.homeclaim.core.model.ComponentType
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.service.ComponentService
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -23,6 +24,15 @@ class InMemoryComponentStore : ComponentService {
         position: Position,
         config: ComponentConfig,
         policy: ComponentPolicy
+    ): ComponentId = createComponent(regionId, type, position, config, policy, UUID.randomUUID())
+
+    override fun createComponent(
+        regionId: RegionId,
+        type: ComponentType,
+        position: Position,
+        config: ComponentConfig,
+        policy: ComponentPolicy,
+        createdBy: PlayerId
     ): ComponentId {
         val id = ComponentId(UUID.randomUUID())
         val component = Component(
@@ -32,7 +42,7 @@ class InMemoryComponentStore : ComponentService {
             position = position,
             policy = policy,
             config = config,
-            createdBy = UUID.randomUUID()
+            createdBy = createdBy
         )
         components[id] = component
         byRegion.computeIfAbsent(regionId) { mutableSetOf() }.add(id)
@@ -46,6 +56,8 @@ class InMemoryComponentStore : ComponentService {
         val ids = chunkIndex[position.world]?.get(chunkX to chunkZ).orEmpty()
         return ids.mapNotNull { components[it] }.firstOrNull { it.position == position }
     }
+
+    override fun getComponent(id: ComponentId): Component? = components[id]
 
     override fun listComponents(regionId: RegionId): List<Component> =
         byRegion[regionId].orEmpty().mapNotNull { components[it] }

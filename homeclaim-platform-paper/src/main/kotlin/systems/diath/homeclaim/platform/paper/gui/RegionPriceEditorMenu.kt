@@ -6,6 +6,7 @@ import org.bukkit.event.inventory.ClickType
 import org.bukkit.inventory.ItemStack
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.RegionAdminService
 
 /**
  * GUI zum Verwalten des Region-Verkaufspreises
@@ -13,8 +14,12 @@ import systems.diath.homeclaim.core.service.RegionService
 class RegionPriceEditorMenu(
     private val region: Region,
     private val regionService: RegionService,
-    private val guiManager: GuiManager
+    private val guiManager: GuiManager,
+    private val adminService: RegionAdminService?
 ) : GuiMenu(systems.diath.homeclaim.platform.paper.I18n().msg("gui.price.title", region.price.toInt()), rows = 3) {
+
+    constructor(region: Region, regionService: RegionService, guiManager: GuiManager) :
+        this(region, regionService, guiManager, null)
     
     private var currentPrice = region.price
     
@@ -44,10 +49,16 @@ class RegionPriceEditorMenu(
             12 -> { currentPrice = maxOf(0.0, currentPrice - 100); render(player) }
             14 -> { currentPrice = 0.0; render(player) }
             22 -> {
-                val updated = region.copy(price = currentPrice)
-                regionService.updateRegion(updated)
-                player.sendMessage(i18n.msg("gui.price.saved", currentPrice.toInt()))
-                guiManager.openMenu(player, RegionManageMenu(region, regionService, guiManager))
+                val service = adminService
+                if (service == null) {
+                    player.showOperationFailure("PRICE_OPERATION_UNAVAILABLE")
+                    return true
+                }
+                val result = service.setPrice(player.operationContext("gui_price_change"), region.id, currentPrice)
+                if (result.succeeded) {
+                    player.sendMessage(i18n.msg("gui.price.saved", currentPrice.toInt()))
+                    guiManager.openMenu(player, RegionManageMenu(result.value ?: region, regionService, guiManager))
+                } else player.showOperationFailure(result.detail)
             }
             26 -> guiManager.openMenu(player, RegionManageMenu(region, regionService, guiManager))
         }

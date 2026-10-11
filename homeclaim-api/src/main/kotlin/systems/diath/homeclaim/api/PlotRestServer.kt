@@ -101,7 +101,8 @@ class PlotRestServer(
     private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null,
     private val entryForceHandler: ((RegionId, PlayerId, PlayerId, String, Long) -> EntryForceGrantDto)? = null,
     private val policyService: PolicyService? = null,
-    private val roleService: RoleService? = null
+    private val roleService: RoleService? = null,
+    private val entryDenyOperationService: EntryDenyOperationService? = null
 ) {
     fun start(): ApplicationEngine {
         val engine = embeddedServer(Netty, port = port) {
@@ -449,10 +450,21 @@ class PlotRestServer(
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<FlagUpdateRequest>()
                         
-                        adminService?.upsertFlag(id, FlagKey(req.key), req.value.toPolicyValue())
-                            ?: throw IllegalStateException("Admin service not available")
-                        
-                        call.respond(ApiSuccess("flag_updated"))
+                        val service = adminService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Admin service not available"))
+                            return@post
+                        }
+                        val key = FlagKey.ofOrNull(req.key) ?: run {
+                            call.respond(HttpStatusCode.BadRequest, ApiError("bad_request", "Invalid flag key"))
+                            return@post
+                        }
+                        val result = service.mutateFlag(
+                            mutationContext(call, "rest_flag_change"),
+                            id,
+                            key,
+                            req.value?.toPolicyValue()
+                        )
+                        call.respondOperation(result, ApiSuccess("flag_updated"))
                     }
                     
                     // POST /plots/{id}/limits
@@ -462,10 +474,21 @@ class PlotRestServer(
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<FlagUpdateRequest>()
                         
-                        adminService?.upsertLimit(id, LimitKey(req.key), req.value.toPolicyValue())
-                            ?: throw IllegalStateException("Admin service not available")
-                        
-                        call.respond(ApiSuccess("limit_updated"))
+                        val service = adminService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Admin service not available"))
+                            return@post
+                        }
+                        val key = LimitKey.ofOrNull(req.key) ?: run {
+                            call.respond(HttpStatusCode.BadRequest, ApiError("bad_request", "Invalid limit key"))
+                            return@post
+                        }
+                        val result = service.mutateLimit(
+                            mutationContext(call, "rest_limit_change"),
+                            id,
+                            key,
+                            req.value?.toPolicyValue()
+                        )
+                        call.respondOperation(result, ApiSuccess("limit_updated"))
                     }
 
                     // GET /plots/{id}/entry-denies
@@ -485,34 +508,29 @@ class PlotRestServer(
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<EntryDenyCreateRequest>()
-                        regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
-                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
-                        val createdBy = req.createdBy.toUuidOrNull()
-                            ?: throw IllegalArgumentException("Invalid createdBy UUID")
-                        val rule = service.createRule(
-                            regionId = id,
-                            targetType = EntryDenyTargetType.valueOf(req.targetType.uppercase()),
-                            targetValue = req.targetValue,
-                            reason = req.reason,
-                            createdBy = createdBy,
-                            expiresAt = req.expiresAt?.let(Instant::parse)
+                        val service = entryDenyOperationService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Entry deny operations are unavailable"))
+                            return@post
+                        }
+                        val targetType = runCatching { EntryDenyTargetType.valueOf(req.targetType.uppercase()) }.getOrNull()
+                            ?: throw IllegalArgumentException("Invalid entry deny target type")
+                        val context = mutationContext(call, "rest_entry_deny_create")
+                        val expiresAt = req.expiresAt?.let { raw ->
+                            runCatching { Instant.parse(raw) }.getOrElse { throw IllegalArgumentException("Invalid expiresAt") }
+                        }
+                        val result = service.create(
+                            context,
+                            id,
+                            targetType,
+                            req.targetValue,
+                            req.reason,
+                            expiresAt
                         )
-                        auditService?.append(
-                            AuditEntry(
-                                actorId = createdBy,
-                                targetId = id.value,
-                                category = AuditTaxonomy.Category.REGION,
-                                action = AuditTaxonomy.Action.UPSERT,
-                                payload = mapOf(
-                                    "entryDenyId" to rule.id.value.toString(),
-                                    "targetType" to rule.targetType.name,
-                                    "targetValue" to rule.targetValue,
-                                    "reason" to rule.reason
-                                )
-                            )
-                        )
-                        entryDenyCreatedHandler?.invoke(rule)
-                        call.respond(rule.toDto())
+                        result.value?.takeIf { result.succeeded }?.let { rule ->
+                            runCatching { entryDenyCreatedHandler?.invoke(rule) }
+                                .onFailure { call.application.log.error("Entry deny applied but Paper ejection callback failed (correlation ${context.correlationId})", it) }
+                        }
+                        call.respondOperation(result, result.value?.toDto() ?: ApiSuccess("entry_deny_created"))
                     }
 
                     // POST /plots/{id}/entry-check
@@ -558,14 +576,12 @@ class PlotRestServer(
                         val denyId = call.parameters["denyId"]?.toEntryDenyId()
                             ?: throw IllegalArgumentException("Invalid entry deny ID")
                         val req = call.receive<EntryDenyReportRequest>()
-                        val reportedBy = req.reportedBy.toUuidOrNull()
-                            ?: throw IllegalArgumentException("Invalid reportedBy UUID")
-                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
-                        val rule = service.getRule(denyId) ?: throw NoSuchElementException("Entry deny not found")
-                        if (rule.regionId != id) throw NoSuchElementException("Entry deny not found")
-                        val ok = service.reportRule(denyId, reportedBy, req.reason)
-                        if (!ok) throw NoSuchElementException("Entry deny not found")
-                        call.respond(ApiSuccess("entry_deny_reported"))
+                        val service = entryDenyOperationService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Entry deny operations are unavailable"))
+                            return@post
+                        }
+                        val result = service.report(mutationContext(call, "rest_entry_deny_report"), id, denyId, req.reason)
+                        call.respondOperation(result, ApiSuccess("entry_deny_reported"))
                     }
 
                     // POST /plots/{id}/entry-denies/{denyId}/revoke
@@ -576,14 +592,12 @@ class PlotRestServer(
                         val denyId = call.parameters["denyId"]?.toEntryDenyId()
                             ?: throw IllegalArgumentException("Invalid entry deny ID")
                         val req = call.receive<EntryDenyRevokeRequest>()
-                        val revokedBy = req.revokedBy.toUuidOrNull()
-                            ?: throw IllegalArgumentException("Invalid revokedBy UUID")
-                        val service = entryDenyService ?: throw IllegalStateException("Entry deny service not available")
-                        val rule = service.getRule(denyId) ?: throw NoSuchElementException("Entry deny not found")
-                        if (rule.regionId != id) throw NoSuchElementException("Entry deny not found")
-                        val ok = service.revokeRule(denyId, revokedBy, req.reason)
-                        if (!ok) throw NoSuchElementException("Entry deny not found")
-                        call.respond(ApiSuccess("entry_deny_revoked"))
+                        val service = entryDenyOperationService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Entry deny operations are unavailable"))
+                            return@post
+                        }
+                        val result = service.revoke(mutationContext(call, "rest_entry_deny_revoke"), id, denyId, req.reason)
+                        call.respondOperation(result, ApiSuccess("entry_deny_revoked"))
                     }
                     
                     // POST /plots/{id}/trust
@@ -592,15 +606,22 @@ class PlotRestServer(
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<PlayerActionRequest>()
-                        val region = regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
                         val playerId = req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId")
                         val roles = roleService ?: run {
                             call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
                             return@post
                         }
-                        roles.setRole(id, playerId, RegionRole.TRUSTED)
-                        auditRoleChange(id, region.areaId, playerId, "TRUSTED", AuditStatus.COMPLETED)
-                        call.respond(ApiSuccess("player_trusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
+                        val context = mutationContext(call, "rest_role_add")
+                        val result = roles.mutateRole(RoleMutationRequest(
+                            actor = context.actor,
+                            regionId = id,
+                            targetPlayerId = playerId,
+                            role = RegionRole.TRUSTED,
+                            kind = RoleMutationKind.ADD,
+                            platform = "rest",
+                            correlationId = context.correlationId
+                        ))
+                        call.respondOperation(result, ApiSuccess("player_trusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
                     }
                     
                     // POST /plots/{id}/untrust
@@ -609,15 +630,70 @@ class PlotRestServer(
                         val id = call.parameters["id"]?.toRegionId()
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<PlayerActionRequest>()
-                        val region = regionService.getRegionById(id) ?: throw NoSuchElementException("Plot not found")
                         val playerId = req.playerId.toUuidOrNull() ?: throw IllegalArgumentException("Invalid playerId")
                         val roles = roleService ?: run {
                             call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
                             return@post
                         }
-                        roles.removeRole(id, playerId, RegionRole.TRUSTED)
-                        auditRoleChange(id, region.areaId, playerId, "TRUSTED", AuditStatus.COMPLETED)
-                        call.respond(ApiSuccess("player_untrusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
+                        val context = mutationContext(call, "rest_role_remove")
+                        val result = roles.mutateRole(RoleMutationRequest(
+                            actor = context.actor,
+                            regionId = id,
+                            targetPlayerId = playerId,
+                            role = RegionRole.TRUSTED,
+                            kind = RoleMutationKind.REMOVE,
+                            platform = "rest",
+                            correlationId = context.correlationId
+                        ))
+                        call.respondOperation(result, ApiSuccess("player_untrusted", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
+                    }
+
+                    post("/{id}/ban") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val req = call.receive<PlayerActionRequest>()
+                        val playerId = req.playerId.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid playerId")
+                        val service = roleService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
+                            return@post
+                        }
+                        val context = mutationContext(call, "rest_role_ban")
+                        val result = service.mutateRole(RoleMutationRequest(
+                            actor = context.actor,
+                            regionId = id,
+                            targetPlayerId = playerId,
+                            role = RegionRole.BANNED,
+                            kind = RoleMutationKind.ADD,
+                            platform = "rest",
+                            correlationId = context.correlationId
+                        ))
+                        call.respondOperation(result, ApiSuccess("player_banned", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
+                    }
+
+                    post("/{id}/unban") {
+                        if (!auth.check(call)) return@post
+                        val id = call.parameters["id"]?.toRegionId()
+                            ?: throw IllegalArgumentException("Invalid plot ID")
+                        val req = call.receive<PlayerActionRequest>()
+                        val playerId = req.playerId.toUuidOrNull()
+                            ?: throw IllegalArgumentException("Invalid playerId")
+                        val service = roleService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Role operations are unavailable."))
+                            return@post
+                        }
+                        val context = mutationContext(call, "rest_role_unban")
+                        val result = service.mutateRole(RoleMutationRequest(
+                            actor = context.actor,
+                            regionId = id,
+                            targetPlayerId = playerId,
+                            role = RegionRole.BANNED,
+                            kind = RoleMutationKind.REMOVE,
+                            platform = "rest",
+                            correlationId = context.correlationId
+                        ))
+                        call.respondOperation(result, ApiSuccess("player_unbanned", mapOf("plot" to id.value.toString(), "player" to playerId.toString())))
                     }
                     
                     // GET /plots/{id}/components
@@ -637,10 +713,14 @@ class PlotRestServer(
                             ?: throw IllegalArgumentException("Invalid plot ID")
                         val req = call.receive<ApplyProfileRequest>()
                         
-                        adminService?.applyProfile(id, req.profile)
-                            ?: throw IllegalStateException("Admin service not available")
-                        
-                        call.respond(ApiSuccess("profile_applied"))
+                        val service = adminService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Admin service not available"))
+                            return@post
+                        }
+                        call.respondOperation(
+                            service.applyProfile(mutationContext(call, "rest_profile_apply"), id, req.profile),
+                            ApiSuccess("profile_applied")
+                        )
                     }
                 }
                 
@@ -719,10 +799,14 @@ class PlotRestServer(
                             flags = req.flags.mapKeys { FlagKey(it.key) }.mapValues { it.value.toPolicyValue() },
                             limits = req.limits.mapKeys { LimitKey(it.key) }.mapValues { it.value.toPolicyValue() }
                         )
-                        adminService?.upsertProfile(profile)
-                            ?: throw IllegalStateException("Admin service not available")
-                        
-                        call.respond(ApiSuccess("profile_created"))
+                        val service = adminService ?: run {
+                            call.respond(HttpStatusCode.NotImplemented, ApiError("not_implemented", "Admin service not available"))
+                            return@post
+                        }
+                        call.respondOperation(
+                            service.mutateProfile(mutationContext(call, "rest_profile_upsert"), profile),
+                            ApiSuccess("profile_created")
+                        )
                     }
                 }
                 
@@ -803,30 +887,30 @@ class PlotRestServer(
         return entryDenyService?.listRules(region.id, includeInactive = true)?.map { it.toDto() } ?: emptyList()
     }
 
-    private fun auditRoleChange(
-        regionId: RegionId,
-        areaId: AreaId,
-        targetPlayerId: UUID,
-        role: String,
-        status: AuditStatus
-    ) {
-        val request = ActionRequest(
+    private fun mutationContext(call: ApplicationCall, eventName: String): RegionMutationContext {
+        val supplied = call.request.headers["X-Correlation-ID"]
+            ?.takeIf { it.length <= 64 }
+            ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        return RegionMutationContext(
             actor = ActionActor.System("rest-admin-token"),
-            actionKey = HomeClaimOperationActions.ROLE_CHANGE,
-            target = ActionEndpoint(
-                resource = ActionResourceRef.Region(regionId),
-                areaId = areaId
-            ),
-            correlationId = CorrelationId.newId(),
-            context = systems.diath.homeclaim.core.policy.ActionContext(
-                platform = "rest",
-                eventName = "role_change",
-                attributes = mapOf("playerId" to targetPlayerId.toString(), "role" to role)
-            )
+            platform = "rest",
+            eventName = eventName,
+            correlationId = supplied?.let(::CorrelationId) ?: CorrelationId.newId()
         )
-        auditService?.append(
-            AuditEntries.operationResult(request, status, targetCount = 1)
-        )
+    }
+
+    private suspend fun ApplicationCall.respondOperation(
+        result: OperationResult<*>,
+        successBody: Any
+    ) {
+        when (result.status) {
+            OperationStatus.SUCCESS -> respond(HttpStatusCode.OK, successBody)
+            OperationStatus.INVALID -> respond(HttpStatusCode.BadRequest, ApiError("invalid_operation", result.detail))
+            OperationStatus.DENIED -> respond(HttpStatusCode.Forbidden, ApiError("forbidden", result.detail))
+            OperationStatus.NOT_FOUND, OperationStatus.NOT_APPLICABLE -> respond(HttpStatusCode.NotFound, ApiError("not_found", result.detail))
+            OperationStatus.CONFLICT, OperationStatus.LIMIT_REACHED -> respond(HttpStatusCode.Conflict, ApiError("conflict", result.detail))
+            OperationStatus.FAILED -> respond(HttpStatusCode.InternalServerError, ApiError("operation_failed", result.detail))
+        }
     }
 
     private fun checkEntry(region: Region, playerId: UUID, playerName: String?): EntryCheckResponse {
@@ -1301,10 +1385,13 @@ data class EntryDenyCreateRequest(
     val targetType: String,
     val targetValue: String,
     val reason: String,
+    /** Retained for request compatibility; the authenticated server actor is recorded instead. */
     val createdBy: String,
     val expiresAt: String? = null
 )
+/** Legacy actor field is ignored; REST audit uses the authenticated server actor. */
 data class EntryDenyReportRequest(val reportedBy: String, val reason: String)
+/** Legacy actor field is ignored; REST audit uses the authenticated server actor. */
 data class EntryDenyRevokeRequest(val revokedBy: String, val reason: String = "")
 data class EntryCheckRequest(
     val playerId: String,
@@ -1476,7 +1563,15 @@ private fun PolicyValue.toAny(): Any = when (this) {
 
 private fun Any?.toPolicyValue(): PolicyValue = when (this) {
     is Boolean -> PolicyValue.Bool(this)
-    is Number -> PolicyValue.IntValue(this.toInt())
+    is Number -> {
+        val doubleValue = toDouble()
+        val longValue = toLong()
+        if (doubleValue.isFinite() && doubleValue == longValue.toDouble() && longValue in Int.MIN_VALUE..Int.MAX_VALUE) {
+            PolicyValue.IntValue(longValue.toInt())
+        } else {
+            PolicyValue.Text("invalid_numeric_policy_value")
+        }
+    }
     else -> PolicyValue.Text(this?.toString() ?: "")
 }
 

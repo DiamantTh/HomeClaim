@@ -8,6 +8,7 @@ import systems.diath.homeclaim.core.model.ComponentState
 import systems.diath.homeclaim.core.model.ComponentType
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.ComponentService
 import java.sql.ResultSet
@@ -31,6 +32,15 @@ class JdbcComponentRepository(
         position: Position,
         config: ComponentConfig,
         policy: ComponentPolicy
+    ): ComponentId = createComponent(regionId, type, position, config, policy, UUID(0, 0))
+
+    override fun createComponent(
+        regionId: RegionId,
+        type: ComponentType,
+        position: Position,
+        config: ComponentConfig,
+        policy: ComponentPolicy,
+        createdBy: PlayerId
     ): ComponentId {
         val id = ComponentId(UUID.randomUUID())
         dataSource.connection.use { conn ->
@@ -50,7 +60,7 @@ class JdbcComponentRepository(
                 setString(8, ComponentState.ENABLED.name)
                 setJsonString(9, Serialization.toJson(policy))
                 setJsonString(10, Serialization.toJson(config))
-                setObject(11, UUID(0, 0))
+                setObject(11, createdBy)
             }.executeUpdate()
         }
         val component = Component(
@@ -61,13 +71,16 @@ class JdbcComponentRepository(
             state = ComponentState.ENABLED,
             policy = policy,
             config = config,
-            createdBy = UUID(0, 0)
+            createdBy = createdBy
         )
         replaceCachedComponents { it + (id to component) }
         return id
     }
 
     override fun getComponentAt(position: Position): Component? = runtimeSnapshot.get().at(position)
+
+    override fun getComponent(id: systems.diath.homeclaim.core.model.ComponentId): Component? =
+        runtimeSnapshot.get().components[id]
 
     override fun listComponents(regionId: RegionId): List<Component> = runtimeSnapshot.get().byRegion[regionId].orEmpty()
 

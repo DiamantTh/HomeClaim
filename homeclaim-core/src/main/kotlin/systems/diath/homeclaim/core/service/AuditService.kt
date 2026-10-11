@@ -25,6 +25,22 @@ fun interface AuditSink {
 
 interface AuditService : AuditSink
 
+/** Suppresses repository-level compatibility audit while an actor-aware operation writes its lifecycle. */
+object MutationAuditScope {
+    private val depth = ThreadLocal.withInitial { 0 }
+    val active: Boolean get() = depth.get() > 0
+
+    fun <T> withinOperation(block: () -> T): T {
+        depth.set(depth.get() + 1)
+        return try {
+            block()
+        } finally {
+            val next = depth.get() - 1
+            if (next == 0) depth.remove() else depth.set(next)
+        }
+    }
+}
+
 data class AuditEntry(
     val actorId: PlayerId?,
     val targetId: UUID?,
@@ -120,6 +136,11 @@ object AuditPolicy {
         HomeClaimOperationActions.REGION_RESET.value,
         HomeClaimOperationActions.OWNERSHIP_TRANSFER.value,
         HomeClaimOperationActions.ROLE_CHANGE.value,
-        HomeClaimOperationActions.FLAG_CHANGE.value
+        HomeClaimOperationActions.FLAG_CHANGE.value,
+        HomeClaimOperationActions.LIMIT_CHANGE.value,
+        HomeClaimOperationActions.PROFILE_CHANGE.value,
+        HomeClaimOperationActions.COMPONENT_CHANGE.value,
+        HomeClaimOperationActions.ENTRY_DENY_CHANGE.value,
+        HomeClaimOperationActions.PRICE_CHANGE.value
     )
 }

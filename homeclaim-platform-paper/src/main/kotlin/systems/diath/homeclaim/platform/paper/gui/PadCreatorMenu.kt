@@ -179,16 +179,24 @@ class PadCreatorMenu(
                 )
             }
             
-            componentService.createComponent(
+            val operations = guiManager.componentOperationService
+            if (operations == null) {
+                player.showOperationFailure("COMPONENT_OPERATIONS_UNAVAILABLE")
+                return
+            }
+            val result = operations.create(
+                context = player.operationContext("gui_component_create"),
                 regionId = region.id,
                 type = state.padType,
                 position = state.blockPos,
                 config = config,
                 policy = systems.diath.homeclaim.core.model.ComponentPolicy()
             )
-            player.sendMessage(i18n.msg("gui.pad.created"))
-            PadCreatorStateManager.clearState(player.uniqueId)
-            guiManager.openMenu(player, ComponentManagerMenu(region, guiManager.componentService, regionService, guiManager))
+            if (result.succeeded) {
+                player.sendMessage(i18n.msg("gui.pad.created"))
+                PadCreatorStateManager.clearState(player.uniqueId)
+                guiManager.openMenu(player, ComponentManagerMenu(region, guiManager.componentService, regionService, guiManager))
+            } else player.showOperationFailure(result.detail)
             
         } catch (e: Exception) {
             player.sendMessage(i18n.msg("gui.pad.error", e.message ?: "unknown"))

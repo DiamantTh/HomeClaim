@@ -59,11 +59,18 @@ class FlagEditorMenu(
                     val (flag, name) = flags[index]
                     val currentValue = region.flags[flag] as? PolicyValue.Bool
                     val newValue = PolicyValue.Bool(!(currentValue?.allowed ?: false))
-                    adminService.upsertFlag(region.id, flag, newValue)
-                    refreshRegion()
-                    val state = if (newValue.allowed) i18n.msg("gui.flag.enabled") else i18n.msg("gui.flag.disabled")
-                    player.sendMessage(i18n.msg("gui.flag.changed", name, state))
-                    render(player)
+                    val result = adminService.mutateFlag(
+                        player.operationContext("gui_flag_change"),
+                        region.id,
+                        flag,
+                        newValue
+                    )
+                    if (result.succeeded) {
+                        refreshRegion()
+                        val state = if (newValue.allowed) i18n.msg("gui.flag.enabled") else i18n.msg("gui.flag.disabled")
+                        player.sendMessage(i18n.msg("gui.flag.changed", name, state))
+                        render(player)
+                    } else player.showOperationFailure(result.detail)
                 }
             }
         }

@@ -1011,7 +1011,10 @@ class PlotCommand(
 
     private fun currentRegion(player: Player): Region? {
         val loc = player.location
-        val regionId = regionAt(loc.world, loc.blockX, loc.blockY, loc.blockZ) ?: return null
+        // Paper may reject a location whose world is no longer loaded. Treat that as an
+        // unresolved location and give the caller its normal not-on-plot feedback.
+        val world = runCatching { loc.world }.getOrNull() ?: return null
+        val regionId = regionAt(world, loc.blockX, loc.blockY, loc.blockZ) ?: return null
         return regionService.getRegionById(regionId)
     }
 

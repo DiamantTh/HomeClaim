@@ -147,14 +147,21 @@ class ComponentEditorMenu(
                 )
             }
             
-            componentService.updateComponent(
+            val operations = guiManager.componentOperationService
+            if (operations == null) {
+                player.showOperationFailure("COMPONENT_OPERATIONS_UNAVAILABLE")
+                return
+            }
+            val result = operations.update(
+                context = player.operationContext("gui_component_update"),
                 componentId = component.id,
                 config = newConfig,
                 state = newState
             )
-            
-            player.sendMessage(i18n.msg("gui.component.updated"))
-            guiManager.openMenu(player, ComponentManagerMenu(region, componentService, regionService, guiManager))
+            if (result.succeeded) {
+                player.sendMessage(i18n.msg("gui.component.updated"))
+                guiManager.openMenu(player, ComponentManagerMenu(region, componentService, regionService, guiManager))
+            } else player.showOperationFailure(result.detail)
         } catch (e: Exception) {
             player.sendMessage(i18n.msg("gui.component.error", e.message ?: "unknown"))
         }

@@ -41,6 +41,11 @@ object HomeClaimOperationActions {
     val OWNERSHIP_TRANSFER = ActionKey("homeclaim:ownership_transfer")
     val ROLE_CHANGE = ActionKey("homeclaim:role_change")
     val FLAG_CHANGE = ActionKey("homeclaim:flag_change")
+    val LIMIT_CHANGE = ActionKey("homeclaim:limit_change")
+    val PROFILE_CHANGE = ActionKey("homeclaim:profile_change")
+    val COMPONENT_CHANGE = ActionKey("homeclaim:component_change")
+    val ENTRY_DENY_CHANGE = ActionKey("homeclaim:entry_deny_change")
+    val PRICE_CHANGE = ActionKey("homeclaim:price_change")
 }
 
 @JvmInline

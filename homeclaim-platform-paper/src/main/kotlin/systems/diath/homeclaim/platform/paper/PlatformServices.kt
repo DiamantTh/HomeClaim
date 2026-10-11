@@ -4,7 +4,9 @@ import systems.diath.homeclaim.core.event.EventDispatcher
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditReader
 import systems.diath.homeclaim.core.service.ComponentService
+import systems.diath.homeclaim.core.service.ComponentOperationService
 import systems.diath.homeclaim.core.service.EntryDenyService
+import systems.diath.homeclaim.core.service.EntryDenyOperationService
 import systems.diath.homeclaim.core.service.FlagProfileService
 import systems.diath.homeclaim.core.service.PlotMemberService
 import systems.diath.homeclaim.core.service.RegionAdminService
@@ -37,5 +39,7 @@ data class PlatformServices(
     val liftEventDispatcher: LiftEventDispatcher? = null,
     val worldAreaService: WorldAreaService? = null,
     val roleService: RoleService? = null,
-    val auditReader: AuditReader? = null
+    val auditReader: AuditReader? = null,
+    val componentOperationService: ComponentOperationService? = null,
+    val entryDenyOperationService: EntryDenyOperationService? = null
 )

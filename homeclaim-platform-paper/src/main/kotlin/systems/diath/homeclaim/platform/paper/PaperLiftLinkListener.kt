@@ -84,11 +84,6 @@ class PaperLiftLinkListener(
             player.sendMessage(i18n.msg(permissionMessage))
             return null
         }
-        if (crossWorld && hasWorldTeleportRestriction(player)) {
-            player.sendMessage(i18n.msg("liftlink.no.world.access", targetWorldName))
-            return null
-        }
-
         return LiftLinkDestination(
             location = target.toCenterLocation(targetWorld),
             worldName = targetWorld.name,
@@ -106,20 +101,6 @@ class PaperLiftLinkListener(
 
     private fun Position.toPaperWorld(): World? =
         org.bukkit.Bukkit.getWorld(worldId.value) ?: legacyWorldName?.let { org.bukkit.Bukkit.getWorld(it) }
-
-    /**
-     * Prüfe ob Spieler in die Zielwelt teleportiert darf
-     */
-    private fun hasWorldTeleportRestriction(player: org.bukkit.entity.Player): Boolean {
-        // Admins haben immer Zugriff
-        if (player.hasPermission("homeclaim.admin")) return false
-        
-        // Optional: Implementiere Welt-Liste für Restricted Worlds
-        // val restrictedWorlds = setOf("nether", "the_end")
-        // return restrictedWorlds.contains(worldName.lowercase())
-        
-        return false // Standardmäßig: Alle Welten erlaubt
-    }
 
     private fun systems.diath.homeclaim.core.model.Component.elevatorConfig(): systems.diath.homeclaim.core.model.ElevatorConfig? {
         return (this.config as? systems.diath.homeclaim.core.model.ElevatorConfig)

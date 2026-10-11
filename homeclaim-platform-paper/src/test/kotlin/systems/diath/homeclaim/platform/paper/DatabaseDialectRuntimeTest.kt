@@ -295,7 +295,10 @@ class DatabaseDialectRuntimeTest {
             assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, interruptedJob.status)
             assertEquals(0, jobStore.markInterruptedAsRecoveryRequired())
 
-            val roleService = RegionRoleService(regions)
+            // Runtime wiring gives the canonical operation service the same audit sink as
+            // the repositories and REST adapter, so the operation lifecycle is persisted
+            // without falling back to the repository's compatibility audit.
+            val roleService = RegionRoleService(regions, auditService = audit)
             val restPlayerId = UUID.randomUUID()
             val port = ServerSocket(0).use { it.localPort }
             val rest = PlotRestServer(

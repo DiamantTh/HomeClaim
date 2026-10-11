@@ -7,6 +7,8 @@ import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RoleService
+import systems.diath.homeclaim.core.service.RoleMutationRequest
+import systems.diath.homeclaim.core.service.OperationResult
 
 /**
  * Reference wiring point for in-game menus or a future web UI.
@@ -19,10 +21,14 @@ class HomeClaimUxModule(
 ) {
     fun listPlayerRegions(playerId: PlayerId): List<Region> = regionService.listRegionsByOwner(playerId)
 
+    fun mutateRole(request: RoleMutationRequest): OperationResult<Region> = roleService.mutateRole(request)
+
+    @Deprecated("Pass the initiating actor to mutateRole")
     fun updateRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {
         roleService.setRole(regionId, playerId, role)
     }
 
+    @Deprecated("Pass the initiating actor to mutateRole")
     fun removeRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {
         roleService.removeRole(regionId, playerId, role)
     }

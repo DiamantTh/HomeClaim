@@ -7,7 +7,6 @@ import org.bukkit.inventory.ItemStack
 import systems.diath.homeclaim.core.model.ComponentId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.ComponentType
-import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionService
 
@@ -23,35 +22,7 @@ class ComponentManagerMenu(
     private val pageSize = 18
     private var pendingDelete: ComponentId? = null
     
-    private fun canManageComponents(player: Player): Boolean {
-        // Owner can always manage
-        if (region.owner == player.uniqueId) return true
-        // Trusted can manage
-        if (region.roles.trusted.contains(player.uniqueId)) return true
-        // Check admin permission
-        return player.hasPermission("homeclaim.admin.components")
-    }
-    
-    @Suppress("UNUSED_PARAMETER")
-    private fun renderNoPermission(player: Player) {
-        clearInventory()
-        setItem(13, createItem(Material.BARRIER, i18n.msg("gui.components.no_permission.title"),
-            listOf(
-                i18n.msg("gui.components.no_permission.l1"),
-                i18n.msg("gui.components.no_permission.l2"),
-                "",
-                i18n.msg("gui.components.no_permission.back_hint")
-            )))
-        setItem(49, createItem(Material.ARROW, i18n.msg("gui.back")))
-    }
-    
     override fun render(player: Player) {
-        // Permission check
-        if (!canManageComponents(player)) {
-            renderNoPermission(player)
-            return
-        }
-        
         clearInventory()
         components = componentService.listComponents(region.id)
         
@@ -106,14 +77,6 @@ class ComponentManagerMenu(
     }
     
     override fun onClick(player: Player, slot: Int, item: ItemStack?, clickType: ClickType): Boolean {
-        // Permission check
-        if (!canManageComponents(player)) {
-            when (slot) {
-                49 -> guiManager.openMenu(player, RegionManageMenu(region, regionService, guiManager))
-            }
-            return true
-        }
-        
         when (slot) {
             45 -> if (currentPage > 0) { pendingDelete = null; currentPage--; render(player) }
             53 -> { 
@@ -136,10 +99,20 @@ class ComponentManagerMenu(
                     val comp = components[idx]
                     if (clickType.isRightClick) {
                         if (pendingDelete == comp.id) {
-                            componentService.deleteComponent(comp.id)
+                            val operations = guiManager.componentOperationService
+                            if (operations == null) {
+                                player.showOperationFailure("COMPONENT_OPERATIONS_UNAVAILABLE")
+                                return true
+                            }
+                            val result = operations.remove(
+                                player.operationContext("gui_component_remove"),
+                                comp.id
+                            )
                             pendingDelete = null
-                            player.sendMessage(i18n.msg("gui.components.deleted"))
-                            render(player)
+                            if (result.succeeded) {
+                                player.sendMessage(i18n.msg("gui.components.deleted"))
+                                render(player)
+                            } else player.showOperationFailure(result.detail)
                         } else {
                             pendingDelete = comp.id
                             player.sendMessage(i18n.msg("gui.components.delete_confirm_msg"))

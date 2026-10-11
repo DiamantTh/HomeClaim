@@ -88,12 +88,13 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         
         // Register GUI system
         guiManager = systems.diath.homeclaim.platform.paper.gui.GuiManager(
-            services.regionService,
-            services.zoneService,
-            services.componentService,
-            requireNotNull(services.adminService) { "Region administration service is required for the active GUI" },
-            requireNotNull(services.roleService) { "Region role service is required for the active GUI" },
-            services.auditService
+            regionService = services.regionService,
+            zoneService = services.zoneService,
+            componentService = services.componentService,
+            adminService = requireNotNull(services.adminService) { "Region administration service is required for the active GUI" },
+            roleService = requireNotNull(services.roleService) { "Region role service is required for the active GUI" },
+            auditService = services.auditService,
+            componentOperationService = requireNotNull(services.componentOperationService) { "Component operation service is required for the active GUI" }
         ).also {
             server.pluginManager.registerEvents(it, this)
         }
@@ -829,7 +830,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val zoneRepo = JdbcZoneRepository(dataSource, worldAreaRepo)
         val entryDenyRepo = systems.diath.homeclaim.core.store.JdbcEntryDenyRepository(dataSource)
         val profileService = JdbcFlagProfileService(dataSource)
-        val roleRepository = systems.diath.homeclaim.core.service.RegionRoleService(regionRepo)
+        val mutationAuthorizer = PaperRegionMutationAuthorizer()
+        val roleRepository = systems.diath.homeclaim.core.service.RegionRoleService(regionRepo, auditService, mutationAuthorizer)
         val policy: PolicyService = SimplePolicyService(
             regionService = regionRepo,
             zoneService = zoneRepo,
@@ -847,15 +849,30 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             regionService = regionRepo,
             profileService = profileService,
             profileJdbc = profileService,
-            auditService = auditService
+            auditService = auditService,
+            authorizer = mutationAuthorizer
+        )
+        val componentOperations = systems.diath.homeclaim.core.service.ComponentOperationService(
+            components = componentRepo,
+            regions = regionRepo,
+            audit = auditService,
+            authorizer = mutationAuthorizer
+        )
+        val entryDenyOperations = systems.diath.homeclaim.core.service.EntryDenyOperationService(
+            entryDenies = entryDenyRepo,
+            regions = regionRepo,
+            audit = auditService,
+            authorizer = mutationAuthorizer
         )
         return PlatformServices(
             policyService = policy,
             regionService = regionRepo,
             plotMemberService = null, // TODO: Implement PlotMemberService
             componentService = componentRepo,
+            componentOperationService = componentOperations,
             zoneService = zoneRepo,
             entryDenyService = entryDenyRepo,
+            entryDenyOperationService = entryDenyOperations,
             adminService = admin,
             flagProfileService = profileService,
             auditService = auditService,
@@ -1041,7 +1058,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     expiresAt = grant.expiresAt.toString()
                 )
             },
-            roleService = services.roleService
+            roleService = services.roleService,
+            entryDenyOperationService = services.entryDenyOperationService
         )
         try {
             restServer = rest.start()

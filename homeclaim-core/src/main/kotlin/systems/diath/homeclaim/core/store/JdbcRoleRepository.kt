@@ -6,9 +6,11 @@ import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.service.RoleService
 import javax.sql.DataSource
 
+@Deprecated("Use RegionRoleService; this standalone repository does not update Region runtime state or audit")
 class JdbcRoleRepository(
     private val dataSource: DataSource
 ) : RoleService {
+    @Deprecated("Use actor-aware RegionRoleService.mutateRole")
     override fun setRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {
         dataSource.connection.use { conn ->
             conn.prepareStatement(
@@ -28,6 +30,7 @@ class JdbcRoleRepository(
         }
     }
 
+    @Deprecated("Use actor-aware RegionRoleService.mutateRole")
     override fun removeRole(regionId: RegionId, playerId: PlayerId, role: RegionRole) {
         dataSource.connection.use { conn ->
             conn.prepareStatement(

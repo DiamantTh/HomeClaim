@@ -33,6 +33,7 @@ import systems.diath.homeclaim.core.economy.EconService
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditEntries
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.MutationAuditScope
 import java.sql.ResultSet
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -281,14 +282,16 @@ class JdbcRegionRepository(
                 conn.commit()
                 
                 // Audit log
-                auditService?.append(
-                    AuditEntries.regionUpdated(
-                        actorId = region.owner,
-                        targetId = region.id.value,
-                        world = region.world,
-                        owner = region.owner.toString()
+                if (!MutationAuditScope.active) {
+                    auditService?.append(
+                        AuditEntries.regionUpdated(
+                            actorId = region.owner,
+                            targetId = region.id.value,
+                            world = region.world,
+                            owner = region.owner.toString()
+                        )
                     )
-                )
+                }
             } catch (ex: Exception) {
                 conn.rollback()
                 throw ex

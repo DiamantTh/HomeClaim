@@ -9,23 +9,16 @@ import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RoleService
+import systems.diath.homeclaim.core.service.RoleMutationKind
+import systems.diath.homeclaim.core.service.RoleMutationRequest
 import systems.diath.homeclaim.core.service.AuditService
-import systems.diath.homeclaim.core.service.AuditEntries
-import systems.diath.homeclaim.core.service.AuditStatus
-import systems.diath.homeclaim.core.policy.ActionActor
-import systems.diath.homeclaim.core.policy.ActionEndpoint
-import systems.diath.homeclaim.core.policy.ActionRequest
-import systems.diath.homeclaim.core.policy.ActionResourceRef
-import systems.diath.homeclaim.core.policy.ActionContext
-import systems.diath.homeclaim.core.policy.CorrelationId
-import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
 
 class RoleEditorMenu(
     private var region: Region,
     private val regionService: RegionService,
     private val guiManager: GuiManager,
     private val roleService: RoleService,
-    private val auditService: AuditService? = null
+    @Suppress("unused") @Deprecated("Role mutations audit through RoleService") private val auditService: AuditService? = null
 ) : GuiMenu(systems.diath.homeclaim.platform.paper.I18n().msg("gui.role.title"), rows = 6) {
     
     private var selectedRole: RegionRole? = null
@@ -83,21 +76,22 @@ class RoleEditorMenu(
                 }
                 if (slot < players.size) {
                     val playerId = players[slot]
-                    roleService.removeRole(region.id, playerId, role)
-                    val request = ActionRequest(
-                        actor = ActionActor.Player(player.uniqueId),
-                        actionKey = HomeClaimOperationActions.ROLE_CHANGE,
-                        target = ActionEndpoint(resource = ActionResourceRef.Region(region.id), areaId = region.areaId),
-                        correlationId = CorrelationId.newId(),
-                        context = ActionContext(platform = "paper", eventName = "gui_role_remove", attributes = mapOf(
-                            "playerId" to playerId.toString(),
-                            "role" to role.name
-                        ))
-                    )
-                    auditService?.append(AuditEntries.operationResult(request, AuditStatus.COMPLETED, targetCount = 1))
-                    refreshRegion()
-                    player.sendMessage(i18n.msg("gui.role.player_removed"))
-                    render(player)
+                    val result = roleService.mutateRole(RoleMutationRequest(
+                        actor = systems.diath.homeclaim.core.policy.ActionActor.Player(player.uniqueId),
+                        regionId = region.id,
+                        targetPlayerId = playerId,
+                        role = role,
+                        kind = RoleMutationKind.REMOVE,
+                        platform = "paper",
+                        correlationId = systems.diath.homeclaim.core.policy.CorrelationId.newId()
+                    ))
+                    if (result.succeeded) {
+                        refreshRegion()
+                        player.sendMessage(i18n.msg("gui.role.player_removed"))
+                        render(player)
+                    } else {
+                        player.showOperationFailure(result.detail)
+                    }
                 }
             }
         }

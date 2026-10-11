@@ -26,7 +26,11 @@ data class OperationResult<out T>(
     val succeeded: Boolean get() = status == OperationStatus.SUCCESS
 
     companion object {
-        fun <T> success(value: T): OperationResult<T> = OperationResult(OperationStatus.SUCCESS, value)
+        fun <T> success(value: T): OperationResult<T> =
+            OperationResult(OperationStatus.SUCCESS, value)
+
+        fun <T> success(value: T, detail: String?): OperationResult<T> =
+            OperationResult(OperationStatus.SUCCESS, value, detail)
         fun <T> rejected(status: OperationStatus, detail: String): OperationResult<T> {
             require(status != OperationStatus.SUCCESS) { "Use success() for successful operations" }
             return OperationResult(status, detail = detail)
