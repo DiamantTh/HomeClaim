@@ -15,7 +15,7 @@ class PolicyGuard(
     private val areaService: AreaService? = null
 ) {
     fun check(request: ActionRequest): Decision {
-        val action = ActionKey.toLegacy(request.actionKey)
+        val action = ActionKey.definitionOrNull(request.actionKey)
         val location = request.target?.position ?: request.source?.position
         val actorId = (request.actor as? ActionActor.Player)?.playerId
         if (action == null) {

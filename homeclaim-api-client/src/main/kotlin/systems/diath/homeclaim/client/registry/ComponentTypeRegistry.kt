@@ -3,11 +3,8 @@ package systems.diath.homeclaim.client.registry
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Registry for custom component types.
- * Allows third-party plugins to register new component types dynamically.
- * 
- * Built-in types (ELEVATOR_PAD, TELEPORT_PAD) are always available.
- * Custom types can be registered at runtime via registerType().
+ * Client-side metadata catalog for extension authors. A registered descriptor does not install
+ * persistence, protection, or a server-side component runtime handler.
  */
 object ComponentTypeRegistry {
     

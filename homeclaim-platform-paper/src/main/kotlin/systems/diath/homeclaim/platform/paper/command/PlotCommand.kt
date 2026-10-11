@@ -534,6 +534,7 @@ class PlotCommand(
             return
         }
         val selected = collectMergeTargets(region, sameOwnerRegions, direction)
+            .filterNot { candidate -> region.mergeGroupId != null && candidate.mergeGroupId == region.mergeGroupId }
         if (selected.isEmpty()) {
             auditOperation(request, AuditStatus.DENIED, "NO_ADJACENT_MERGE_TARGET")
             player.sendMessage(i18n.msg("plot.merge_no_adjacent"))
@@ -602,14 +603,19 @@ class PlotCommand(
             if (worldError != null) {
                 val cause = worldError.cause ?: worldError
                 val detail = "Merge world mutation failed; partial world changes cannot be excluded: ${cause.message ?: cause.javaClass.simpleName}"
-                runCatching {
-                    mutationJobStore?.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, originalRegions.size, detail)
-                }.onFailure { journalError ->
-                    org.bukkit.Bukkit.getLogger().severe("Could not persist merge recovery status for job $jobId: ${journalError.message}")
+                try {
+                    runCatching {
+                        mutationJobStore?.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, originalRegions.size, detail)
+                    }.onFailure { journalError ->
+                        org.bukkit.Bukkit.getLogger().severe("Could not persist merge recovery status for job $jobId: ${journalError.message}")
+                    }
+                    runCatching { auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size) }
+                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit failed merge $jobId: ${auditError.message}") }
+                    runCatching { if (player.isOnline) player.sendMessage("§cPlot merge requires recovery: $detail") }
+                        .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge recovery feedback for $jobId: ${feedbackError.message}") }
+                } finally {
+                    releaseMergeReservation(mergedIds)
                 }
-                auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size)
-                if (player.isOnline) player.sendMessage("§cPlot merge requires recovery: $detail")
-                releaseMergeReservation(mergedIds)
                 return@whenComplete
             }
 
@@ -620,7 +626,7 @@ class PlotCommand(
                     "MERGE_EXECUTION_FAILED:${error.javaClass.simpleName}"
                 )
             }
-            if (persisted.status == OperationStatus.SUCCESS) {
+            if (persisted.status == OperationStatus.SUCCESS && persisted.value != null) {
                 val mergeId = requireNotNull(persisted.value)
                 runCatching {
                     mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size)
@@ -628,15 +634,21 @@ class PlotCommand(
                     // World and domain state agree. Leave the nonterminal journal row for conservative startup review.
                     org.bukkit.Bukkit.getLogger().severe("Merge $jobId completed but its journal could not be finalized: ${journalError.message}")
                 }
-                auditOperation(request, AuditStatus.COMPLETED, targetCount = mergedIds.size)
-                if (player.isOnline) {
-                    player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+                try {
+                    runCatching { auditOperation(request, AuditStatus.COMPLETED, targetCount = mergedIds.size) }
+                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit completed merge $jobId: ${auditError.message}") }
+                    runCatching {
+                        if (player.isOnline) {
+                            player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
+                        }
+                    }.onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge completion feedback for $jobId: ${feedbackError.message}") }
+                } finally {
+                    releaseMergeReservation(mergedIds)
                 }
-                releaseMergeReservation(mergedIds)
                 return@whenComplete
             }
 
-            val reason = persisted.detail ?: persisted.status.name
+            val reason = persisted.detail ?: if (persisted.status == OperationStatus.SUCCESS) "MERGE_RESULT_MISSING_GROUP" else persisted.status.name
             val compensation = runCatching { plotMutationService.restoreRegionVisualStates(originalRegions) }
                 .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
             compensation.whenComplete { _, compensationError ->
@@ -653,9 +665,14 @@ class PlotCommand(
                 }.onFailure { journalError ->
                     org.bukkit.Bukkit.getLogger().severe("Could not persist merge compensation status for job $jobId: ${journalError.message}")
                 }
-                auditOperation(request, auditStatus, detail, mergedIds.size)
-                if (player.isOnline) player.sendMessage("§cPlot merge failed: $detail")
-                releaseMergeReservation(mergedIds)
+                try {
+                    runCatching { auditOperation(request, auditStatus, detail, mergedIds.size) }
+                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit merge compensation $jobId: ${auditError.message}") }
+                    runCatching { if (player.isOnline) player.sendMessage("§cPlot merge failed: $detail") }
+                        .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge failure feedback for $jobId: ${feedbackError.message}") }
+                } finally {
+                    releaseMergeReservation(mergedIds)
+                }
             }
         }
     }

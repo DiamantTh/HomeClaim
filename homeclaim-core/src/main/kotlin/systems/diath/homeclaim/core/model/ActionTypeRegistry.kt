@@ -3,16 +3,9 @@ package systems.diath.homeclaim.core.model
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Registry for custom action types.
- * Allows third-party plugins to register new action types for policy evaluation.
- * 
- * Built-in actions (BUILD, BREAK, INTERACT_BLOCK, PVP, etc.) are always available.
- * Custom actions can be registered at runtime via registerAction().
- * 
- * Example use cases:
- * - CUSTOM_PORTAL_USE
- * - CUSTOM_MINIGAME_JOIN
- * - CUSTOM_TRADE
+ * Legacy descriptor catalog. Registration here does not make an action evaluable by
+ * [systems.diath.homeclaim.core.platform.PolicyGuard]; unknown ActionKeys still fail closed.
+ * This catalog is not connected to Paper runtime policy dispatch.
  */
 object ActionTypeRegistry {
     

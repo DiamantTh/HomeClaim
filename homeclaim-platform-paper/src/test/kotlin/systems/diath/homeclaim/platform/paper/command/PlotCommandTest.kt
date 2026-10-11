@@ -23,8 +23,12 @@ import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.AreaId
+import systems.diath.homeclaim.core.model.Area
+import systems.diath.homeclaim.core.model.AreaScope
+import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
+import systems.diath.homeclaim.core.service.InMemoryWorldAreaService
 import systems.diath.homeclaim.core.service.AuditEntry
 import systems.diath.homeclaim.core.service.AuditService
 import systems.diath.homeclaim.core.service.AuditStatus
@@ -44,6 +48,7 @@ import java.time.Instant
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicInteger
 
 class PlotCommandTest {
 
@@ -270,15 +275,101 @@ class PlotCommandTest {
     }
 
     @Test
+    fun `merge reservation serializes overlapping requests and completed group cannot be merged twice`() {
+        repeat(8) { iteration ->
+            val ownerId = UUID.randomUUID()
+            val world = mock(World::class.java)
+            val platformWorldId = UUID.randomUUID()
+            doReturn(platformWorldId).`when`(world).uid
+            doReturn("plots").`when`(world).name
+            val worldAreas = InMemoryWorldAreaService()
+            val homeWorld = worldAreas.createWorld("plots", platformWorldId)
+            val area = worldAreas.createArea(Area(AreaId.newId(), homeWorld.id, "plots", AreaScope.WholeWorld))
+            val regions = mergedPair(ownerId, area.id)
+            val westPlot = regions.listAllRegions().first().copy(
+                id = RegionId(UUID.randomUUID()),
+                bounds = Bounds(-16, -1, 0, 255, 0, 15)
+            )
+            regions.createRegion(westPlot)
+            val auditRecords = mutableListOf<AuditEntry>()
+            val auditService = object : AuditService {
+                override fun append(entry: AuditEntry) {
+                    auditRecords.add(entry)
+                    if (iteration == 0 && entry.status == AuditStatus.COMPLETED) {
+                        throw IllegalStateException("simulated audit sink failure")
+                    }
+                }
+            }
+            val player = mergePlayer(world, ownerId)
+            val mutationCalls = AtomicInteger()
+            val pendingMutations = ArrayDeque<CompletableFuture<Unit>>()
+            val mutationService = object : PlotMutationService {
+                override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+                override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> =
+                    CompletableFuture<Unit>().also {
+                        mutationCalls.incrementAndGet()
+                        pendingMutations.addLast(it)
+                    }
+            }
+            val command = PlotCommand(
+                regions,
+                mock(GuiManager::class.java),
+                econService = null,
+                plotMutationService = mutationService,
+                auditService = auditService,
+                worldAreaService = worldAreas
+            )
+
+            assertTrue(regions.getRegionAt2D(area.id, 5, 5) != null, "test fixture must index the player's plot")
+            assertEquals("plots", player.location.world.name)
+
+            command.execute(player, arrayOf("merge", "east"))
+            command.execute(player, arrayOf("merge", "east"))
+            assertEquals(
+                1,
+                mutationCalls.get(),
+                "an overlapping merge must be rejected while the first world mutation is pending; audit=${auditRecords.map { it.status }}, messages=${Mockito.mockingDetails(player).invocations.mapNotNull { it.arguments.firstOrNull() as? String }}"
+            )
+            assertEquals(1, pendingMutations.size)
+
+            pendingMutations.removeFirst().complete(Unit)
+            assertEquals(3, regions.listAllRegions().size, "merge must preserve every persisted region")
+            assertEquals(2, regions.listAllRegions().count { it.mergeGroupId != null })
+            assertTrue(regions.getRegionAt2D(area.id, 5, 5) != null, "the player's plot must remain spatially indexed")
+            doReturn(Location(world, -5.0, 65.0, 5.0)).`when`(player).location
+            command.execute(player, arrayOf("merge", "east"))
+            assertEquals(
+                2,
+                mutationCalls.get(),
+                "a new adjacent plot must be mergeable after completion releases the reservation; audit=${auditRecords.map { it.status }}, messages=${Mockito.mockingDetails(player).invocations.mapNotNull { it.arguments.firstOrNull() as? String }}"
+            )
+            assertEquals(1, pendingMutations.size)
+            pendingMutations.removeFirst().complete(Unit)
+            assertEquals(1, regions.listAllRegions().map { it.mergeGroupId }.distinct().size)
+            assertTrue(regions.listAllRegions().all { it.mergeGroupId != null })
+            command.execute(player, arrayOf("merge", "east"))
+            assertEquals(2, mutationCalls.get(), "the completed merge group must not be merged again")
+
+            val statuses = auditRecords.map { it.status }
+            assertEquals(2, statuses.count { it == AuditStatus.COMPLETED })
+            assertTrue(statuses.none { it == AuditStatus.FAILED || it == AuditStatus.ROLLED_BACK }, "rejected duplicate requests must not create failed execution records: $statuses")
+            assertTrue(pendingMutations.isEmpty(), "all started world mutations must finish")
+        }
+    }
+
+    @Test
     fun `failed merge world mutation does not persist a merge and reports recovery state`() {
         val regions = mergedPair()
         val auditService = mock(AuditService::class.java)
         val world = mock(World::class.java)
         val player = mergePlayer(world)
+        val mutationCalls = AtomicInteger()
         val mutationService = object : systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService {
             override fun applyRegionState(region: Region, reason: MutationReason) = Unit
-            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> =
-                CompletableFuture.failedFuture(IllegalStateException("simulated mutation failure"))
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
+                mutationCalls.incrementAndGet()
+                return CompletableFuture.failedFuture(IllegalStateException("simulated mutation failure"))
+            }
         }
         val command = PlotCommand(
             regions,
@@ -299,18 +390,25 @@ class PlotCommandTest {
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
         assertEquals(AuditStatus.FAILED, auditRecords.last().status)
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+
+        command.execute(player, arrayOf("merge"))
+        assertEquals(2, mutationCalls.get(), "a failed attempt must release its reservation so a later retry can run")
+        val allAuditRecords = Mockito.mockingDetails(auditService).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
+        assertEquals(2, allAuditRecords.map { it.correlationId }.distinct().size)
     }
 
     @Test
     fun `merge persistence failure restores the previous world visuals and does not report success`() {
-        val backingStore = mergedPair()
+        val ownerId = UUID.randomUUID()
+        val backingStore = mergedPair(ownerId)
         val regionService = object : RegionService by backingStore {
             override fun mergeRegions(regionIds: Collection<RegionId>): systems.diath.homeclaim.core.model.MergeGroupId {
                 throw IllegalStateException("simulated database failure")
             }
         }
         val auditService = mock(AuditService::class.java)
-        val player = mergePlayer(mock(World::class.java))
+        val player = mergePlayer(mock(World::class.java), ownerId)
         var worldRestored = false
         val mutationService = object : systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService {
             override fun applyRegionState(region: Region, reason: MutationReason) = Unit
@@ -416,28 +514,31 @@ class PlotCommandTest {
         )
     }
 
-    private fun mergedPair(): InMemoryRegionStore {
+    private fun mergedPair(
+        ownerId: UUID = UUID.randomUUID(),
+        areaId: AreaId = AreaId.legacyDefault(WorldId.fromLegacyName("plots"))
+    ): InMemoryRegionStore {
         val store = InMemoryRegionStore()
-        val owner = UUID.randomUUID()
-        val ownerId = RegionId(UUID.randomUUID())
+        val anchorRegionId = RegionId(UUID.randomUUID())
         val neighborId = RegionId(UUID.randomUUID())
         val base = Region(
-            id = ownerId,
+            id = anchorRegionId,
             world = "plots",
+            areaId = areaId,
             shape = RegionShape.PLOT_GRID,
             bounds = Bounds(0, 15, 0, 255, 0, 15),
-            owner = owner
+            owner = ownerId
         )
         store.createRegion(base)
         store.createRegion(base.copy(id = neighborId, bounds = Bounds(16, 31, 0, 255, 0, 15)))
         return store
     }
 
-    private fun mergePlayer(world: World): Player {
+    private fun mergePlayer(world: World, playerId: UUID = UUID.randomUUID()): Player {
         val player = mock(Player::class.java)
         doReturn(false).`when`(player).isOp
         doReturn(true).`when`(player).isOnline
-        doReturn(UUID.randomUUID()).`when`(player).uniqueId
+        doReturn(playerId).`when`(player).uniqueId
         doReturn(true).`when`(player).hasPermission(anyString())
         doReturn("plots").`when`(world).name
         doReturn(Location(world, 5.0, 65.0, 5.0)).`when`(player).location

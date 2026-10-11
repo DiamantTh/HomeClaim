@@ -3,16 +3,8 @@ package systems.diath.homeclaim.client.registry
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Registry for custom action types.
- * Allows third-party plugins to register new action types for policy evaluation.
- * 
- * Built-in actions (BUILD, BREAK, INTERACT_BLOCK, PVP, etc.) are always available.
- * Custom actions can be registered at runtime via registerAction().
- * 
- * Example use cases:
- * - CUSTOM_PORTAL_USE
- * - CUSTOM_MINIGAME_JOIN
- * - CUSTOM_TRADE
+ * Client-side metadata catalog for extension authors. Registering a descriptor here does not
+ * register policy behavior in HomeClaim's server runtime.
  */
 object ActionTypeRegistry {
     

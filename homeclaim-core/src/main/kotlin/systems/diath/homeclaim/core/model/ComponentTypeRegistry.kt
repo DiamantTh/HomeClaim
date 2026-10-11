@@ -3,11 +3,9 @@ package systems.diath.homeclaim.core.model
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Registry for custom component types.
- * Allows third-party plugins to register new component types dynamically.
- * 
- * Built-in types (ELEVATOR_PAD, TELEPORT_PAD) are always available.
- * Custom types can be registered at runtime via registerType().
+ * Metadata registry for component type descriptors. Registering a custom descriptor does not
+ * install persistence, protection, or a runtime handler. Only [ComponentType] built-ins have
+ * HomeClaim runtime dispatch in this checkout.
  */
 object ComponentTypeRegistry {
     
@@ -50,6 +48,16 @@ object ComponentTypeRegistry {
         val upper = name.uppercase()
         return upper == "ELEVATOR_PAD" || upper == "TELEPORT_PAD" || customTypes.containsKey(upper)
     }
+
+    /** Distinguishes executable built-ins from metadata-only custom descriptors. */
+    fun runtimeSupport(name: String): ComponentTypeRuntimeSupport {
+        val upper = name.uppercase()
+        return when {
+            ComponentType.entries.any { it.name == upper } -> ComponentTypeRuntimeSupport.BUILTIN
+            customTypes.containsKey(upper) -> ComponentTypeRuntimeSupport.DESCRIPTOR_ONLY
+            else -> ComponentTypeRuntimeSupport.UNKNOWN
+        }
+    }
     
     /**
      * Get descriptor for a custom type.
@@ -80,6 +88,12 @@ object ComponentTypeRegistry {
     fun clearCustomTypes() {
         customTypes.clear()
     }
+}
+
+enum class ComponentTypeRuntimeSupport {
+    BUILTIN,
+    DESCRIPTOR_ONLY,
+    UNKNOWN
 }
 
 /**

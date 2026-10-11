@@ -125,7 +125,7 @@ object AuditPolicy {
         if (entry.status == AuditStatus.ALLOWED && key in ADMIN_ACTIONS) return true
         if (entry.status == AuditStatus.ALLOWED && key == "homeclaim:region_explosion" && (entry.targetCount ?: 0) > 0) return true
         return entry.status in setOf(AuditStatus.ATTEMPTED, AuditStatus.COMPLETED, AuditStatus.FAILED,
-            AuditStatus.ROLLED_BACK) && ((ActionKey.toLegacy(entry.actionKey ?: return true)?.mutating ?: true) ||
+            AuditStatus.ROLLED_BACK) && ((ActionKey.definitionOrNull(entry.actionKey ?: return true)?.mutating ?: true) ||
             key in ADMIN_ACTIONS)
     }
 

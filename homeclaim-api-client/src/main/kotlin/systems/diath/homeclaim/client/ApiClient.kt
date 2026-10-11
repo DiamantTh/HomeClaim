@@ -6,9 +6,10 @@
  * 
  * Third-party plugins should:
  * 1. Add dependency: implementation("systems.diath.homeclaim:homeclaim-api-client:VERSION")
- * 2. Access registries: ComponentTypeRegistry, ActionTypeRegistry
+ * 2. Access client-side descriptor catalogs: ComponentTypeRegistry, ActionTypeRegistry
  * 3. Listen to events: RegionEvent, LiftEvent subclasses
- * 4. Implement custom components/actions and register them
+ * 4. Describe custom components/actions to client integrations. Server runtime handlers still
+ *    require an explicit HomeClaim integration and are not activated by these catalogs.
  * 
  * Example usage:
  * ```kotlin

@@ -20,7 +20,7 @@ value class ActionKey(val value: String) {
 
     companion object {
         private val KEY_PATTERN = Regex("[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._/-]*")
-        private val LEGACY_ACTIONS_BY_KEY by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        private val BUILTIN_DEFINITIONS_BY_KEY by lazy(LazyThreadSafetyMode.PUBLICATION) {
             Action.entries.associateBy(Action::key)
         }
 
@@ -28,7 +28,12 @@ value class ActionKey(val value: String) {
 
         fun parse(value: String): ActionKey = ActionKey(value)
 
-        fun toLegacy(key: ActionKey): Action? = LEGACY_ACTIONS_BY_KEY[key]
+        /** Returns HomeClaim's built-in policy metadata, if this key has a definition. */
+        fun definitionOrNull(key: ActionKey): Action? = BUILTIN_DEFINITIONS_BY_KEY[key]
+
+        /** Compatibility name for callers that still refer to built-in actions as legacy values. */
+        @Deprecated("Use definitionOrNull; ActionKey is the canonical identity")
+        fun toLegacy(key: ActionKey): Action? = definitionOrNull(key)
     }
 }
 
@@ -180,7 +185,7 @@ data class ActionRequest(
 
     /** Returns a validation message when a known built-in action lacks its required target. */
     fun validationError(): String? {
-        val action = ActionKey.toLegacy(actionKey) ?: return null
+        val action = ActionKey.definitionOrNull(actionKey) ?: return null
         return if (action.requiresTarget && target == null) "Action ${actionKey.value} requires a target" else null
     }
 
@@ -194,8 +199,8 @@ data class BulkActionRequest(
 ) {
     init {
         require(targets.isNotEmpty()) { "A bulk action needs at least one target" }
-        val legacyAction = ActionKey.toLegacy(action.actionKey)
-        require(legacyAction?.bulkCapable == true) {
+        val definition = ActionKey.definitionOrNull(action.actionKey)
+        require(definition?.bulkCapable == true) {
             "Action ${action.actionKey.value} is not bulk-capable"
         }
     }

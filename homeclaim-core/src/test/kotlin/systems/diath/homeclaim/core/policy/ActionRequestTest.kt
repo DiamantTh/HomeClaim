@@ -69,10 +69,31 @@ class ActionRequestTest {
     @Test
     fun `built in action keys are stable namespaced and map to legacy actions`() {
         assertEquals("homeclaim:region_build", Action.REGION_BUILD.key.value)
-        assertEquals(Action.REGION_BUILD, ActionKey.toLegacy(ActionKey.parse("homeclaim:region_build")))
+        assertEquals(Action.REGION_BUILD, ActionKey.definitionOrNull(ActionKey.parse("homeclaim:region_build")))
         assertEquals(Action.entries.size, Action.entries.map { it.key }.toSet().size)
-        Action.entries.forEach { assertEquals(it, ActionKey.toLegacy(it.key)) }
+        Action.entries.forEach { assertEquals(it, ActionKey.definitionOrNull(it.key)) }
         assertFailsForInvalidKey("region_build")
+    }
+
+    @Test
+    fun `unknown namespaced action is retained for audit and denied without policy metadata`() {
+        val regions = InMemoryRegionStore()
+        val key = ActionKey.parse("example:custom_action")
+        val request = ActionRequest(
+            actor = ActionActor.System("test"),
+            actionKey = key,
+            target = ActionEndpoint(Position(world, 5, 64, 5), areaId = areaOne)
+        )
+
+        assertNull(ActionKey.definitionOrNull(key))
+        val decision = PolicyGuard(policy(regions, RegionRole.OWNER), regions).check(request)
+        val audit = AuditEntries.operationResult(request, AuditStatus.FAILED, "unsupported action")
+
+        assertEquals(DecisionEffect.DENY, decision.effect)
+        assertEquals(DecisionReason.UNSUPPORTED_ACTION, decision.reason)
+        assertEquals(key, decision.context.actionKey)
+        assertEquals(key, audit.actionKey)
+        assertEquals(request.correlationId, audit.correlationId)
     }
 
     @Test
