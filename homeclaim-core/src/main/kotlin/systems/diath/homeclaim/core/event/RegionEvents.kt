@@ -11,7 +11,7 @@ import java.util.UUID
  */
 abstract class RegionEvent(
     val regionId: RegionId,
-    val initiatorId: PlayerId
+    val initiatorId: PlayerId?
 ) {
     var eventResult: EventResult? = null
     var cancelled: Boolean = false
@@ -98,7 +98,7 @@ class PostRegionTransferEvent(
  */
 class RegionCreateEvent(
     regionId: RegionId,
-    initiatorId: PlayerId,
+    initiatorId: PlayerId?,
     val world: String,
     val bounds: systems.diath.homeclaim.core.model.Bounds
 ) : RegionEvent(regionId, initiatorId)
@@ -109,7 +109,7 @@ class RegionCreateEvent(
  */
 class PostRegionCreateEvent(
     regionId: RegionId,
-    initiatorId: PlayerId,
+    initiatorId: PlayerId?,
     val world: String
 ) : RegionEvent(regionId, initiatorId)
 
@@ -138,7 +138,7 @@ class PostRegionUpdateEvent(
  */
 class RegionMergeEvent(
     regionIds: Set<RegionId>,
-    initiatorId: PlayerId
+    initiatorId: PlayerId?
 ) : RegionEvent(regionIds.first(), initiatorId) {
     val regionIds: Set<RegionId> = regionIds.toSet()
 }
@@ -148,7 +148,7 @@ class RegionMergeEvent(
  */
 class PostRegionMergeEvent(
     regionIds: Set<RegionId>,
-    initiatorId: PlayerId,
+    initiatorId: PlayerId?,
     val mergeGroupId: MergeGroupId
 ) : RegionEvent(regionIds.first(), initiatorId) {
     val regionIds: Set<RegionId> = regionIds.toSet()

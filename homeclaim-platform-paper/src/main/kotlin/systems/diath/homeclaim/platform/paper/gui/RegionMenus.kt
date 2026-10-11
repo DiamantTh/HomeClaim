@@ -91,7 +91,7 @@ class RegionManageMenu(
             11 -> guiManager.openMenu(player, RegionPriceEditorMenu(region, regionService, guiManager, guiManager.adminService))
             12 -> guiManager.openMenu(player, FlagEditorMenu(region, regionService, guiManager, guiManager.adminService))
             13 -> guiManager.openMenu(player, ComponentManagerMenu(region, guiManager.componentService, regionService, guiManager))
-            14 -> guiManager.openMenu(player, ZoneInfoMenu(region, guiManager.zoneService, guiManager))
+            14 -> guiManager.openMenu(player, ZoneInfoMenu(region, guiManager.zoneService, guiManager, guiManager.worldAreaService))
             22 -> guiManager.openMenu(player, RegionListMenu(regionService, guiManager))
         }
         return true

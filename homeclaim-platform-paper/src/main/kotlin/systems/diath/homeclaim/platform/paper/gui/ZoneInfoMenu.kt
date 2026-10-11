@@ -7,12 +7,14 @@ import org.bukkit.inventory.ItemStack
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.service.ZoneService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.core.model.Position
 
 class ZoneInfoMenu(
     private val region: Region,
     private val zoneService: ZoneService,
-    private val guiManager: GuiManager
+    private val guiManager: GuiManager,
+    private val worldAreaService: WorldAreaService?
 ) : GuiMenu(systems.diath.homeclaim.platform.paper.I18n().msg("gui.zone.title"), rows = 4) {
     
     private var zones: List<systems.diath.homeclaim.core.model.Zone> = emptyList()
@@ -27,8 +29,9 @@ class ZoneInfoMenu(
         val centerX = (region.bounds.minX + region.bounds.maxX) / 2
         val centerY = (region.bounds.minY + region.bounds.maxY) / 2
         val centerZ = (region.bounds.minZ + region.bounds.maxZ) / 2
-        val centerPos = Position(region.world, centerX, centerY, centerZ)
-        zones = zoneService.getZonesAt(region.world, centerPos)
+        val area = worldAreaService?.getArea(region.areaId)
+        val centerPos = area?.let { Position(it.worldId, centerX, centerY, centerZ) }
+        zones = if (area != null && centerPos != null) zoneService.getZonesAt(area.id, centerPos) else emptyList()
         
         if (zones.isEmpty()) {
             setItem(13, createItem(Material.BARRIER, i18n.msg("gui.zone.none.title"),

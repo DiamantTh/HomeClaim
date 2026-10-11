@@ -51,7 +51,8 @@ enum class DecisionEffect { ALLOW, DENY, INHERIT, NOT_APPLICABLE }
 enum class DecisionSource { SCOPE, POLICY, ROLE, PERMISSION, BYPASS, LEGACY }
 
 data class DecisionContext(
-    val playerId: PlayerId,
+    /** Null for entity, automation, and system actors; never synthesize a player UUID. */
+    val playerId: PlayerId?,
     val regionId: RegionId?,
     val action: Action,
     val world: WorldId? = null,

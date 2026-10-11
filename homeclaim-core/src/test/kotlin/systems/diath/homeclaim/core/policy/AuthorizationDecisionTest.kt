@@ -256,15 +256,15 @@ class AuthorizationDecisionTest {
     @Test fun `claim quota is enforced through shared operation service`() {
         val store = InMemoryRegionStore().also {
             it.createRegion(region(regionOwner = owner), region().bounds)
-            it.createRegion(region(id = RegionId(UUID.randomUUID()), regionOwner = UUID(0L, 0L)), region().bounds)
+            it.createRegion(region(id = RegionId(UUID.randomUUID()), regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID), region().bounds)
         }
         val limits = RegionOperationLimitService(store, maxOwnedRegions = 1)
         assertFalse(limits.evaluateClaim(owner).allowed)
         assertTrue(limits.evaluateClaim(visitor).allowed)
         val unclaimedId = RegionId(UUID.randomUUID())
-        store.createRegion(region(id = unclaimedId, regionOwner = UUID(0L, 0L)), region().bounds)
+        store.createRegion(region(id = unclaimedId, regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID), region().bounds)
         assertFalse(limits.claimRegion(unclaimedId, owner, 0.0, SimpleEconService()))
-        assertEquals(UUID(0L, 0L), store.getRegionById(unclaimedId)?.owner)
+        assertEquals(RegionOwnership.UNCLAIMED_OWNER_ID, store.getRegionById(unclaimedId)?.owner)
     }
 
     @Test fun `claim quota bypass is explicit and operation applies it`() {
@@ -272,12 +272,12 @@ class AuthorizationDecisionTest {
         val limits = RegionOperationLimitService(store, maxOwnedRegions = 1)
         assertTrue(limits.evaluateClaim(owner, bypass = true).allowed)
         val target = RegionId(UUID.randomUUID())
-        store.createRegion(region(id = target, regionOwner = UUID(0L, 0L)), region().bounds)
+        store.createRegion(region(id = target, regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID), region().bounds)
         assertTrue(limits.claimRegion(target, owner, 0.0, SimpleEconService(), bypass = true))
     }
 
     @Test fun `claim operation returns structured success after mutation`() {
-        val unclaimed = region(regionOwner = UUID(0L, 0L))
+        val unclaimed = region(regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID)
         val store = InMemoryRegionStore().also { it.createRegion(unclaimed, unclaimed.bounds) }
         val limits = RegionOperationLimitService(store)
         var authorized = false
@@ -297,7 +297,7 @@ class AuthorizationDecisionTest {
     }
 
     @Test fun `claim operation distinguishes scope actor and quota failures`() {
-        val unclaimed = region(regionOwner = UUID(0L, 0L))
+        val unclaimed = region(regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID)
         val store = InMemoryRegionStore().also { it.createRegion(unclaimed, unclaimed.bounds) }
         val limits = RegionOperationLimitService(store, maxOwnedRegions = 0)
         var authorized = false
@@ -321,7 +321,7 @@ class AuthorizationDecisionTest {
                 onAuthorized = { authorized = true }
             ).status)
         assertFalse(authorized)
-        assertEquals(UUID(0L, 0L), store.getRegionById(unclaimed.id)?.owner)
+        assertEquals(RegionOwnership.UNCLAIMED_OWNER_ID, store.getRegionById(unclaimed.id)?.owner)
     }
 
     @Test fun `merge operation returns a typed group id on success`() {
@@ -362,8 +362,8 @@ class AuthorizationDecisionTest {
         val first = RegionId(UUID.randomUUID())
         val second = RegionId(UUID.randomUUID())
         val store = InMemoryRegionStore().also {
-            it.createRegion(region(id = first, regionOwner = UUID(0L, 0L)), region().bounds)
-            it.createRegion(region(id = second, regionOwner = UUID(0L, 0L)), region().bounds)
+            it.createRegion(region(id = first, regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID), region().bounds)
+            it.createRegion(region(id = second, regionOwner = RegionOwnership.UNCLAIMED_OWNER_ID), region().bounds)
         }
         val limits = RegionOperationLimitService(store, maxOwnedRegions = 1)
         val ready = CountDownLatch(2)
@@ -418,16 +418,30 @@ class AuthorizationDecisionTest {
         assertTrue(limits.evaluateMerge(emptyList()).allowed)
     }
 
-    @Test fun `policy service and PolicyGuard return the same authorization`() {
+    @Test fun `typed ActionRequest and PolicyGuard return the same authorization`() {
         val store = InMemoryRegionStore().also { it.createRegion(region(), region().bounds) }
         val zones = InMemoryZoneStore()
         val policy = SimplePolicyService(store, zones, { _, actor -> region().roles.resolve(actor, owner) })
         val direct = policy.evaluate(trusted, Action.REGION_BUILD, position)
-        val guarded = PolicyGuard(policy, store).check(PolicyActionRequest(
-            Action.REGION_BUILD, position, PolicyActorContext(actorId = trusted.toString()), trusted
+        val guarded = PolicyGuard(policy, store).check(ActionRequest(
+            actor = ActionActor.Player(trusted),
+            actionKey = Action.REGION_BUILD.key,
+            target = ActionEndpoint(position)
         ))
         assertEquals(direct.effect, guarded.effect)
         assertEquals(direct.reason, guarded.reason)
+    }
+
+    @Test fun `non-player policy actor has no synthetic player UUID`() {
+        val store = InMemoryRegionStore().also { it.createRegion(region(), region().bounds) }
+        val policy = service(regions = store)
+        val decision = PolicyGuard(policy, store).check(ActionRequest(
+            actor = ActionActor.System("test"),
+            actionKey = Action.REGION_BUILD.key,
+            target = ActionEndpoint(position)
+        ))
+        assertEquals(null, decision.context.playerId)
+        assertEquals(DecisionEffect.DENY, decision.effect)
     }
 
     @Test fun `decision exposes role and policy trace`() {

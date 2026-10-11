@@ -1,6 +1,8 @@
 package systems.diath.homeclaim.core.policy
 
 import systems.diath.homeclaim.core.model.AreaId
+import systems.diath.homeclaim.core.model.Area
+import systems.diath.homeclaim.core.model.AreaScope
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.ComponentId
 import systems.diath.homeclaim.core.model.PlayerId
@@ -41,6 +43,28 @@ class ActionRequestTest {
     private val areaTwo = AreaId(UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
     private val owner: PlayerId = UUID.fromString("11111111-1111-1111-1111-111111111111")
     private val visitor: PlayerId = UUID.fromString("22222222-2222-2222-2222-222222222222")
+
+    @Test
+    fun `paper world uuid resolves to canonical homeclaim world id after display rename`() {
+        val platformWorldId = UUID.randomUUID()
+        val worldService = InMemoryWorldAreaService()
+        val homeWorld = worldService.createWorld("old-display-name", platformWorldId)
+        val area = worldService.createArea(Area(AreaId.newId(), homeWorld.id, "plots", AreaScope.WholeWorld))
+        worldService.renameWorld(homeWorld.id, "renamed-display-name")
+        val regionId = RegionId(UUID.randomUUID())
+        val regions = InMemoryRegionStore().also {
+            it.createRegion(region(regionId, area.id, emptyMap()).copy(world = "old-display-name"), Bounds(0, 10, 0, 100, 0, 10))
+        }
+        val policy = SimplePolicyService(regions, InMemoryZoneStore(), { _, _ -> RegionRole.OWNER }, areaService = worldService)
+        val guard = PolicyGuard(policy, regions, worldService)
+        val endpoint = guard.resolveEndpointAt(
+            Position(WorldId(platformWorldId), 5, 64, 5, legacyWorldName = "renamed-display-name")
+        )
+
+        assertEquals(homeWorld.id, endpoint.position?.worldId)
+        assertEquals(area.id, endpoint.areaId)
+        assertEquals(regionId, (endpoint.resource as RegionResource).regionId)
+    }
 
     @Test
     fun `built in action keys are stable namespaced and map to legacy actions`() {

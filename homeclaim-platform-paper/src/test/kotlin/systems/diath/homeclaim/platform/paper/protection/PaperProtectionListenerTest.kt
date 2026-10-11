@@ -75,7 +75,7 @@ class PaperProtectionListenerTest {
         effect = effect,
         reason = if (effect == DecisionEffect.DENY) DecisionReason.FLAG_DENY else DecisionReason.ALLOWED,
         context = DecisionContext(
-            playerId = UUID(0L, 0L),
+            playerId = null,
             regionId = null,
             action = Action.PISTON_MOVE,
             world = request.worldId,

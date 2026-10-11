@@ -140,7 +140,7 @@ class DatabaseDialectRuntimeTest {
             assertEquals(profile, profiles.getProfile("runtime"))
 
             val regions = JdbcRegionRepository(dataSource, auditService = audit, worldAreaRepository = worlds)
-            val owner = UUID(0L, 0L)
+            val owner = RegionOwnership.UNCLAIMED_OWNER_ID
             val visitor = UUID.randomUUID()
             val firstId = RegionId(UUID.randomUUID())
             val firstBounds = Bounds(0, 15, 0, 255, 0, 15)

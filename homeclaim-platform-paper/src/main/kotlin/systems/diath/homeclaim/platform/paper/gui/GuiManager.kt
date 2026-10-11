@@ -13,6 +13,7 @@ import systems.diath.homeclaim.core.service.ComponentOperationService
 import systems.diath.homeclaim.core.service.RegionAdminService
 import systems.diath.homeclaim.core.service.RoleService
 import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.platform.paper.listener.PlayerCleanupManager
 import systems.diath.homeclaim.platform.paper.util.SafeEventHandler
 import java.util.concurrent.ConcurrentHashMap
@@ -27,7 +28,8 @@ class GuiManager(
     val adminService: RegionAdminService,
     val roleService: RoleService,
     val auditService: AuditService? = null,
-    val componentOperationService: ComponentOperationService? = null
+    val componentOperationService: ComponentOperationService? = null,
+    val worldAreaService: WorldAreaService? = null
 ) : Listener {
     private val activeMenus = ConcurrentHashMap<Player, GuiMenu>()
     

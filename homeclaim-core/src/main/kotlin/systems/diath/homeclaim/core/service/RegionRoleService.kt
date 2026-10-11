@@ -5,6 +5,7 @@ import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.model.RegionRoles
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.policy.ActionContext
 import systems.diath.homeclaim.core.policy.ActionKey
 import systems.diath.homeclaim.core.policy.ActionRequest
@@ -13,7 +14,6 @@ import systems.diath.homeclaim.core.policy.ActionEndpoint
 import systems.diath.homeclaim.core.policy.CorrelationId
 import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
 import systems.diath.homeclaim.core.policy.ActionActor
-import java.util.UUID
 
 /** Canonical role mutation path; updates the same region repository/cache used by policy resolution. */
 class RegionRoleService(
@@ -53,7 +53,7 @@ class RegionRoleService(
         }
 
         if (region == null) return reject(OperationStatus.NOT_FOUND, "REGION_NOT_FOUND")
-        if (request.targetPlayerId == UUID(0, 0)) return reject(OperationStatus.INVALID, "SYSTEM_ACTOR_CANNOT_HAVE_REGION_ROLE")
+        if (RegionOwnership.isUnclaimed(request.targetPlayerId)) return reject(OperationStatus.INVALID, "UNCLAIMED_OWNER_CANNOT_HAVE_REGION_ROLE")
         if (request.role == RegionRole.OWNER || request.role == RegionRole.VISITOR) {
             return reject(OperationStatus.INVALID, "USE_OWNERSHIP_OR_ROLE_REMOVAL_OPERATION")
         }

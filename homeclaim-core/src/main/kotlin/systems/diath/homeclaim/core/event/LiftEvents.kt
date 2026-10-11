@@ -20,7 +20,8 @@ enum class LiftEventResult {
  * Base class for all lift events.
  */
 abstract class LiftEvent(
-    val playerId: UUID,
+    /** Null for administrative/system events; this is never a synthetic player UUID. */
+    val playerId: UUID?,
     val componentId: String,
     val timestamp: Long = System.currentTimeMillis()
 ) {
@@ -58,7 +59,7 @@ data class LiftUpdateEvent(
     val regionId: String,
     val componentType: String,
     val action: String  // "create", "update", "delete"
-) : LiftEvent(UUID(0, 0), liftId)
+) : LiftEvent(null, liftId)
 
 /**
  * Fired when a player tries to teleport via lift.

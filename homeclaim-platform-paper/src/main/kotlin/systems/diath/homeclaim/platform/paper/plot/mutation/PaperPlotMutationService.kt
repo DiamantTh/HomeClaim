@@ -1,6 +1,7 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import org.bukkit.Bukkit
+import org.bukkit.World
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.mutation.MutationReason
@@ -8,6 +9,8 @@ import systems.diath.homeclaim.core.mutation.MutationBatch
 import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
+import systems.diath.homeclaim.core.model.RegionOwnership
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
 import java.util.concurrent.CompletableFuture
@@ -22,7 +25,8 @@ import java.util.concurrent.CompletableFuture
 class PaperPlotMutationService(
     private val plugin: JavaPlugin,
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
-    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend()
+    private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend(),
+    private val worldAreaService: WorldAreaService? = null
 ) : PlotMutationService {
 
     override fun cancelPendingJobs(worldName: String?): Int {
@@ -54,8 +58,9 @@ class PaperPlotMutationService(
     }
 
     override fun applyRegionState(region: Region, reason: MutationReason) {
-        val world = Bukkit.getWorld(region.world) ?: return
-        val config = configStore.loadConfig(region.world) ?: return
+        val resolved = resolveWorld(region) ?: return
+        val world = resolved.world
+        val config = configStore.loadConfig(resolved.configName) ?: return
         val visualState = PlotVisualStates.resolve(region)
         val style = PlotMutationSupport.styleFor(region, config, visualState)
 
@@ -65,18 +70,19 @@ class PaperPlotMutationService(
     }
 
     override fun handleRegionDeleted(region: Region, reason: MutationReason) {
-        val unclaimedSnapshot = region.copy(owner = PlotVisualStates.UNCLAIMED_OWNER, mergeGroupId = null)
+        val unclaimedSnapshot = region.copy(owner = RegionOwnership.UNCLAIMED_OWNER_ID, mergeGroupId = null)
         applyRegionState(unclaimedSnapshot, reason)
     }
 
     override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
         if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
-        val worldName = regions.first().world
-        if (regions.any { it.world != worldName }) {
+        val resolved = resolveWorld(regions.first())
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World binding unavailable for merge mutation: ${regions.first().areaId.value}"))
+        val worldName = resolved.configName
+        if (regions.any { resolveWorld(it)?.world?.uid != resolved.world.uid }) {
             return CompletableFuture.failedFuture(IllegalArgumentException("Merge regions must belong to one Paper world"))
         }
-        val world = Bukkit.getWorld(worldName)
-            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for merge mutation: $worldName"))
+        val world = resolved.world
         val config = configStore.loadConfig(worldName)
             ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for merge mutation: $worldName"))
         val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
@@ -125,12 +131,13 @@ class PaperPlotMutationService(
 
     override fun restoreRegionVisualStates(regions: Collection<Region>): CompletableFuture<Unit> {
         if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
-        val worldName = regions.first().world
-        if (regions.any { it.world != worldName }) {
+        val resolved = resolveWorld(regions.first())
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World binding unavailable for merge compensation: ${regions.first().areaId.value}"))
+        val worldName = resolved.configName
+        if (regions.any { resolveWorld(it)?.world?.uid != resolved.world.uid }) {
             return CompletableFuture.failedFuture(IllegalArgumentException("Restored regions must belong to one Paper world"))
         }
-        val world = Bukkit.getWorld(worldName)
-            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for merge compensation: $worldName"))
+        val world = resolved.world
         val config = configStore.loadConfig(worldName)
             ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for merge compensation: $worldName"))
         val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
@@ -190,9 +197,13 @@ class PaperPlotMutationService(
         reason: MutationReason
     ): CompletableFuture<Unit> {
         if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
-        val worldName = regions.first().world
-        val world = Bukkit.getWorld(worldName)
-            ?: return CompletableFuture.failedFuture(IllegalStateException("World not loaded for unlink mutation: $worldName"))
+        val resolved = resolveWorld(regions.first())
+            ?: return CompletableFuture.failedFuture(IllegalStateException("World binding unavailable for unlink mutation: ${regions.first().areaId.value}"))
+        val worldName = resolved.configName
+        if (regions.any { resolveWorld(it)?.world?.uid != resolved.world.uid }) {
+            return CompletableFuture.failedFuture(IllegalArgumentException("Unlink regions must belong to one Paper world"))
+        }
+        val world = resolved.world
         val config = configStore.loadConfig(worldName)
             ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for unlink mutation: $worldName"))
         val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
@@ -307,5 +318,21 @@ class PaperPlotMutationService(
                 }
             }
         }
+    }
+
+    private data class ResolvedWorld(val world: World, val configName: String)
+
+    private fun resolveWorld(region: Region): ResolvedWorld? {
+        val service = worldAreaService
+        if (service == null) {
+            val legacyWorld = Bukkit.getWorld(region.world) ?: return null
+            return ResolvedWorld(legacyWorld, region.world)
+        }
+        val area = service.getArea(region.areaId) ?: return null
+        val homeWorld = service.getWorld(area.worldId) ?: return null
+        val platformId = homeWorld.platformWorldId
+        val paperWorld = (if (platformId != null) Bukkit.getWorld(platformId) else Bukkit.getWorld(homeWorld.name))
+            ?: return null
+        return ResolvedWorld(paperWorld, homeWorld.name)
     }
 }

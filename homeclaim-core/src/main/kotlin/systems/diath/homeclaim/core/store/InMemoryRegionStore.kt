@@ -6,6 +6,7 @@ import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.event.EventDispatcher
 import systems.diath.homeclaim.core.event.RegionBuyEvent
@@ -73,7 +74,7 @@ class InMemoryRegionStore(
         if (normalizedIds.isEmpty()) return mergeId
 
         val existingRegions = normalizedIds.mapNotNull { regions[it] }
-        val initiatorId = existingRegions.firstOrNull()?.owner ?: UUID(0L, 0L)
+        val initiatorId = existingRegions.firstOrNull()?.owner?.takeUnless(RegionOwnership::isUnclaimed)
         eventDispatcher?.dispatch(RegionMergeEvent(normalizedIds, initiatorId))
 
         normalizedIds.forEach { id ->
@@ -88,7 +89,7 @@ class InMemoryRegionStore(
         // Dispatch pre-event
         val createEvent = RegionCreateEvent(
             regionId = region.id,
-            initiatorId = region.owner,
+            initiatorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
             world = region.world,
             bounds = bounds
         )
@@ -105,7 +106,7 @@ class InMemoryRegionStore(
         // Audit log
         auditService?.append(
             AuditEntries.regionCreated(
-                actorId = region.owner,
+                actorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
                 targetId = region.id.value,
                 world = region.world,
                 bounds = "${bounds.minX},${bounds.minY},${bounds.minZ} to ${bounds.maxX},${bounds.maxY},${bounds.maxZ}",
@@ -117,7 +118,7 @@ class InMemoryRegionStore(
         eventDispatcher?.dispatch(
             PostRegionCreateEvent(
                 regionId = region.id,
-                initiatorId = region.owner,
+                initiatorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
                 world = region.world
             )
         )
@@ -277,7 +278,7 @@ class InMemoryRegionStore(
     @Synchronized
     override fun claimRegion(regionId: RegionId, claimerId: PlayerId, cost: Double, econService: EconService): Boolean {
         val region = getRegionById(regionId) ?: return false
-        if (region.owner != UUID(0L, 0L)) return false
+        if (!RegionOwnership.isUnclaimed(region.owner)) return false
         
         val claimEvent = RegionClaimEvent(regionId, claimerId, cost)
         eventDispatcher?.dispatch(claimEvent)

@@ -61,9 +61,9 @@ This document records the observed code and runtime wiring. It is not a feature 
 | Paper events | Six protection listener groups plus LiftLink; event adapter -> `ActionRequest`/`PolicyGuard` -> cancellation or Paper operation. |
 | REST | Configurable Ktor server; token authentication. Mutations are admin-token operations; client bodies are not a per-user authentication mechanism. |
 | WebUX | Read paths through the API; no current claim/merge/reset web mutation entry point was found. |
-| Import | Command and adapters exist in source but are not registered in the Paper lifecycle tree. |
+| Import | Importer service remains in source but is not registered or Area-aware; the unused Bukkit `ImportCommand` adapter was removed. |
 
-Known adapter shortcuts remain: REST uses one server admin-token actor rather than per-user principals, and the role GUI deliberately limits new assignments to online Paper players because no authoritative offline identity resolver is configured. Actorless role and administrative mutation adapters, the unused direct `JdbcRoleRepository`, and the unconnected PlotMember service/repository were removed. `PolicyActionRequest`, `Decision.allowed`, and selected string-world APIs remain compatibility adapters only; active Paper protection uses typed `ActionRequest` and `DecisionEffect`.
+Known adapter shortcuts remain: REST uses one server admin-token actor rather than per-user principals, and the role GUI deliberately limits new assignments to online Paper players because no authoritative offline identity resolver is configured. Actorless role and administrative mutation adapters, the unused direct `JdbcRoleRepository`, and the unconnected PlotMember service/repository were removed. `PolicyActionRequest` and the unregistered Bukkit import/command executor adapters were removed. `Decision.allowed` remains only as a lossy compatibility projection; active policy, protection, and REST result-mapping code use `DecisionEffect` explicitly. Selected string-world DTO/config/platform fields remain explicit compatibility boundaries.
 
 ## Runtime checks performed for this snapshot
 
@@ -100,11 +100,13 @@ This inventory describes current technical behavior and open work.
 
 ### TECHNICAL DEBT
 
-- Legacy Bukkit `onCommand` / `onTabComplete` adapters remain on `HomeClaimPaperPlugin`, `PlotCommand`, and `ZoneCommand`; active registration is lifecycle Brigadier.
-- String-valued world names remain in compatibility properties, selected REST/client DTOs, import data, and platform mutation/config paths. Stable UUIDs and `AreaId` remain canonical domain identity.
+- The lifecycle Brigadier command tree is the only active Paper registration path. Dormant Bukkit `onCommand` / `onTabComplete` adapters and the unused generic executor bridge were removed; sender wrappers remain for the core audit command adapter.
+- Core `Position` and resolved `ActionRequest` endpoints now use the HomeClaim `WorldId`; Paper UUIDs are translated through the stored platform binding before policy evaluation. The active Zone command/GUI and Paper mutation/reset lookup use `AreaId`/WorldId and UUID-first resolution.
+- String-valued world names remain in deprecated Region/Zone display and persistence adapters, REST request/response DTOs, the API client's distinct stable-string ID representation, inactive import data, config filenames/references, and the Paper mutation backend's world-name boundary after resolving a Paper `World`. `Region.world`, `Zone.world`, and `Position(String, ...)` are compatibility/display adapters, not canonical identity. `RegionVisualizerImpl` is not currently wired and still uses the legacy Region world field.
 - The client API module still has a string-valued `WorldId`, separate action/component registries, and its own public models.
-- The all-zero UUID remains the unclaimed-owner sentinel in legacy owner-facing models and Paper adapters. Entry-deny system operations now persist a nullable creator and retain the typed SYSTEM actor in audit; new domain ownership must not extend the sentinel pattern.
-- The closed internal `Action` enum and deprecated `PolicyActionRequest` remain compatibility/implementation mappings; active Paper protection uses `ActionRequest`.
+- The all-zero UUID remains the persisted unclaimed-owner sentinel because the current owner schema is UUID-only. `RegionOwnership` is its only production definition and exposes `isUnclaimed`; it is never a SYSTEM actor. Entry-deny system operations persist a nullable creator and retain the typed SYSTEM actor in audit.
+- The closed internal `Action` enum remains an implementation mapping for `ActionKey`; `PolicyActionRequest` has been removed. `Decision.allowed` is retained only as a lossy compatibility projection.
+- `WorldId`/`AreaId` are canonical in Paper runtime resolution, including the active zone command and zone GUI. Legacy world-name fields remain on Region/Zone/Position models, import/configuration, selected REST/client contracts, and mutation/config platform boundaries; those are not canonical runtime IDs.
 - Home/visit selection is deterministic for the selected owner's plots, but selection uses per-owner ordering or a full Region UUID rather than a user-friendly alias.
 - Historical documents mention Folia; no Folia runtime adapter, scheduler path, or support metadata is active.
 
@@ -130,3 +132,4 @@ This inventory describes current technical behavior and open work.
 - A connected player therefore has not exercised the end-to-end workflow. The new selector tests are server-near command/domain tests, not live-client tests. GUI clicks, role/flag changes in an inventory, real protection actions, and player-driven teleport remain unverified in a live client session.
 - PostgreSQL, MariaDB, and SQLite runtime evidence above remains from the previous database verification. No database source, migration, or repository code changed in this follow-up, so those dialect tests were not repeated.
 - This follow-up used `/tmp/homeclaim-gradle` only as the Gradle cache fallback because the default sandbox prevented Gradle from determining a usable wildcard IP before test execution. Source files stayed in canonical repository paths.
+- After the identity/adapter changes, the rebuilt shaded artifact started on Paper 26.3 and Purpur 26.3 with Java 25, initialized fresh SQLite V1, registered the lifecycle command tree, and shut down cleanly. The Paper/Purpur smoke used console command listing; it did not use a connected player or exercise GUI clicks.

@@ -20,6 +20,7 @@ import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRoles
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.service.RegionService
@@ -67,7 +68,7 @@ class PlotCommandTest {
             world = "plots",
             shape = RegionShape.CUBOID,
             bounds = Bounds(0, 15, 0, 255, 0, 15),
-            owner = UUID.fromString("00000000-0000-0000-0000-000000000000"),
+            owner = RegionOwnership.UNCLAIMED_OWNER_ID,
             roles = RegionRoles(),
             flags = emptyMap(),
             limits = emptyMap(),

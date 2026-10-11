@@ -98,7 +98,7 @@ class PlotRestServer(
     private val allowLocalhost: Boolean = true,
     private val enableCors: Boolean = false,
     private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null,
-    private val entryForceHandler: ((RegionId, PlayerId, PlayerId, String, Long) -> EntryForceGrantDto)? = null,
+    private val entryForceHandler: ((RegionId, PlayerId, String, Long) -> EntryForceGrantDto)? = null,
     private val policyService: PolicyService? = null,
     private val roleService: RoleService? = null,
     private val entryDenyOperationService: EntryDenyOperationService? = null
@@ -555,12 +555,9 @@ class PlotRestServer(
                         val req = call.receive<EntryForceRequest>()
                         val playerId = req.playerId.toUuidOrNull()
                             ?: throw IllegalArgumentException("Invalid playerId")
-                        val grantedBy = req.grantedBy.toUuidOrNull()
-                            ?: throw IllegalArgumentException("Invalid grantedBy")
                         val grant = entryForceHandler?.invoke(
                             id,
                             playerId,
-                            grantedBy,
                             req.reason,
                             req.ttlSeconds.coerceIn(1, 300)
                         ) ?: throw IllegalStateException("Entry force handler not available")
@@ -968,7 +965,8 @@ class PlotRestServer(
             extraContext = extra
         )
         return EntryCheckResponse(
-            allowed = decision.allowed,
+            allowed = decision.effect == systems.diath.homeclaim.core.policy.DecisionEffect.ALLOW ||
+                decision.effect == systems.diath.homeclaim.core.policy.DecisionEffect.NOT_APPLICABLE,
             reason = decision.reason,
             regionId = decision.context.regionId?.value?.toString(),
             detail = decision.detail
@@ -1287,6 +1285,7 @@ data class PaginatedResponse<T>(
 
 data class PlotDto(
     val id: String,
+    /** Legacy display-name field retained for REST compatibility; use stable domain ids internally. */
     val world: String,
     val owner: String,
     val ownerMeta: OwnerMetadataDto? = null,
@@ -1351,10 +1350,12 @@ data class ComponentDto(
     val state: String
 )
 
+/** REST compatibility position; `world` is a display/name reference, not a core WorldId. */
 data class PositionDto(val world: String, val x: Int, val y: Int, val z: Int)
 
 data class ZoneDto(
     val id: String,
+    /** Legacy display-name field retained for REST compatibility. */
     val world: String,
     val shape: String,
     val bounds: BoundsDto,
@@ -1399,6 +1400,7 @@ data class EntryCheckRequest(
     val bypass: Boolean = false
 )
 data class EntryCheckByPositionRequest(
+    /** Legacy public lookup input; server resolves it to the bound HomeClaim WorldId. */
     val world: String,
     val x: Int,
     val y: Int,
@@ -1417,7 +1419,8 @@ data class EntryCheckResponse(
 )
 data class EntryForceRequest(
     val playerId: String,
-    val grantedBy: String,
+    /** Ignored legacy input; the authenticated server actor is the grantor. */
+    val grantedBy: String? = null,
     val reason: String,
     val ttlSeconds: Long = 30
 )
@@ -1425,7 +1428,7 @@ data class EntryForceGrantDto(
     val id: String,
     val playerId: String,
     val regionId: String?,
-    val grantedBy: String,
+    val grantedBy: String?,
     val reason: String,
     val expiresAt: String
 )

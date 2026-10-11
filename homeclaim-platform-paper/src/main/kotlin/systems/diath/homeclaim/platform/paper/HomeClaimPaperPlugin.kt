@@ -30,7 +30,6 @@ import systems.diath.homeclaim.platform.paper.config.HomeClaimTomlConfig
 import systems.diath.homeclaim.platform.paper.clientlink.PaperClientLinkChannelListener
 import systems.diath.homeclaim.platform.paper.util.Permissions
 import org.bukkit.plugin.java.JavaPlugin
-import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import org.bukkit.event.HandlerList
@@ -38,10 +37,6 @@ import java.util.UUID
 import javax.sql.DataSource
 
 class HomeClaimPaperPlugin : JavaPlugin() {
-    private companion object {
-        val SYSTEM_ACTOR_ID: UUID = UUID(0L, 0L)
-    }
-
     private val plotSetupWizard by lazy {
         systems.diath.homeclaim.platform.paper.plot.PlotWorldSetupWizard(
             configStore = systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore(this),
@@ -94,7 +89,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             adminService = requireNotNull(services.adminService) { "Region administration service is required for the active GUI" },
             roleService = requireNotNull(services.roleService) { "Region role service is required for the active GUI" },
             auditService = services.auditService,
-            componentOperationService = requireNotNull(services.componentOperationService) { "Component operation service is required for the active GUI" }
+            componentOperationService = requireNotNull(services.componentOperationService) { "Component operation service is required for the active GUI" },
+            worldAreaService = services.worldAreaService
         ).also {
             server.pluginManager.registerEvents(it, this)
         }
@@ -128,7 +124,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
             services.regionService,
-            i18n
+            i18n,
+            services.worldAreaService
         )
         
         maybeStartRest(services)
@@ -159,7 +156,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val listener = PaperClientLinkChannelListener(
             plugin = this,
             regionService = services?.regionService ?: return,
-            logTraffic = homeClaimConfig.getBoolean("homeclaim.clientlink.logTraffic", false)
+            logTraffic = homeClaimConfig.getBoolean("homeclaim.clientlink.logTraffic", false),
+            worldAreaService = services?.worldAreaService
         )
 
         channels.forEach { channel ->
@@ -351,7 +349,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
         plotMutationService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(
             this,
-            mutationBackend = backend
+            mutationBackend = backend,
+            worldAreaService = services.worldAreaService
         )
         plotResetService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(
             this,
@@ -477,14 +476,6 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             else -> false
         }
         return if (handled) 1 else 0
-    }
-
-    /** Legacy Bukkit dispatch remains callable for integrations that invoke the plugin directly. */
-    override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
-        if (!command.name.equals("homeclaim", ignoreCase = true) && !command.name.equals("hc", ignoreCase = true)) {
-            return false
-        }
-        return handleHomeClaimCommand(sender, args)
     }
 
     private fun handleHomeClaimCommand(sender: CommandSender, args: Array<out String>): Boolean {
@@ -633,7 +624,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             return true
         }
 
-        val grantedBy = (sender as? Player)?.uniqueId ?: SYSTEM_ACTOR_ID
+        val grantedBy = (sender as? Player)?.uniqueId
         val grant = EntryForceRegistry.grant(
             playerId = target.uniqueId,
             regionId = regionId,
@@ -698,6 +689,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         auditService?.append(
             AuditEntry(
                 actorId = grant.grantedBy,
+                actorKind = if (grant.grantedBy == null) "SYSTEM" else "PLAYER",
+                actorRef = grant.grantedBy?.toString() ?: "system",
                 targetId = grant.regionId?.value,
                 category = AuditTaxonomy.Category.REGION,
                 action = AuditTaxonomy.Action.ENTRY_FORCE_GRANTED,
@@ -1045,14 +1038,20 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false),
             entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) },
             policyService = services.policyService,
-            entryForceHandler = { regionId, playerId, grantedBy, reason, ttlSeconds ->
-                val grant = EntryForceRegistry.grant(playerId, regionId, grantedBy, reason, ttlSeconds)
+            entryForceHandler = { regionId, playerId, reason, ttlSeconds ->
+                val grant = EntryForceRegistry.grant(
+                    playerId = playerId,
+                    regionId = regionId,
+                    grantedBy = null,
+                    reason = reason,
+                    ttlSeconds = ttlSeconds
+                )
                 auditEntryForceGrant(grant, services.auditService)
                 EntryForceGrantDto(
                     id = grant.id.toString(),
                     playerId = grant.playerId.toString(),
                     regionId = grant.regionId?.value?.toString(),
-                    grantedBy = grant.grantedBy.toString(),
+                    grantedBy = grant.grantedBy?.toString(),
                     reason = grant.reason,
                     expiresAt = grant.expiresAt.toString()
                 )

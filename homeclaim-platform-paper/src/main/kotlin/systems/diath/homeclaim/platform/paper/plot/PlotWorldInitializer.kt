@@ -12,6 +12,7 @@ import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionShape
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.WorldAreaService
 import java.util.UUID
@@ -26,11 +27,6 @@ class PlotWorldInitializer(
     private val worldAreaService: WorldAreaService? = null
 ) {
     private val taskScheduler = BukkitTaskScheduler(plugin)
-    companion object {
-        // UUID for unclaimed plots (all zeros)
-        private val UNCLAIMED_UUID = UUID.fromString("00000000-0000-0000-0000-000000000000")
-    }
-    
     /**
      * Initialize all plot regions for a world asynchronously.
      * This creates Region entries in the database for each plot.
@@ -188,7 +184,7 @@ class PlotWorldInitializer(
                     areaId = areaId,
                     shape = RegionShape.CUBOID,
                     bounds = bounds,
-                    owner = UNCLAIMED_UUID,  // Unclaimed by default
+                    owner = RegionOwnership.UNCLAIMED_OWNER_ID,
                     roles = systems.diath.homeclaim.core.model.RegionRoles(),
                     flags = emptyMap(),
                     limits = emptyMap(),

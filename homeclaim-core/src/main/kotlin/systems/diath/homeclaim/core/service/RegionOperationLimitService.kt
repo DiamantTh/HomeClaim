@@ -5,11 +5,11 @@ import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.policy.ActionActor
 import systems.diath.homeclaim.core.policy.ActionRequest
 import systems.diath.homeclaim.core.policy.ActionResourceRef
 import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
-import java.util.UUID
 
 data class OperationLimitResult(
     val allowed: Boolean,
@@ -83,7 +83,7 @@ class RegionOperationLimitService(
         if (region.areaId != target.areaId || region.areaId != request.areaId) {
             return@synchronized OperationResult.rejected(OperationStatus.NOT_APPLICABLE, "AREA_MISMATCH")
         }
-        if (region.owner != UNCLAIMED_OWNER) {
+        if (!RegionOwnership.isUnclaimed(region.owner)) {
             return@synchronized OperationResult.rejected(OperationStatus.CONFLICT, "REGION_ALREADY_CLAIMED")
         }
         if (!evaluateClaim(ownerId, bypass).allowed) {
@@ -96,7 +96,7 @@ class RegionOperationLimitService(
         if (!claimedSuccessfully) {
             val latest = regions.getRegionById(regionId)
             if (latest == null) return@synchronized OperationResult.rejected(OperationStatus.NOT_FOUND, "REGION_NOT_FOUND")
-            if (latest.owner != UNCLAIMED_OWNER) {
+            if (!RegionOwnership.isUnclaimed(latest.owner)) {
                 return@synchronized OperationResult.rejected(OperationStatus.CONFLICT, "REGION_ALREADY_CLAIMED")
             }
             if (!evaluateClaim(ownerId, bypass).allowed) {
@@ -157,7 +157,7 @@ class RegionOperationLimitService(
         if (anchor.areaId != request.areaId || found.any { it.areaId != anchor.areaId || it.owner != anchor.owner }) {
             return@synchronized OperationResult.rejected(OperationStatus.CONFLICT, "MERGE_RESOURCE_MISMATCH")
         }
-        if (anchor.owner == UNCLAIMED_OWNER) {
+        if (RegionOwnership.isUnclaimed(anchor.owner)) {
             return@synchronized OperationResult.rejected(OperationStatus.CONFLICT, "UNCLAIMED_REGION")
         }
         if (!evaluateMerge(uniqueIds, bypass).allowed) {
@@ -171,7 +171,4 @@ class RegionOperationLimitService(
         OperationResult.success(groupId)
     }
 
-    private companion object {
-        val UNCLAIMED_OWNER: UUID = UUID.fromString("00000000-0000-0000-0000-000000000000")
-    }
 }

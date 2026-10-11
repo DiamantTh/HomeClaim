@@ -1,23 +1,20 @@
 package systems.diath.homeclaim.platform.paper.command
 
-import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.ZoneService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import systems.diath.homeclaim.platform.paper.I18n
+import systems.diath.homeclaim.platform.paper.PaperWorldAreaResolver
 
 class ZoneCommand(
     private val zoneService: ZoneService,
     private val regionService: RegionService,
-    private val i18n: I18n
+    private val i18n: I18n,
+    private val worldAreaService: WorldAreaService? = null
 ) {
-    /** Compatibility adapter for older in-process callers; Paper uses the lifecycle Brigadier tree. */
-    @Deprecated("Paper commands are routed through the lifecycle command tree")
-    fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean =
-        execute(sender, args)
-
     fun execute(sender: CommandSender, args: Array<out String>): Boolean {
         if (sender !is Player) {
             sender.sendMessage(i18n.msg("zone.player_only"))
@@ -33,29 +30,24 @@ class ZoneCommand(
         return true
     }
     
-    @Deprecated("Paper suggestions are registered on the lifecycle command tree")
-    fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> =
-        suggestions(sender, args)
-
-    fun suggestions(sender: CommandSender, args: Array<out String>): List<String> {
-        if (args.size == 1) {
-            return listOf("info").filter { it.startsWith(args[0], ignoreCase = true) }
-        }
-        return emptyList()
-    }
-    
     private fun showZoneInfo(player: Player) {
         val loc = player.location
-        val worldName = loc.world.name
-        val regionId = regionService.getRegionAt2D(worldName, loc.blockX, loc.blockZ)
+        val area = worldAreaService?.let {
+            PaperWorldAreaResolver.resolveArea(it, loc.world.uid, loc.world.name, loc.blockX, loc.blockY, loc.blockZ)
+        }
+        if (area == null) {
+            player.sendMessage(i18n.msg("zone.not_in_region"))
+            return
+        }
+        val regionId = regionService.getRegionAt(area.id, loc.blockX, loc.blockY, loc.blockZ)
         
         if (regionId == null) {
             player.sendMessage(i18n.msg("zone.not_in_region"))
             return
         }
         
-        val pos = Position(worldName, loc.blockX, loc.blockY, loc.blockZ)
-        val zones = zoneService.getZonesAt(worldName, pos)
+        val pos = Position(area.worldId, loc.blockX, loc.blockY, loc.blockZ)
+        val zones = zoneService.getZonesAt(area.id, pos)
         
         if (zones.isEmpty()) {
             player.sendMessage(i18n.msg("zone.no_zones_found"))

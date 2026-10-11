@@ -6,6 +6,9 @@ import org.bukkit.entity.Player
 import org.bukkit.plugin.messaging.PluginMessageListener
 import org.bukkit.plugin.java.JavaPlugin
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.WorldAreaService
+import systems.diath.homeclaim.core.model.RegionOwnership
+import systems.diath.homeclaim.platform.paper.PaperWorldAreaResolver
 import systems.diath.homeclaim.platform.paper.util.Permissions
 
 /**
@@ -17,7 +20,8 @@ import systems.diath.homeclaim.platform.paper.util.Permissions
 class PaperClientLinkChannelListener(
     private val plugin: JavaPlugin,
     private val regionService: RegionService,
-    private val logTraffic: Boolean
+    private val logTraffic: Boolean,
+    private val worldAreaService: WorldAreaService? = null
 ) : PluginMessageListener {
 
     override fun onPluginMessageReceived(channel: String, player: Player, message: ByteArray) {
@@ -44,8 +48,14 @@ class PaperClientLinkChannelListener(
         }
 
         val loc = player.location
-        val worldId = loc.world.name
-        val regionId = regionService.getRegionAt2D(worldId, loc.blockX, loc.blockZ)
+        val area = worldAreaService?.let {
+            PaperWorldAreaResolver.resolveArea(it, loc.world.uid, loc.world.name, loc.blockX, loc.blockY, loc.blockZ)
+        }
+        val regionId = if (area != null) {
+            regionService.getRegionAt(area.id, loc.blockX, loc.blockY, loc.blockZ)
+        } else if (worldAreaService == null) {
+            regionService.getRegionAt2D(loc.world.name, loc.blockX, loc.blockZ)
+        } else null
         if (regionId == null) {
             sendJson(channel, player, "{\"type\":\"region_snapshot\",\"ok\":false,\"reason\":\"not_on_plot\"}")
             return
@@ -59,7 +69,7 @@ class PaperClientLinkChannelListener(
 
         val role = region.roles.resolve(player.uniqueId, region.owner).name
         val canSeeOwnerName = player.hasPermission(Permissions.PLOT_INFO_OWNER_NAME) || player.isOp
-        val ownerName = if (region.owner == UNCLAIMED_UUID) {
+        val ownerName = if (RegionOwnership.isUnclaimed(region.owner)) {
             "(unclaimed)"
         } else if (canSeeOwnerName) {
             Bukkit.getOfflinePlayer(region.owner).name ?: region.owner.toString().take(8)
@@ -115,7 +125,4 @@ class PaperClientLinkChannelListener(
             .replace("\t", "\\t")
     }
 
-    companion object {
-        private val UNCLAIMED_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000")
-    }
 }

@@ -6,6 +6,7 @@ import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.WorldId
@@ -78,7 +79,7 @@ class JdbcRegionRepository(
         if (normalizedIds.isEmpty()) return mergeId
 
         val existingRegions = normalizedIds.mapNotNull { getRegionById(it) }
-        val initiatorId = existingRegions.firstOrNull()?.owner ?: UUID(0L, 0L)
+        val initiatorId = existingRegions.firstOrNull()?.owner?.takeUnless(RegionOwnership::isUnclaimed)
         eventDispatcher?.dispatch(RegionMergeEvent(normalizedIds, initiatorId))
 
         dataSource.connection.use { conn ->
@@ -109,7 +110,7 @@ class JdbcRegionRepository(
         // Dispatch pre-event
         val createEvent = RegionCreateEvent(
             regionId = region.id,
-            initiatorId = region.owner,
+            initiatorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
             world = region.world,
             bounds = bounds
         )
@@ -152,7 +153,7 @@ class JdbcRegionRepository(
                 // Audit log
                 auditService?.append(
                     AuditEntries.regionCreated(
-                        actorId = region.owner,
+                        actorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
                         targetId = region.id.value,
                         world = region.world,
                         bounds = "${bounds.minX},${bounds.minY},${bounds.minZ} to ${bounds.maxX},${bounds.maxY},${bounds.maxZ}",
@@ -173,7 +174,7 @@ class JdbcRegionRepository(
         eventDispatcher?.dispatch(
             PostRegionCreateEvent(
                 regionId = region.id,
-                initiatorId = region.owner,
+                initiatorId = region.owner.takeUnless(RegionOwnership::isUnclaimed),
                 world = region.world
             )
         )
@@ -565,7 +566,7 @@ class JdbcRegionRepository(
         val region = getRegionById(regionId) ?: return false
         // Claim calls are serialized within this repository instance, and the low-level
         // service refuses to overwrite an already-owned region even if an adapter is stale.
-        if (region.owner != UNCLAIMED_OWNER) return false
+        if (!RegionOwnership.isUnclaimed(region.owner)) return false
         
         // Dispatch pre-event
         val claimEvent = RegionClaimEvent(regionId, claimerId, cost)
@@ -594,7 +595,4 @@ class JdbcRegionRepository(
     
     override fun getEventDispatcher(): EventDispatcher? = eventDispatcher
 
-    private companion object {
-        val UNCLAIMED_OWNER: UUID = UUID(0L, 0L)
-    }
 }

@@ -1,7 +1,7 @@
 package systems.diath.homeclaim.platform.paper.plot.mutation
 
 import systems.diath.homeclaim.core.model.Region
-import java.util.UUID
+import systems.diath.homeclaim.core.model.RegionOwnership
 
 /**
  * Visual state for a plot/region. This is deliberately separate from ownership
@@ -17,8 +17,6 @@ enum class PlotVisualState {
 }
 
 object PlotVisualStates {
-    val UNCLAIMED_OWNER: UUID = UUID(0L, 0L)
-
     fun resolve(region: Region): PlotVisualState {
         val explicitState = region.metadata["plot.visual.state"]?.trim()?.uppercase()
         if (explicitState != null) {
@@ -31,7 +29,7 @@ object PlotVisualStates {
         return when {
             region.metadata["plot.admin"] == "true" -> PlotVisualState.ADMIN
             region.metadata["plot.reserved"] == "true" -> PlotVisualState.RESERVED
-            region.owner == UNCLAIMED_OWNER -> PlotVisualState.UNCLAIMED
+            RegionOwnership.isUnclaimed(region.owner) -> PlotVisualState.UNCLAIMED
             region.price > 0.0 -> PlotVisualState.SALE
             region.mergeGroupId != null -> PlotVisualState.MERGED
             else -> PlotVisualState.CLAIMED

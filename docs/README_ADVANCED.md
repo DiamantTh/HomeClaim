@@ -13,7 +13,9 @@ HomeClaim trennt Fachlogik von Plattform-Adaptercode:
 
 Aktueller Entkopplungsstand:
 
-- `ActionRequest` ist der kanonische plattformneutrale Policy-Request; `PolicyActionRequest` bleibt nur als deprecated Kompatibilitaetsadapter fuer alte Aufrufer erhalten.
+- `ActionRequest` ist der kanonische plattformneutrale Policy-Request. Der unreleaste interne `PolicyActionRequest`-Adapter wurde mangels aktivem oder oeffentlichem Consumer entfernt.
+- `WorldId` und `AreaId` sind die kanonischen Domain-IDs. Paper bindet Welten ueber `World#getUID()`; Namen bleiben Anzeige-, Konfigurations- und Legacy-Eingaben. `RegionOwnership` kapselt das historische Zero-UUID-Encoding fuer unclaimed Regionen; es ist keine Actor-ID.
+- Paper-Positionen koennen an der Adapterkante zunaechst die Plattform-UUID enthalten. `PolicyGuard` loest diese ueber die gespeicherte Paper-Bindung auf und gibt nur die interne HomeClaim-`WorldId` und `AreaId` an die Domain-Auswertung weiter.
 - `PolicyActorContext` + `ModPolicyDefaults` fuer modded-sichere Auswertung.
 - `WorldMutationBackend`-SPI fuer FAWE-/non-FAWE-/Fabric-native Backends.
 

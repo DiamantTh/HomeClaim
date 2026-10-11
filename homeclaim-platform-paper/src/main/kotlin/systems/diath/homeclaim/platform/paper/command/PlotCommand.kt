@@ -1,6 +1,5 @@
 package systems.diath.homeclaim.platform.paper.command
 
-import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
 import org.bukkit.World
 import org.bukkit.entity.Player
@@ -21,6 +20,7 @@ import systems.diath.homeclaim.core.model.PlayerId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
+import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.store.RatingRepository
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
@@ -78,11 +78,6 @@ class PlotCommand(
 ) {
     private val operationReservationLock = Any()
     private val operationReservations = mutableSetOf<RegionId>()
-
-    /** Compatibility adapter for older in-process callers; Paper uses the lifecycle Brigadier tree. */
-    @Deprecated("Paper commands are routed through the lifecycle command tree")
-    fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean =
-        execute(sender, args)
 
     fun execute(sender: CommandSender, args: Array<out String>): Boolean {
         if (sender !is Player) {
@@ -176,7 +171,7 @@ class PlotCommand(
         auditOperation(request, AuditStatus.ATTEMPTED)
         
         // Check if unclaimed (owner is empty UUID)
-        if (region.owner != UNCLAIMED_UUID) {
+        if (!RegionOwnership.isUnclaimed(region.owner)) {
             auditOperation(request, AuditStatus.FAILED, "Region is already claimed")
             player.sendMessage(i18n.msg("plot.already_claimed"))
             return
@@ -216,7 +211,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.auto_searching"))
 
         val current = currentRegion(player)
-        if (current != null && current.owner == UNCLAIMED_UUID) {
+        if (current != null && RegionOwnership.isUnclaimed(current.owner)) {
             handleClaim(player)
             return
         }
@@ -237,7 +232,7 @@ class PlotCommand(
 
         val nextPlot = regionService.listAllRegions()
             .asSequence()
-            .filter { it.areaId == areaId && it.owner == UNCLAIMED_UUID }
+            .filter { it.areaId == areaId && RegionOwnership.isUnclaimed(it.owner) }
             .minByOrNull { region ->
                 val centerX = (region.bounds.minX + region.bounds.maxX) / 2.0
                 val centerZ = (region.bounds.minZ + region.bounds.maxZ) / 2.0
@@ -340,7 +335,7 @@ class PlotCommand(
             return
         }
         
-        val ownerName = if (region.owner == UNCLAIMED_UUID) {
+        val ownerName = if (RegionOwnership.isUnclaimed(region.owner)) {
             i18n.msg("plot.info_owner_unclaimed")
         } else if (player.hasPermission(Permissions.PLOT_INFO_OWNER_NAME) || player.isOp) {
             org.bukkit.Bukkit.getOfflinePlayer(region.owner).name ?: region.owner.toString().take(8)
@@ -402,7 +397,7 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.info_price", priceStr))
         player.sendMessage(i18n.msg("plot.info_footer"))
         
-        if (region.owner != UNCLAIMED_UUID && Permissions.check(player, Permissions.PLOT_INFO_PLATFORM)) {
+        if (!RegionOwnership.isUnclaimed(region.owner) && Permissions.check(player, Permissions.PLOT_INFO_PLATFORM)) {
             val platformInfo = systems.diath.homeclaim.platform.paper.util.PlayerPlatformClassifier.classify(region.owner)
             player.sendMessage(i18n.msg("plot.info_uuid", region.owner.toString()))
             val platformLabel = if (platformInfo.isBedrock) i18n.msg("plot.info_platform_bedrock") else i18n.msg("plot.info_platform_java")
@@ -512,7 +507,7 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
         }
-        if (region.owner == UNCLAIMED_UUID) {
+        if (RegionOwnership.isUnclaimed(region.owner)) {
             player.sendMessage(i18n.msg("plot.merge_unclaimed"))
             return
         }
@@ -682,7 +677,7 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
         }
-        if (region.owner == UNCLAIMED_UUID) {
+        if (RegionOwnership.isUnclaimed(region.owner)) {
             player.sendMessage(i18n.msg("plot.unlink_unclaimed"))
             return
         }
@@ -822,7 +817,7 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
         }
-        if (region.owner == UNCLAIMED_UUID) {
+        if (RegionOwnership.isUnclaimed(region.owner)) {
             player.sendMessage(i18n.msg("plot.reset_unclaimed"))
             return
         }
@@ -1053,11 +1048,11 @@ class PlotCommand(
 
     private fun resolvePaperWorld(region: Region): World? {
         val service = worldAreaService ?: return org.bukkit.Bukkit.getWorld(region.world)
-        val area = service.getArea(region.areaId) ?: return org.bukkit.Bukkit.getWorld(region.world)
-        val homeWorld = service.getWorld(area.worldId) ?: return org.bukkit.Bukkit.getWorld(region.world)
+        val area = service.getArea(region.areaId) ?: return null
+        val homeWorld = service.getWorld(area.worldId) ?: return null
         val platformId = homeWorld.platformWorldId
         if (platformId != null) return org.bukkit.Bukkit.getWorld(platformId)
-        return org.bukkit.Bukkit.getWorld(homeWorld.name) ?: org.bukkit.Bukkit.getWorld(region.world)
+        return org.bukkit.Bukkit.getWorld(homeWorld.name)
     }
 
     private fun homeClaimWorldName(region: Region): String? {
@@ -1232,55 +1227,11 @@ class PlotCommand(
         auditService?.append(AuditEntries.operationResult(request, status, error, targetCount))
     }
     
-    @Deprecated("Paper suggestions are registered on the lifecycle command tree")
-    fun onTabComplete(
-        sender: CommandSender,
-        command: Command,
-        alias: String,
-        args: Array<out String>
-    ): List<String> = suggestions(sender, args)
-
-    fun suggestions(sender: CommandSender, args: Array<out String>): List<String> {
-        if (args.size == 1) {
-            return listOf("claim", "auto", "home", "info", "list", "gui", "menu", "visit", "merge", "unlink", "reset", "jobs", "alias", "desc")
-                .filter { it.startsWith(args[0].lowercase()) }
-        }
-        if (args.size == 2 && args[0].lowercase() == "visit") {
-            return org.bukkit.Bukkit.getOnlinePlayers()
-                .map { it.name }
-                .filter { it.lowercase().startsWith(args[1].lowercase()) }
-        }
-        if (args.size == 2 && args[0].lowercase() == "merge") {
-            return listOf("all", "north", "east", "south", "west")
-                .filter { it.startsWith(args[1].lowercase()) }
-        }
-        if (args.size == 2 && args[0].lowercase() == "unlink") {
-            return listOf("true", "false")
-                .filter { it.startsWith(args[1].lowercase()) }
-        }
-        if (args.size == 2 && args[0].lowercase() == "jobs") {
-            return listOf("status", "cancel", "inspect") +
-                org.bukkit.Bukkit.getWorlds().map { it.name }
-                    .filter { it.lowercase().startsWith(args[1].lowercase()) }
-        }
-        if (args.size == 3 && args[0].lowercase() == "jobs" && args[1].lowercase() == "cancel") {
-            return org.bukkit.Bukkit.getWorlds().map { it.name }
-                .filter { it.lowercase().startsWith(args[2].lowercase()) }
-        }
-        if (args.size == 2 && (args[0].lowercase() == "alias" || args[0].lowercase() == "desc" || args[0].lowercase() == "description")) {
-            return listOf("clear")
-                .filter { it.startsWith(args[1].lowercase()) }
-        }
-        return emptyList()
-    }
-
     private enum class MergeDirection {
         NORTH, EAST, SOUTH, WEST, ALL
     }
 
     companion object {
-        // UUID for unclaimed plots (all zeros)
-        private val UNCLAIMED_UUID = java.util.UUID.fromString("00000000-0000-0000-0000-000000000000")
         private const val DEFAULT_MERGE_GAP = 32
     }
 }

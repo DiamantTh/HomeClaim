@@ -97,7 +97,7 @@ internal class MovementProtectionListener(private val adapter: PaperProtectionAd
                     entryBypass = true,
                     attributes = request.context.attributes + mapOf(
                         "forceEntryGrantId" to grant.id.toString(),
-                        "forceEntryGrantedBy" to grant.grantedBy.toString(),
+                        "forceEntryGrantedBy" to (grant.grantedBy?.toString() ?: "SYSTEM"),
                         "forceEntryReason" to grant.reason
                     )
                 ))
@@ -157,7 +157,7 @@ internal class MovementProtectionListener(private val adapter: PaperProtectionAd
                 action = AuditTaxonomy.Action.ENTRY_FORCE_USED,
                 payload = mapOf(
                     "grantId" to grant.id.toString(),
-                    "grantedBy" to grant.grantedBy.toString(),
+                    "grantedBy" to (grant.grantedBy?.toString() ?: "SYSTEM"),
                     "reason" to grant.reason,
                     "transport" to transport,
                     "world" to position.legacyWorldName,

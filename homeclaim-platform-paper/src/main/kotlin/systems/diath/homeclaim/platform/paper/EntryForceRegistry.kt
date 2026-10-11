@@ -10,7 +10,7 @@ data class EntryForceGrant(
     val id: UUID,
     val playerId: PlayerId,
     val regionId: RegionId?,
-    val grantedBy: PlayerId,
+    val grantedBy: PlayerId?,
     val reason: String,
     val expiresAt: Instant
 )
@@ -21,7 +21,7 @@ object EntryForceRegistry {
     fun grant(
         playerId: PlayerId,
         regionId: RegionId?,
-        grantedBy: PlayerId,
+        grantedBy: PlayerId?,
         reason: String,
         ttlSeconds: Long = 30
     ): EntryForceGrant {

@@ -28,8 +28,33 @@ class SimplePolicyService(
         action: Action,
         position: Position?,
         extraContext: Map<String, Any?>
+    ): Decision = evaluateForActor(
+        playerId, action, position,
+        PolicyActorContext(kind = ActorKind.PLAYER, actorId = playerId.toString()),
+        extraContext
+    )
+
+    override fun evaluateWithActor(
+        playerId: PlayerId,
+        action: Action,
+        position: Position?,
+        actor: PolicyActorContext,
+        extraContext: Map<String, Any?>
+    ): Decision = evaluateForActor(playerId, action, position, actor, extraContext)
+
+    override fun evaluateForActor(
+        playerId: PlayerId?,
+        action: Action,
+        position: Position?,
+        actor: PolicyActorContext,
+        extraContext: Map<String, Any?>
     ): Decision {
-        val resolvedArea = extraContext["areaId"] as? AreaId ?: position?.let { pos ->
+        val decisionContext = extraContext + mapOf(
+            PolicyActorContext.EXTRA_KIND to actor.kind.name,
+            PolicyActorContext.EXTRA_ID to actor.actorId,
+            PolicyActorContext.EXTRA_SOURCE_MOD to actor.sourceMod
+        )
+        val resolvedArea = decisionContext["areaId"] as? AreaId ?: position?.let { pos ->
             areaService?.let { service ->
                 pos.legacyWorldName?.let { service.resolveArea(it, pos.x, pos.y, pos.z)?.id }
                     ?: service.resolveArea(pos.worldId, pos.x, pos.y, pos.z)?.id
@@ -40,12 +65,12 @@ class SimplePolicyService(
                 effect = DecisionEffect.NOT_APPLICABLE,
                 reason = DecisionReason.NOT_APPLICABLE,
                 detail = "No HomeClaim Area at position",
-                context = DecisionContext(playerId, null, action, position.worldId, extraContext),
+                context = DecisionContext(playerId, null, action, position.worldId, decisionContext),
                 source = DecisionSource.SCOPE
             )
         }
 
-        val regionId = extraContext["regionId"] as? RegionId ?: position?.let {
+        val regionId = decisionContext["regionId"] as? RegionId ?: position?.let {
             if (resolvedArea != null) regionService.getRegionAt(resolvedArea, it.x, it.y, it.z)
             else regionService.getRegionAt(it.worldId, it.x, it.y, it.z)
         }
@@ -53,62 +78,61 @@ class SimplePolicyService(
         if (regionId == null || region == null) {
             return decision(
                 DecisionEffect.DENY, DecisionReason.NO_REGION, "No region at position", playerId, null,
-                action, position, extraContext, DecisionSource.SCOPE, areaId = resolvedArea
+                action, position, decisionContext, DecisionSource.SCOPE, areaId = resolvedArea
             )
         }
 
-        val role = resolveRole(regionId, playerId)
-        val actor = PolicyActorContext.from(extraContext).let {
-            if (it.kind == ActorKind.PLAYER && it.actorId == null) it.copy(actorId = playerId.toString()) else it
-        }
+        val role = if (playerId != null && actor.kind == ActorKind.PLAYER) {
+            resolveRole(regionId, playerId)
+        } else RegionRole.VISITOR
         val permissionContext = PermissionContext(
             worldId = position?.worldId,
             areaId = resolvedArea ?: region.areaId,
-            resourceType = if (extraContext["componentId"] != null) "component" else "region"
+            resourceType = if (decisionContext["componentId"] != null) "component" else "region"
         )
-        val protectionBypass = has(actor, PolicyPermissions.PROTECTION_BYPASS, permissionContext) || extraContext["protectionBypass"] == true
-        val entryBypass = has(actor, PolicyPermissions.ENTRY_BYPASS, permissionContext) || extraContext["entryBypass"] == true
+        val protectionBypass = has(actor, PolicyPermissions.PROTECTION_BYPASS, permissionContext) || decisionContext["protectionBypass"] == true
+        val entryBypass = has(actor, PolicyPermissions.ENTRY_BYPASS, permissionContext) || decisionContext["entryBypass"] == true
         val lockedBypass = protectionBypass || has(actor, PolicyPermissions.LOCKED_POLICY_BYPASS, permissionContext)
 
         if (protectionBypass) {
             return decision(
                 DecisionEffect.ALLOW, DecisionReason.BYPASS_PROTECTION, null, playerId, regionId,
-                action, position, extraContext, DecisionSource.BYPASS, role, areaId = resolvedArea ?: region.areaId,
+                action, position, decisionContext, DecisionSource.BYPASS, role, areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role = role.name, bypass = PolicyPermissions.PROTECTION_BYPASS,
                     permissionResult = PermissionResult.GRANTED)
             )
         }
 
-        val playerName = extraContext["playerName"]?.toString()
+        val playerName = decisionContext["playerName"]?.toString()
         val entryAction = action == Action.REGION_ENTER || action == Action.REGION_TELEPORT_ENTER
         if (role == RegionRole.BANNED && !(entryAction && entryBypass)) {
             return decision(
                 DecisionEffect.DENY, DecisionReason.ROLE_BANNED, null, playerId, regionId, action,
-                position, extraContext, DecisionSource.ROLE, role, areaId = resolvedArea ?: region.areaId
+                position, decisionContext, DecisionSource.ROLE, role, areaId = resolvedArea ?: region.areaId
             )
         }
         if (entryAction && entryBypass) {
             return decision(
                 DecisionEffect.ALLOW, DecisionReason.BYPASS_ENTRY, null, playerId, regionId,
-                action, position, extraContext, DecisionSource.BYPASS, role,
+                action, position, decisionContext, DecisionSource.BYPASS, role,
                 areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role = role.name, bypass = PolicyPermissions.ENTRY_BYPASS,
                     permissionResult = PermissionResult.GRANTED)
             )
         }
         if (entryAction && !entryBypass) {
-            val deny = entryDenyService?.findActiveDeny(regionId, playerId, playerName)
+            val deny = playerId?.let { entryDenyService?.findActiveDeny(regionId, it, playerName) }
             if (deny != null) {
                 return decision(
                     DecisionEffect.DENY, DecisionReason.ENTRY_DENY,
                     "entry_deny_id=${deny.id.value};reason=${deny.reason}", playerId, regionId,
-                    action, position, extraContext, DecisionSource.POLICY, role,
+                    action, position, decisionContext, DecisionSource.POLICY, role,
                     areaId = resolvedArea ?: region.areaId,
                     trace = DecisionTrace(role = role.name, policyFlag = "entry_deny")
                 )
             }
         }
-        val profile = resolveProfile(extraContext)
+        val profile = resolveProfile(decisionContext)
         val regionWithProfile = if (profile != null) region.copy(
             flags = region.flags + profile.flags,
             limits = region.limits + profile.limits
@@ -117,12 +141,12 @@ class SimplePolicyService(
             resolvedArea?.let { zoneService.getZonesAt(it, pos) } ?: zoneService.getZonesAt(pos.worldId, pos)
         } ?: emptyList()
         val policy = RegionPolicy.merge(zones, regionWithProfile)
-        val actorDefaults = ModPolicyDefaults.from(extraContext)
+        val actorDefaults = ModPolicyDefaults.from(decisionContext)
         if (!ModProtectionRules.isActorAllowed(regionWithProfile, actor, actorDefaults)) {
             return decision(
                 DecisionEffect.DENY, DecisionReason.MOD_ACTOR_DENY,
                 "actor=${actor.kind.name}${actor.actorId?.let { ":$it" } ?: ""}", playerId,
-                regionId, action, position, extraContext, DecisionSource.POLICY, role,
+                regionId, action, position, decisionContext, DecisionSource.POLICY, role,
                 areaId = resolvedArea ?: region.areaId
             )
         }
@@ -130,7 +154,7 @@ class SimplePolicyService(
         if (entryAction) {
             return decision(
                 DecisionEffect.ALLOW, DecisionReason.ALLOWED, null, playerId, regionId, action,
-                position, extraContext, DecisionSource.ROLE, role, areaId = resolvedArea ?: region.areaId,
+                position, decisionContext, DecisionSource.ROLE, role, areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role = role.name)
             )
         }
@@ -147,7 +171,7 @@ class SimplePolicyService(
             return decision(
                 DecisionEffect.DENY,
                 if (flag == FlagCatalog.REDSTONE) DecisionReason.REDSTONE_DENY else DecisionReason.FLAG_DENY,
-                "flag=${flag?.value}", playerId, regionId, action, position, extraContext,
+                "flag=${flag?.value}", playerId, regionId, action, position, decisionContext,
                 DecisionSource.POLICY, role, areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role.name, flag?.value, locked, capability,
                     permissionResult = capabilityResult)
@@ -155,10 +179,10 @@ class SimplePolicyService(
         }
         if (effect == DecisionEffect.ALLOW) {
             return if (action == Action.COMPONENT_USE) {
-                checkComponentCooldown(policy, regionId, playerId, action, position, extraContext, role, DecisionSource.POLICY, resolvedArea ?: region.areaId)
+                checkComponentCooldown(policy, regionId, playerId, action, position, decisionContext, role, DecisionSource.POLICY, resolvedArea ?: region.areaId)
             } else decision(
                 DecisionEffect.ALLOW, DecisionReason.ALLOWED, null, playerId, regionId, action,
-                position, extraContext, DecisionSource.POLICY, role, areaId = resolvedArea ?: region.areaId,
+                position, decisionContext, DecisionSource.POLICY, role, areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role.name, flag?.value, locked, capability,
                     permissionResult = capabilityResult)
             )
@@ -166,7 +190,7 @@ class SimplePolicyService(
         if (effect == DecisionEffect.DENY && locked && lockedBypass) {
             return decision(
                 DecisionEffect.ALLOW, DecisionReason.BYPASS_LOCKED_POLICY, null, playerId, regionId,
-                action, position, extraContext, DecisionSource.BYPASS, role,
+                action, position, decisionContext, DecisionSource.BYPASS, role,
                 areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role.name, flag.value, true, capability, PolicyPermissions.LOCKED_POLICY_BYPASS,
                     PermissionResult.GRANTED)
@@ -176,17 +200,17 @@ class SimplePolicyService(
         if (role.allowsInheritedAction() || capabilityResult == PermissionResult.GRANTED) {
             val source = if (capabilityResult == PermissionResult.GRANTED && role == RegionRole.VISITOR) DecisionSource.PERMISSION else DecisionSource.ROLE
             return if (action == Action.COMPONENT_USE) {
-                checkComponentCooldown(policy, regionId, playerId, action, position, extraContext, role, source, resolvedArea ?: region.areaId)
+                checkComponentCooldown(policy, regionId, playerId, action, position, decisionContext, role, source, resolvedArea ?: region.areaId)
             } else decision(
                 DecisionEffect.ALLOW, DecisionReason.ALLOWED, null, playerId, regionId, action,
-                position, extraContext, source, role, areaId = resolvedArea ?: region.areaId,
+                position, decisionContext, source, role, areaId = resolvedArea ?: region.areaId,
                 trace = DecisionTrace(role.name, flag?.value, locked, capability,
                     permissionResult = capabilityResult)
             )
         }
         return decision(
             DecisionEffect.DENY, if (capabilityResult == PermissionResult.DENIED) DecisionReason.NO_PERMISSION else DecisionReason.ROLE_REQUIRED,
-            "requires_role=${minimalAllowedRole(flag)}", playerId, regionId, action, position, extraContext,
+            "requires_role=${minimalAllowedRole(flag)}", playerId, regionId, action, position, decisionContext,
             if (capabilityResult == PermissionResult.DENIED) DecisionSource.PERMISSION else DecisionSource.ROLE,
             role, areaId = resolvedArea ?: region.areaId,
             trace = DecisionTrace(role.name, flag?.value, locked, capability,
@@ -195,13 +219,13 @@ class SimplePolicyService(
     }
 
     private fun checkComponentCooldown(
-        policy: EffectivePolicy, regionId: RegionId, playerId: PlayerId, action: Action,
+        policy: EffectivePolicy, regionId: RegionId, playerId: PlayerId?, action: Action,
         position: Position?, extra: Map<String, Any?>, role: RegionRole,
         source: DecisionSource, areaId: AreaId
     ): Decision {
         val componentId = extra["componentId"] as? ComponentId
         val cooldownMs = (policy.limits[LimitCatalog.COMPONENT_COOLDOWN_MS] as? PolicyValue.IntValue)?.value ?: 0
-        if (cooldownMs > 0 && componentId != null) {
+        if (cooldownMs > 0 && componentId != null && playerId != null) {
             val key = regionId to (componentId to playerId)
             val now = Instant.now()
             val until = componentCooldowns[key]
@@ -264,7 +288,7 @@ class SimplePolicyService(
     }
 
     private fun decision(
-        effect: DecisionEffect, reason: String, detail: String?, playerId: PlayerId, regionId: RegionId?,
+        effect: DecisionEffect, reason: String, detail: String?, playerId: PlayerId?, regionId: RegionId?,
         action: Action, position: Position?, extra: Map<String, Any?>, source: DecisionSource,
         role: RegionRole? = null, areaId: AreaId? = null, trace: DecisionTrace = DecisionTrace()
     ) = Decision(

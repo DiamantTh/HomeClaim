@@ -13,6 +13,7 @@ value class PlayerId(val value: UUID)
 value class RegionId(val value: UUID)
 
 @JvmInline
+/** Client-boundary representation of a stable HomeClaim WorldId; never a display world name. */
 value class WorldId(val value: String)
 
 @JvmInline

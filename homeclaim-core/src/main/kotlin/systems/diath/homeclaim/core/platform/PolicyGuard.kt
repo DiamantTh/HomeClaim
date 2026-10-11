@@ -5,6 +5,7 @@ import systems.diath.homeclaim.core.policy.*
 import systems.diath.homeclaim.core.service.AreaService
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
+import systems.diath.homeclaim.core.service.WorldAreaService
 import java.util.UUID
 
 /** Adapter boundary from a typed action request to the existing canonical policy service. */
@@ -16,9 +17,9 @@ class PolicyGuard(
     fun check(request: ActionRequest): Decision {
         val action = ActionKey.toLegacy(request.actionKey)
         val location = request.target?.position ?: request.source?.position
-        val actorId = (request.actor as? ActionActor.Player)?.playerId ?: SYSTEM_ACTOR
+        val actorId = (request.actor as? ActionActor.Player)?.playerId
         if (action == null) {
-            return Decision(
+        return Decision(
                 effect = DecisionEffect.DENY,
                 reason = DecisionReason.UNSUPPORTED_ACTION,
                 detail = "No HomeClaim policy is registered for ${request.actionKey.value}",
@@ -50,7 +51,8 @@ class PolicyGuard(
         val targetRegionId = request.regionId ?: (policyEndpoint?.resource as? ActionResourceRef.Region)?.regionId
         val targetAreaId = request.areaId ?: policyEndpoint?.areaId
             ?: (policyEndpoint?.resource as? ActionResourceRef.Area)?.areaId
-        val targetArea = if (targetAreaId == null) policyEndpoint?.position?.let(::resolveArea) else null
+        val targetArea = targetAreaId?.let { areaService?.getArea(it) }
+            ?: if (targetAreaId == null) policyEndpoint?.position?.let(::resolveArea) else null
         val areaId = targetAreaId ?: targetArea?.id
         if (areaService != null && location != null && areaId == null) {
             return notApplicable(request, actorId, action, location)
@@ -75,23 +77,29 @@ class PolicyGuard(
             PolicyActorContext.EXTRA_SOURCE_MOD to (request.actor as? ActionActor.Automation)?.source
         )
 
-        val decision = when (request.actor) {
-            is ActionActor.Player -> policyService.evaluateWithActor(
-                request.actor.playerId, action, location, request.actor.toPolicyContext(), context
-            )
-            else -> policyService.evaluateWithActor(
-                SYSTEM_ACTOR, action, location, request.actor.toPolicyContext(), context
-            )
+        val canonicalWorldId = targetArea?.worldId ?: areaId?.let { areaService?.getArea(it)?.worldId }
+        val policyLocation = location?.let { position ->
+            canonicalWorldId?.let { position.copy(worldId = it) } ?: position
         }
+
+        val decision = policyService.evaluateForActor(
+            (request.actor as? ActionActor.Player)?.playerId,
+            action,
+            policyLocation,
+            request.actor.toPolicyContext(),
+            context
+        )
         val resolvedRequest = request.copy(
             regionId = decision.context.regionId ?: regionId,
             areaId = decision.context.areaId ?: areaId,
             source = source?.copy(
+                position = source.position?.let { canonicalizePosition(it, sourceAreaId) },
                 areaId = sourceAreaId,
                 resource = sourceRegionId?.let { ActionResourceRef.Region(it) } ?: source.resource
             ),
             target = request.target?.let { endpoint ->
                 endpoint.copy(
+                    position = endpoint.position?.let { canonicalizePosition(it, decision.context.areaId ?: areaId) },
                     areaId = decision.context.areaId ?: areaId,
                     resource = endpoint.resource ?: regionId?.let { ActionResourceRef.Region(it) }
                 )
@@ -104,10 +112,6 @@ class PolicyGuard(
             )
         )
     }
-
-    /** Compatibility adapter for the pre-ActionRequest event envelope. */
-    @Deprecated("Use check(ActionRequest)")
-    fun check(request: PolicyActionRequest): Decision = check(request.toActionRequest())
 
     /**
      * Evaluates both ends of a cross-boundary action through the same policy service.
@@ -242,35 +246,52 @@ class PolicyGuard(
     /** Resolves an endpoint once so event adapters can compare or reuse its spatial context. */
     fun resolveEndpointAt(position: Position): ActionEndpoint {
         val area = resolveArea(position)
-        if (areaService != null && area == null) return ActionEndpoint(position)
+        if (areaService != null && area == null) return ActionEndpoint(canonicalizePosition(position, null))
         val regionId = if (area != null) {
             regionService.getRegionAt(area.id, position.x, position.y, position.z)
         } else if (areaService == null) {
             regionService.getRegionAt(position.worldId, position.x, position.y, position.z)
         } else null
         return ActionEndpoint(
-            position = position,
+            position = canonicalizePosition(position, area?.id),
             resource = regionId?.let(ActionResourceRef::Region),
             areaId = area?.id
         )
     }
 
     private fun resolveArea(position: Position): Area? = areaService?.let { service ->
-        position.legacyWorldName?.let { service.resolveArea(it, position.x, position.y, position.z) }
+        val boundWorld = (service as? WorldAreaService)?.getWorldByPlatformId(position.worldId.value)
+        boundWorld?.let { service.resolveArea(it.id, position.x, position.y, position.z) }
+            ?: position.legacyWorldName?.let { service.resolveArea(it, position.x, position.y, position.z) }
             ?: service.resolveArea(position.worldId, position.x, position.y, position.z)
     }
 
-    private fun notApplicable(request: ActionRequest, actorId: UUID, action: Action, position: Position): Decision =
-        Decision(
+    private fun canonicalizePosition(position: Position, areaId: AreaId?): Position {
+        val worldService = areaService as? WorldAreaService
+        val homeClaimWorldId = areaId?.let { areaService?.getArea(it)?.worldId }
+            ?: worldService?.getWorldByPlatformId(position.worldId.value)?.id
+            ?: position.legacyWorldName?.let { worldService?.getWorldByName(it)?.id }
+            ?: return position
+        return position.copy(worldId = homeClaimWorldId)
+    }
+
+    private fun notApplicable(request: ActionRequest, actorId: UUID?, action: Action, position: Position): Decision {
+        val canonicalPosition = canonicalizePosition(position, null)
+        val canonicalRequest = request.copy(
+            source = request.source?.copy(position = request.source.position?.let { canonicalizePosition(it, request.source.areaId) }),
+            target = request.target?.copy(position = request.target.position?.let { canonicalizePosition(it, request.target.areaId) })
+        )
+        return Decision(
             effect = DecisionEffect.NOT_APPLICABLE,
             reason = DecisionReason.NOT_APPLICABLE,
             detail = "No HomeClaim Area at position",
             context = DecisionContext(
-                actorId, null, action, position.worldId, request.context.toLegacyMap(),
-                actionKey = request.actionKey, actionRequest = request
+                actorId, null, action, canonicalPosition.worldId, request.context.toLegacyMap(),
+                actionKey = request.actionKey, actionRequest = canonicalRequest
             ),
             source = DecisionSource.SCOPE
         )
+    }
 
     private fun Map<String, Any?>.toActionActor(): ActionActor = when (
         PolicyActorContext.from(this).kind
@@ -303,26 +324,4 @@ class PolicyGuard(
         sourceMod = (this as? ActionActor.Automation)?.source
     )
 
-    private companion object {
-        val SYSTEM_ACTOR: UUID = UUID(0L, 0L)
-    }
-}
-
-@Deprecated("Use ActionRequest")
-private fun PolicyActionRequest.toActionRequest(): ActionRequest {
-    val actor = when (actor.kind) {
-        ActorKind.PLAYER -> playerId?.let { ActionActor.Player(it) } ?: ActionActor.System("legacy-unknown-actor")
-        ActorKind.FAKE_PLAYER -> ActionActor.Automation(actor.actorId ?: "legacy-fake-player", actor.sourceMod)
-        ActorKind.ENTITY -> actor.actorId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-            ?.let { ActionActor.Entity(it, "unknown") } ?: ActionActor.System("legacy-entity")
-        ActorKind.AUTOMATION -> ActionActor.Automation(actor.actorId ?: "automation", actor.sourceMod)
-        ActorKind.SERVER_TASK -> ActionActor.System(actor.actorId ?: "server-task")
-    }
-    return ActionRequest(
-        actor = actor,
-        actionKey = action.key,
-        source = source?.let(::ActionEndpoint),
-        target = ActionEndpoint(position),
-        context = ActionContext.fromLegacy(extra + mapOf("platform" to platform))
-    )
 }

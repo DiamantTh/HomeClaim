@@ -108,15 +108,17 @@ class PaperPlotResetService(
         correlationId: CorrelationId,
         onComplete: (PlotResetCompletion) -> Unit
     ): Boolean {
-        val world = Bukkit.getWorld(region.world) ?: return false
-        val config = configStore.loadConfig(region.world)?.sanitized() ?: return false
+        val resolved = resolveWorld(region) ?: return false
+        val world = resolved.first
+        val worldName = resolved.second
+        val config = configStore.loadConfig(worldName)?.sanitized() ?: return false
         if (reason == PlotResetReason.DELETE && !config.resetOnDelete) return false
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
-        val jobKey = "paper-reset:${region.world}:${region.id.value}"
+        val jobKey = "paper-reset:${world.uid}:${region.id.value}"
         val jobHandle = queueRegistry.tryAcquire(
             key = jobKey,
-            world = region.world,
+            world = worldName,
             kind = PlotJobRegistry.JobKind.RESET,
             reason = MutationReason.RESET,
             maxConcurrentPerWorld = config.maxConcurrentResetJobsPerWorld,
@@ -142,7 +144,7 @@ class PaperPlotResetService(
             operation = "RESET_${reason.name}",
             worldId = worldAreaService?.getArea(region.areaId)?.worldId,
             areaId = region.areaId,
-            worldName = region.world,
+            worldName = worldName,
             regionIds = listOf(region.id),
             backend = mutationBackend.backendId,
             status = PlotMutationJobStatus.QUEUED,
@@ -264,6 +266,20 @@ class PaperPlotResetService(
             plugin.logger.warning("Failed to schedule Paper plot reset for ${region.id.value}: ${error.message}")
             false
         }
+    }
+
+    private fun resolveWorld(region: Region): Pair<org.bukkit.World, String>? {
+        val service = worldAreaService
+        if (service == null) {
+            val legacyWorld = Bukkit.getWorld(region.world) ?: return null
+            return legacyWorld to region.world
+        }
+        val area = service.getArea(region.areaId) ?: return null
+        val homeWorld = service.getWorld(area.worldId) ?: return null
+        val platformId = homeWorld.platformWorldId
+        val world = (if (platformId != null) Bukkit.getWorld(platformId) else Bukkit.getWorld(homeWorld.name))
+            ?: return null
+        return world to homeWorld.name
     }
 
     private companion object {
