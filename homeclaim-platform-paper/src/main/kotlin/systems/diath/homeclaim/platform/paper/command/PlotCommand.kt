@@ -569,7 +569,24 @@ class PlotCommand(
             return
         }
 
-        auditOperation(request, AuditStatus.ALLOWED, targetCount = mergedIds.size)
+        try {
+            auditOperation(request, AuditStatus.ALLOWED, targetCount = mergedIds.size)
+        } catch (auditError: Throwable) {
+            val detail = "Could not record merge authorization before mutation: ${auditError.message ?: auditError.javaClass.simpleName}"
+            java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                .log(java.util.logging.Level.SEVERE, "Merge ${request.correlationId} could not record authorization", auditError)
+            try {
+                runCatching { auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size) }
+                    .onFailure { failure -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                        .severe("Could not audit merge preflight failure ${request.correlationId}: ${failure.message}") }
+                runCatching { player.sendMessage("§cPlot merge was not started because its authorization could not be recorded.") }
+                    .onFailure { feedbackError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                        .warning("Could not send merge preflight failure feedback: ${feedbackError.message}") }
+            } finally {
+                releaseMergeReservation(mergedIds)
+            }
+            return
+        }
         val originalRegions = (listOf(region) + selected + expanded).distinctBy { it.id }
         val prospectiveGroup = MergeGroupId(UUID.randomUUID())
         val prospectiveRegions = originalRegions.map { it.copy(mergeGroupId = prospectiveGroup) }
@@ -591,9 +608,20 @@ class PlotCommand(
             )
             mutationJobStore?.markRunning(jobId)
         } catch (journalError: Throwable) {
-            auditOperation(request, AuditStatus.FAILED, "Could not persist merge operation before mutation: ${journalError.message}", mergedIds.size)
-            player.sendMessage("§cPlot merge was not started because its operation state could not be persisted.")
-            releaseMergeReservation(mergedIds)
+            val detail = "Could not persist merge operation before mutation: ${journalError.message ?: journalError.javaClass.simpleName}"
+            try {
+                runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.FAILED, 0, originalRegions.size, detail) }
+                    .onFailure { stateError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                        .severe("Could not close failed merge job $jobId: ${stateError.message}") }
+                runCatching { auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size) }
+                    .onFailure { auditError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                        .severe("Could not audit merge journal failure $jobId: ${auditError.message}") }
+                runCatching { player.sendMessage("§cPlot merge was not started because its operation state could not be persisted.") }
+                    .onFailure { feedbackError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
+                        .warning("Could not send merge journal failure feedback $jobId: ${feedbackError.message}") }
+            } finally {
+                releaseMergeReservation(mergedIds)
+            }
             return
         }
         val worldMutation = runCatching { plotMutationService.handleRegionsMerged(prospectiveRegions) }

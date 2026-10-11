@@ -47,6 +47,7 @@ import systems.diath.homeclaim.core.policy.CorrelationId
 import java.time.Instant
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -272,6 +273,113 @@ class PlotCommandTest {
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
         assertEquals(listOf(AuditStatus.ATTEMPTED, AuditStatus.ALLOWED, AuditStatus.COMPLETED), auditRecords.map { it.status })
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `merge authorization audit failure releases reservation before any world mutation`() {
+        val ownerId = UUID.randomUUID()
+        val regions = mergedPair(ownerId)
+        val player = mergePlayer(mock(World::class.java), ownerId)
+        val failAllowedAuditOnce = AtomicBoolean(true)
+        val auditRecords = mutableListOf<AuditEntry>()
+        val auditService = object : AuditService {
+            override fun append(entry: AuditEntry) {
+                auditRecords.add(entry)
+                if (entry.status == AuditStatus.ALLOWED && failAllowedAuditOnce.compareAndSet(true, false)) {
+                    throw IllegalStateException("simulated audit sink failure")
+                }
+            }
+        }
+        val mutationCalls = AtomicInteger()
+        val mutationService = object : PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
+                mutationCalls.incrementAndGet()
+                return CompletableFuture.completedFuture(Unit)
+            }
+        }
+        val command = PlotCommand(
+            regions,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            operationLimits = RegionOperationLimitService(regions),
+            auditService = auditService
+        )
+
+        command.execute(player, arrayOf("merge"))
+
+        assertEquals(0, mutationCalls.get(), "a merge whose ALLOWED audit cannot be written must stop before changing the world")
+        assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
+        assertTrue(auditRecords.any { it.status == AuditStatus.FAILED })
+
+        command.execute(player, arrayOf("merge"))
+
+        assertEquals(1, mutationCalls.get(), "the failed preflight must release its reservation so the next request can proceed")
+        assertTrue(regions.listAllRegions().all { it.mergeGroupId != null })
+        assertEquals(2, auditRecords.map { it.correlationId }.distinct().size)
+    }
+
+    @Test
+    fun `merge journal startup failure closes queued job and releases reservation`() {
+        val ownerId = UUID.randomUUID()
+        val regions = mergedPair(ownerId)
+        val player = mergePlayer(mock(World::class.java), ownerId)
+        val failMarkRunningOnce = AtomicBoolean(true)
+        val jobs = mutableMapOf<UUID, PlotMutationJobRecord>()
+        val finishedJobs = mutableListOf<Pair<UUID, PlotMutationJobStatus>>()
+        val jobStore = object : PlotMutationJobStore {
+            override fun create(record: PlotMutationJobRecord) {
+                jobs[record.id] = record
+            }
+
+            override fun markRunning(id: UUID) {
+                if (failMarkRunningOnce.compareAndSet(true, false)) {
+                    throw IllegalStateException("simulated journal startup failure")
+                }
+                jobs[id]?.let { jobs[id] = it.copy(status = PlotMutationJobStatus.RUNNING) }
+            }
+
+            override fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int) = Unit
+
+            override fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String?) {
+                finishedJobs.add(id to status)
+                jobs[id]?.let { jobs[id] = it.copy(status = status, completedUnits = completedUnits, totalUnits = totalUnits, error = error) }
+            }
+
+            override fun markInterruptedAsRecoveryRequired() = 0
+            override fun findById(id: UUID) = jobs[id]
+            override fun findRecoveryRequired(limit: Int) = jobs.values.filter { it.status == PlotMutationJobStatus.RECOVERY_REQUIRED }.take(limit)
+        }
+        val mutationCalls = AtomicInteger()
+        val mutationService = object : PlotMutationService {
+            override fun applyRegionState(region: Region, reason: MutationReason) = Unit
+            override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
+                mutationCalls.incrementAndGet()
+                return CompletableFuture.completedFuture(Unit)
+            }
+        }
+        val command = PlotCommand(
+            regions,
+            mock(GuiManager::class.java),
+            econService = null,
+            plotMutationService = mutationService,
+            mutationJobStore = jobStore,
+            operationLimits = RegionOperationLimitService(regions),
+            auditService = mock(AuditService::class.java)
+        )
+
+        command.execute(player, arrayOf("merge"))
+
+        assertEquals(0, mutationCalls.get())
+        assertEquals(1, finishedJobs.size)
+        assertEquals(PlotMutationJobStatus.FAILED, finishedJobs.single().second)
+        assertTrue(jobs.values.single().error?.contains("journal startup failure") == true)
+
+        command.execute(player, arrayOf("merge"))
+
+        assertEquals(1, mutationCalls.get(), "a journal startup failure must release the region reservation")
+        assertEquals(PlotMutationJobStatus.COMPLETED, finishedJobs.last().second)
     }
 
     @Test
