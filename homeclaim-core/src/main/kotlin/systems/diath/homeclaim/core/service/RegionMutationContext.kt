@@ -19,6 +19,7 @@ enum class RegionMutationCapability {
     COMPONENT_CHANGE,
     PRICE_CHANGE,
     METADATA_CHANGE,
+    HOME_CHANGE,
     GLOBAL_PROFILE_CHANGE
 }
 

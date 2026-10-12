@@ -125,8 +125,8 @@ class JdbcRegionRepository(
             try {
                 conn.prepareStatement(
                     """
-                    INSERT INTO regions (id, world, area_id, shape, min_x, max_x, min_y, max_y, min_z, max_z, owner, merge_group_id, price, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO regions (id, world, area_id, shape, min_x, max_x, min_y, max_y, min_z, max_z, owner, merge_group_id, price, metadata, home_x, home_y, home_z, home_yaw, home_pitch)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """.trimIndent()
                 ).apply {
                     setObject(1, region.id.value)
@@ -143,6 +143,7 @@ class JdbcRegionRepository(
                     setObject(12, region.mergeGroupId?.value)
                     setDouble(13, region.price)
                     setJsonString(14, Serialization.toJson(region.metadata))
+                    setHome(15, region.home)
                 }.executeUpdate()
 
                 replaceRoles(conn, region.id, region.roles)
@@ -257,7 +258,7 @@ class JdbcRegionRepository(
             try {
                 conn.prepareStatement(
                     """
-                    UPDATE regions SET world = ?, area_id = ?, shape = ?, min_x = ?, max_x = ?, min_y = ?, max_y = ?, min_z = ?, max_z = ?, owner = ?, merge_group_id = ?, price = ?, metadata = ?
+                    UPDATE regions SET world = ?, area_id = ?, shape = ?, min_x = ?, max_x = ?, min_y = ?, max_y = ?, min_z = ?, max_z = ?, owner = ?, merge_group_id = ?, price = ?, metadata = ?, home_x = ?, home_y = ?, home_z = ?, home_yaw = ?, home_pitch = ?
                     WHERE id = ?
                     """.trimIndent()
                 ).apply {
@@ -274,7 +275,8 @@ class JdbcRegionRepository(
                     setObject(11, region.mergeGroupId?.value)
                     setDouble(12, region.price)
                     setJsonString(13, Serialization.toJson(region.metadata))
-                    setObject(14, region.id.value)
+                    setHome(14, region.home)
+                    setObject(19, region.id.value)
                 }.executeUpdate()
 
                 replaceRoles(conn, region.id, region.roles)
@@ -333,8 +335,26 @@ class JdbcRegionRepository(
             limits = conn.fetchLimits(regionId),
             mergeGroupId = getUuid("merge_group_id")?.let { MergeGroupId(it) },
             metadata = Serialization.fromJson(getString("metadata")),
-            price = getDouble("price")
+            price = getDouble("price"),
+            home = getObject("home_x")?.let {
+                systems.diath.homeclaim.core.model.RegionHome(
+                    x = getDouble("home_x"), y = getDouble("home_y"), z = getDouble("home_z"),
+                    yaw = getDouble("home_yaw").toFloat(), pitch = getDouble("home_pitch").toFloat()
+                )
+            }
         )
+    }
+
+    private fun java.sql.PreparedStatement.setHome(startIndex: Int, home: systems.diath.homeclaim.core.model.RegionHome?) {
+        if (home == null) {
+            (startIndex until startIndex + 5).forEach { setObject(it, null) }
+        } else {
+            setDouble(startIndex, home.x)
+            setDouble(startIndex + 1, home.y)
+            setDouble(startIndex + 2, home.z)
+            setDouble(startIndex + 3, home.yaw.toDouble())
+            setDouble(startIndex + 4, home.pitch.toDouble())
+        }
     }
 
     private fun reloadRuntimeIndex() {

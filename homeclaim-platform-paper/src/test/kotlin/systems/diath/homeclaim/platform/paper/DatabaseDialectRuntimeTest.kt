@@ -153,13 +153,15 @@ class DatabaseDialectRuntimeTest {
                 roles = RegionRoles(trusted = setOf(visitor)),
                 flags = mapOf(FlagKey("BUILD") to PolicyValue.Bool(false)),
                 limits = mapOf(LimitKey("COMPONENT_COOLDOWN_MS") to PolicyValue.IntValue(500)),
-                areaId = area.id
+                areaId = area.id,
+                home = systems.diath.homeclaim.core.model.RegionHome(4.5, 65.0, 5.5, 90f, 10f)
             )
             regions.createRegion(firstRegion)
             assertEquals(firstId, regions.getRegionAt(area.id, 5, 64, 5))
             assertEquals(visitor, regions.getRegionById(firstId)?.roles?.trusted?.single())
             assertEquals(PolicyValue.Bool(false), regions.getRegionById(firstId)?.flags?.get(FlagKey("BUILD")))
             assertEquals(PolicyValue.IntValue(500), regions.getRegionById(firstId)?.limits?.get(LimitKey("COMPONENT_COOLDOWN_MS")))
+            assertEquals(firstRegion.home, regions.getRegionById(firstId)?.home)
 
             val zones = JdbcZoneRepository(dataSource, worlds)
             val zone = Zone(

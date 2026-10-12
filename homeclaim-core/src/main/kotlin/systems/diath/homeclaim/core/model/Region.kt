@@ -12,6 +12,8 @@ data class Region(
     val flags: Map<FlagKey, FlagValue> = emptyMap(),
     val limits: Map<LimitKey, LimitValue> = emptyMap(),
     val metadata: Map<String, String> = emptyMap(),
+    /** Optional player-defined teleport location. Its world is derived from [areaId]. */
+    val home: RegionHome? = null,
     val mergeGroupId: MergeGroupId? = null,
     val price: Double = 0.0,  // Price for buying (0 = not for sale)
     val areaId: AreaId = AreaId.legacyDefault(WorldId.fromLegacyName(world))

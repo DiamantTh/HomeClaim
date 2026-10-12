@@ -32,7 +32,7 @@ class DatabaseRuntimeTest {
                 requiredTables.forEach { assertTrue(it in found, "Missing initial-schema table: $it") }
 
                 connection.createStatement().use { statement ->
-                    statement.executeQuery("SELECT area_id, price FROM regions LIMIT 0").use {
+                    statement.executeQuery("SELECT area_id, price, home_x, home_y, home_z, home_yaw, home_pitch FROM regions LIMIT 0").use {
                         assertNotNull(it.metaData)
                     }
                     statement.executeQuery("SELECT area_id FROM zones LIMIT 0").use {
