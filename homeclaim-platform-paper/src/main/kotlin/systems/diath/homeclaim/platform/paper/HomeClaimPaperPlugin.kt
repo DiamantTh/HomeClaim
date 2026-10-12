@@ -119,7 +119,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             services.auditService,
             worldAreaService = services.worldAreaService,
             mutationJobStore = plotMutationJobStore,
-            adminService = services.adminService
+            adminService = services.adminService,
+            roleService = services.roleService,
+            homeService = services.regionHomeService
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -846,6 +848,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             auditService = auditService,
             authorizer = mutationAuthorizer
         )
+        val homes = systems.diath.homeclaim.core.service.RegionHomeService(
+            regionRepo, auditService, mutationAuthorizer
+        )
         val componentOperations = systems.diath.homeclaim.core.service.ComponentOperationService(
             components = componentRepo,
             regions = regionRepo,
@@ -873,7 +878,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             eventDispatcher = eventDispatcher,
             worldAreaService = worldAreaRepo,
             roleService = roleRepository,
-            auditReader = auditReader
+            auditReader = auditReader,
+            regionHomeService = homes
         )
     }
 

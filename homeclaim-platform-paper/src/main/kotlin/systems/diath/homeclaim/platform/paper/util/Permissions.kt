@@ -58,6 +58,8 @@ object Permissions {
     const val PLOT_JOBS = "homeclaim.plot.jobs"
     const val PLOT_ALIAS = "homeclaim.plot.alias"
     const val PLOT_DESCRIPTION = "homeclaim.plot.description"
+    const val PLOT_SETHOME = "homeclaim.plot.sethome"
+    const val PLOT_ROLE = "homeclaim.plot.role"
     const val PLOT_INFO_PLATFORM = "homeclaim.plot.info.platform"
     const val PLOT_INFO_OWNER_NAME = "homeclaim.plot.info.owner.name"
     

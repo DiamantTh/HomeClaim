@@ -6,6 +6,10 @@ import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.RegionAdminService
+import systems.diath.homeclaim.core.service.RegionHomeService
+import systems.diath.homeclaim.core.service.RoleService
+import systems.diath.homeclaim.core.service.RoleMutationRequest
+import systems.diath.homeclaim.core.service.RoleMutationKind
 import systems.diath.homeclaim.core.service.RegionMutationContext
 import systems.diath.homeclaim.core.service.OperationStatus
 import systems.diath.homeclaim.core.service.AreaService
@@ -22,6 +26,7 @@ import systems.diath.homeclaim.core.model.RegionId
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.model.RegionOwnership
 import systems.diath.homeclaim.core.model.MergeGroupId
+import systems.diath.homeclaim.core.model.RegionHome
 import systems.diath.homeclaim.core.store.RatingRepository
 import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.gui.RegionListMenu
@@ -74,7 +79,9 @@ class PlotCommand(
     private val auditService: AuditService? = null,
     private val worldAreaService: WorldAreaService? = null,
     private val mutationJobStore: PlotMutationJobStore? = null,
-    private val adminService: RegionAdminService? = null
+    private val adminService: RegionAdminService? = null,
+    private val roleService: RoleService? = null,
+    private val homeService: RegionHomeService? = null
 ) {
     private val operationReservationLock = Any()
     private val operationReservations = mutableSetOf<RegionId>()
@@ -106,6 +113,14 @@ class PlotCommand(
             "home", "h" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_HOME)) return true
                 handleHome(sender, args.getOrNull(1))
+            }
+            "sethome" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_SETHOME)) return true
+                handleSetHome(sender)
+            }
+            "add", "trust", "deny", "remove" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_ROLE)) return true
+                handleRoleMutation(sender, subCommand, args.getOrNull(1))
             }
             "info", "i" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_INFO)) return true
@@ -307,17 +322,104 @@ class PlotCommand(
             return
         }
         
-        // Teleport to center of plot
-        val centerX = (plot.bounds.minX + plot.bounds.maxX) / 2.0
-        val centerZ = (plot.bounds.minZ + plot.bounds.maxZ) / 2.0
-        val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
+        val stored = homeService?.resolveHome(plot)?.takeIf { home ->
+            homeIsValidForLogicalPlot(plot, home)
+        } ?: run {
+            if (homeService?.resolveHome(plot) != null) {
+                org.bukkit.Bukkit.getLogger().warning("Ignoring stale plot home for ${plot.id}; using safe fallback")
+            }
+            null
+        }
+        val destination = if (stored != null) {
+            org.bukkit.Location(world, stored.x, stored.y, stored.z, stored.yaw, stored.pitch)
+        } else {
+            val centerX = (plot.bounds.minX + plot.bounds.maxX) / 2.0
+            val centerZ = (plot.bounds.minZ + plot.bounds.maxZ) / 2.0
+            val y = world.getHighestBlockYAt(centerX.toInt(), centerZ.toInt()) + 1.0
+            org.bukkit.Location(world, centerX, y, centerZ)
+        }
         
         teleportWithFeedback(
             player,
-            org.bukkit.Location(world, centerX, y, centerZ),
+            destination,
             i18n.msg("plot.teleported"),
             "§cTeleport to your plot failed."
         )
+    }
+
+    private fun handleSetHome(player: Player) {
+        val homeOperations = homeService ?: run {
+            player.sendMessage("§cPlot homes are unavailable because their operation service is not configured.")
+            return
+        }
+        val location = player.location
+        val area = resolveArea(location.world, location.blockX, location.blockY, location.blockZ) ?: run {
+            player.sendMessage("§cYou are outside a managed HomeClaim area.")
+            return
+        }
+        val regionId = regionService.getRegionAt2D(area.id, location.blockX, location.blockZ) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        val context = systems.diath.homeclaim.core.service.RegionMutationContext(
+            actor = ActionActor.Player(player.uniqueId), platform = "paper", eventName = "plot-sethome"
+        )
+        val result = homeOperations.setHome(context, regionId, RegionHome(
+            location.x, location.y, location.z, location.yaw, location.pitch
+        ))
+        if (result.succeeded) player.sendMessage("§aPlot home saved.")
+        else player.showOperationFailure(result.detail)
+    }
+
+    private fun handleRoleMutation(player: Player, command: String, targetName: String?) {
+        val service = roleService ?: run {
+            player.sendMessage("§cRole operations are unavailable because their service is not configured.")
+            return
+        }
+        if (targetName.isNullOrBlank()) {
+            player.sendMessage("§cUsage: /plot $command <online-player>")
+            return
+        }
+        val target = org.bukkit.Bukkit.getPlayerExact(targetName) ?: run {
+            player.sendMessage("§cPlayer '$targetName' is not online.")
+            return
+        }
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        val role = when (command) {
+            "add" -> RegionRole.MEMBER
+            "trust" -> RegionRole.TRUSTED
+            "deny" -> RegionRole.BANNED
+            else -> null
+        }
+        if (command == "remove") {
+            val existing = listOf(RegionRole.MEMBER, RegionRole.TRUSTED, RegionRole.BANNED)
+                .firstOrNull { candidate -> when (candidate) {
+                    RegionRole.MEMBER -> target.uniqueId in region.roles.members
+                    RegionRole.TRUSTED -> target.uniqueId in region.roles.trusted
+                    RegionRole.BANNED -> target.uniqueId in region.roles.banned
+                    else -> false
+                } }
+            if (existing == null) {
+                player.sendMessage("§eThat player has no removable role on this plot.")
+                return
+            }
+            performRoleMutation(player, service, region.id, target.uniqueId, existing, RoleMutationKind.REMOVE)
+        } else {
+            performRoleMutation(player, service, region.id, target.uniqueId, requireNotNull(role), RoleMutationKind.ADD)
+        }
+    }
+
+    private fun performRoleMutation(player: Player, service: RoleService, regionId: RegionId, target: UUID, role: RegionRole, kind: RoleMutationKind) {
+        val result = service.mutateRole(RoleMutationRequest(
+            actor = ActionActor.Player(player.uniqueId), regionId = regionId, targetPlayerId = target,
+            role = role, kind = kind, platform = "paper"
+        ))
+        if (!result.succeeded) player.showOperationFailure(result.detail)
+        else if (result.detail == "UNCHANGED") player.sendMessage("§eNo role change was needed.")
+        else player.sendMessage("§aPlot role updated.")
     }
     
     private fun handleInfo(player: Player) {
@@ -589,7 +691,13 @@ class PlotCommand(
         }
         val originalRegions = (listOf(region) + selected + expanded).distinctBy { it.id }
         val prospectiveGroup = MergeGroupId(UUID.randomUUID())
-        val prospectiveRegions = originalRegions.map { it.copy(mergeGroupId = prospectiveGroup) }
+        // A merge has no implicit primary plot. Retain an existing home only when it is
+        // unambiguous, and anchor it on the explicitly selected command region.
+        val existingHomes = originalRegions.mapNotNull { it.home }.distinct()
+        val mergedHome = existingHomes.singleOrNull()
+        val prospectiveRegions = originalRegions.map {
+            it.copy(mergeGroupId = prospectiveGroup, home = if (it.id == region.id) mergedHome else null)
+        }
         val jobId = UUID.randomUUID()
         try {
             mutationJobStore?.create(
@@ -824,6 +932,8 @@ class PlotCommand(
         }
         mutation.whenComplete { _, mutationError ->
             if (mutationError == null) {
+                runCatching { homeService?.reconcileUnlinked(originalRegions) }
+                    .onFailure { error -> org.bukkit.Bukkit.getLogger().warning("Could not reconcile plot homes after unlink $jobId: ${error.message}") }
                 runCatching {
                     mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size)
                 }.onFailure { journalError ->
@@ -1074,6 +1184,14 @@ class PlotCommand(
         val world = runCatching { loc.world }.getOrNull() ?: return null
         val regionId = regionAt(world, loc.blockX, loc.blockY, loc.blockZ) ?: return null
         return regionService.getRegionById(regionId)
+    }
+
+    private fun homeIsValidForLogicalPlot(region: Region, home: RegionHome): Boolean {
+        if (!home.isFinite()) return false
+        val members = region.mergeGroupId?.let { groupId ->
+            regionService.listAllRegions().filter { it.areaId == region.areaId && it.mergeGroupId == groupId }
+        }.orEmpty().ifEmpty { listOf(region) }
+        return members.any { it.bounds.contains(kotlin.math.floor(home.x).toInt(), kotlin.math.floor(home.y).toInt(), kotlin.math.floor(home.z).toInt()) }
     }
 
     private fun regionAt(world: World, x: Int, y: Int, z: Int): RegionId? {

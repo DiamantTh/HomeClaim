@@ -26,7 +26,7 @@ internal object PaperCommandTrees {
         val root = Commands.literal("plot")
             .executes { context -> dispatch(context.source.sender, "plot", emptyList()) }
 
-        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear")
+        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear", "sethome")
             .forEach { name ->
                 root.then(Commands.literal(name).executes { context -> dispatch(context.source.sender, "plot", listOf(name)) })
             }
@@ -71,6 +71,19 @@ internal object PaperCommandTrees {
                             )
                         }
                     )
+            ))
+        }
+
+        listOf("add", "trust", "deny", "remove").forEach { name ->
+            root.then(Commands.literal(name).then(
+                Commands.argument("player", StringArgumentType.word())
+                    .suggests { _, builder ->
+                        Bukkit.getOnlinePlayers().asSequence().map { it.name }
+                            .filter { it.startsWith(builder.remaining, ignoreCase = true) }
+                            .forEach(builder::suggest)
+                        builder.buildFuture()
+                    }
+                    .executes { context -> dispatch(context.source.sender, "plot", listOf(name, StringArgumentType.getString(context, "player"))) }
             ))
         }
 

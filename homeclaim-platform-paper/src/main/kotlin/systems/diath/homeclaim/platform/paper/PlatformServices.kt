@@ -9,6 +9,7 @@ import systems.diath.homeclaim.core.service.EntryDenyService
 import systems.diath.homeclaim.core.service.EntryDenyOperationService
 import systems.diath.homeclaim.core.service.FlagProfileService
 import systems.diath.homeclaim.core.service.RegionAdminService
+import systems.diath.homeclaim.core.service.RegionHomeService
 import systems.diath.homeclaim.core.service.PolicyService
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RoleService
@@ -37,5 +38,6 @@ data class PlatformServices(
     val roleService: RoleService? = null,
     val auditReader: AuditReader? = null,
     val componentOperationService: ComponentOperationService? = null,
-    val entryDenyOperationService: EntryDenyOperationService? = null
+    val entryDenyOperationService: EntryDenyOperationService? = null,
+    val regionHomeService: RegionHomeService? = null
 )
