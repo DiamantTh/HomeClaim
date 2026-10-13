@@ -169,6 +169,48 @@ class ActionRequestTest {
     }
 
     @Test
+    fun `active automation and item actions use their dedicated configurable flags`() {
+        val regionId = RegionId(UUID.randomUUID())
+        val protectedActions = mapOf(
+            Action.PISTON_MOVE to FlagCatalog.PISTON,
+            Action.LIQUID_FLOW to FlagCatalog.LIQUID_FLOW,
+            Action.HOPPER_TRANSFER to FlagCatalog.HOPPER_TRANSFER,
+            Action.DISPENSER_USE to FlagCatalog.DISPENSER,
+            Action.PROJECTILE_LAUNCH to FlagCatalog.PROJECTILE,
+            Action.HANGING_ENTITY to FlagCatalog.HANGING_ENTITY,
+            Action.ITEM_DROP to FlagCatalog.ITEM_DROP,
+            Action.ITEM_PICKUP to FlagCatalog.ITEM_PICKUP
+        )
+        val regions = InMemoryRegionStore().also {
+            it.createRegion(
+                region(
+                    regionId,
+                    areaOne,
+                    mapOf(FlagCatalog.BUILD to PolicyValue.Bool(true)) +
+                        protectedActions.values.associateWith { PolicyValue.Bool(false) }
+                ),
+                Bounds(0, 10, 0, 100, 0, 10)
+            )
+        }
+        val endpoint = ActionEndpoint(Position(world, 5, 64, 5), RegionResource(regionId), areaOne)
+        val guard = PolicyGuard(policy(regions, RegionRole.OWNER), regions)
+
+        protectedActions.forEach { (action, flag) ->
+            val decision = guard.check(
+                ActionRequest(
+                    actor = ActionActor.Automation("test-${action.name.lowercase()}", "minecraft:test"),
+                    actionKey = action.key,
+                    target = endpoint,
+                    context = ActionContext(modPolicyDefaults = ModPolicyDefaults(allowAutomation = true))
+                )
+            )
+
+            assertEquals(DecisionEffect.DENY, decision.effect, action.name)
+            assertEquals(flag.value, decision.trace.policyFlag, action.name)
+        }
+    }
+
+    @Test
     fun `request retains player source target and independent world area resources`() {
         val correlation = CorrelationId(UUID.randomUUID())
         val sourcePosition = Position(world, 1, 64, 1)
@@ -423,6 +465,52 @@ class ActionRequestTest {
         assertEquals(DecisionReason.BYPASS_LOCKED_POLICY, decision.reason)
         assertEquals(PolicyPermissions.LOCKED_POLICY_BYPASS, decision.trace.bypass)
         assertEquals(PermissionResult.GRANTED, decision.trace.permissionResult)
+    }
+
+    @Test
+    fun `locked legacy build deny still constrains specialized piston allow`() {
+        val regionId = RegionId(UUID.randomUUID())
+        val regions = InMemoryRegionStore().also {
+            it.createRegion(
+                region(
+                    regionId,
+                    areaOne,
+                    mapOf(
+                        FlagCatalog.BUILD to PolicyValue.Bool(true),
+                        FlagCatalog.PISTON to PolicyValue.Bool(true)
+                    )
+                )
+            )
+        }
+        val zones = InMemoryZoneStore().also {
+            it.createZone(
+                systems.diath.homeclaim.core.model.Zone(
+                    id = systems.diath.homeclaim.core.model.ZoneId(UUID.randomUUID()),
+                    world = "action-test",
+                    shape = RegionShape.CUBOID,
+                    bounds = Bounds(0, 10, 0, 100, 0, 10),
+                    priority = 1,
+                    defaults = systems.diath.homeclaim.core.model.ZoneDefaults(
+                        defaultFlags = mapOf(FlagCatalog.BUILD to PolicyValue.Bool(false))
+                    ),
+                    lockedFlags = setOf(FlagCatalog.BUILD),
+                    areaId = areaOne
+                )
+            )
+        }
+        val service = SimplePolicyService(regions, zones, { _, _ -> RegionRole.OWNER })
+        val request = ActionRequest(
+            ActionActor.Automation("piston", "minecraft:piston"),
+            Action.PISTON_MOVE.key,
+            target = ActionEndpoint(Position(world, 5, 64, 5), RegionResource(regionId), areaOne),
+            context = ActionContext(modPolicyDefaults = ModPolicyDefaults(allowAutomation = true))
+        )
+
+        val decision = PolicyGuard(service, regions).check(request)
+
+        assertEquals(DecisionEffect.DENY, decision.effect)
+        assertEquals(FlagCatalog.BUILD.value, decision.trace.policyFlag)
+        assertTrue(decision.trace.lockedPolicy)
     }
 
     @Test

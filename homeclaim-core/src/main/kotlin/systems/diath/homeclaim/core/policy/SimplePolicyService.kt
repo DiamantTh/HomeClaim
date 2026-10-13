@@ -159,9 +159,10 @@ class SimplePolicyService(
             )
         }
 
-        val flag = flagFor(action)
-        val effect = flag?.let { RegionPolicy.flagEffect(policy, it) } ?: DecisionEffect.INHERIT
-        val locked = flag != null && flag in policy.locked
+        val resolvedFlag = resolveFlag(policy, action)
+        val flag = resolvedFlag?.key
+        val effect = resolvedFlag?.effect ?: DecisionEffect.INHERIT
+        val locked = resolvedFlag?.locked == true
         val capability = PolicyPermissions.forAction(action)
         val capabilityResult = check(actor, capability, permissionContext)
 
@@ -192,7 +193,7 @@ class SimplePolicyService(
                 DecisionEffect.ALLOW, DecisionReason.BYPASS_LOCKED_POLICY, null, playerId, regionId,
                 action, position, decisionContext, DecisionSource.BYPASS, role,
                 areaId = resolvedArea ?: region.areaId,
-                trace = DecisionTrace(role.name, flag.value, true, capability, PolicyPermissions.LOCKED_POLICY_BYPASS,
+                trace = DecisionTrace(role.name, flag?.value, true, capability, PolicyPermissions.LOCKED_POLICY_BYPASS,
                     PermissionResult.GRANTED)
             )
         }
@@ -250,19 +251,19 @@ class SimplePolicyService(
         Action.REGION_REDSTONE -> FlagCatalog.REDSTONE
         Action.REGION_FIRE -> FlagCatalog.FIRE_SPREAD
         Action.REGION_EXPLOSION -> FlagCatalog.EXPLOSION_DAMAGE
-        Action.PISTON_MOVE -> FlagCatalog.BUILD
-        Action.LIQUID_FLOW -> FlagCatalog.BUILD
-        Action.HOPPER_TRANSFER -> FlagCatalog.INTERACT_CONTAINER
-        Action.DISPENSER_USE -> FlagCatalog.BUILD
+        Action.PISTON_MOVE -> FlagCatalog.PISTON
+        Action.LIQUID_FLOW -> FlagCatalog.LIQUID_FLOW
+        Action.HOPPER_TRANSFER -> FlagCatalog.HOPPER_TRANSFER
+        Action.DISPENSER_USE -> FlagCatalog.DISPENSER
         Action.DISPENSER_ENTITY_USE -> FlagCatalog.ENTITY_DAMAGE
         Action.BLOCK_GROW -> FlagCatalog.BUILD
         Action.FALLING_BLOCK -> FlagCatalog.BUILD
         Action.ENTITY_PLACE -> FlagCatalog.BUILD
-        Action.PROJECTILE_LAUNCH -> FlagCatalog.ENTITY_DAMAGE
-        Action.HANGING_ENTITY -> FlagCatalog.BUILD
+        Action.PROJECTILE_LAUNCH -> FlagCatalog.PROJECTILE
+        Action.HANGING_ENTITY -> FlagCatalog.HANGING_ENTITY
         Action.CAULDRON_CHANGE -> FlagCatalog.INTERACT_BLOCK
-        Action.ITEM_DROP -> FlagCatalog.INTERACT_CONTAINER
-        Action.ITEM_PICKUP -> FlagCatalog.INTERACT_CONTAINER
+        Action.ITEM_DROP -> FlagCatalog.ITEM_DROP
+        Action.ITEM_PICKUP -> FlagCatalog.ITEM_PICKUP
         Action.VEHICLE_MOVE -> FlagCatalog.VEHICLE_USE
         Action.REGION_PVP -> FlagCatalog.PVP
         Action.REGION_MOB_GRIEF -> FlagCatalog.MOB_GRIEF
@@ -272,8 +273,54 @@ class SimplePolicyService(
         else -> null
     }
 
-    private fun minimalAllowedRole(flag: FlagKey?): String =
-        if (flag == FlagCatalog.INTERACT_CONTAINER) RegionRole.TRUSTED.name else RegionRole.MEMBER.name
+    /**
+     * Dedicated flags refine the older broad controls without silently changing existing
+     * installations. Until a dedicated flag is explicitly configured, the action keeps
+     * consulting the flag that governed it before the catalog was split. A locked legacy
+     * effect remains authoritative so a local specialized rule cannot bypass an area rule.
+     */
+    private fun resolveFlag(policy: EffectivePolicy, action: Action): ResolvedFlag? {
+        val dedicated = flagFor(action) ?: return null
+        val dedicatedEffect = RegionPolicy.flagEffect(policy, dedicated)
+        val legacy = legacyFlagFor(action)
+        val legacyEffect = legacy?.let { RegionPolicy.flagEffect(policy, it) } ?: DecisionEffect.INHERIT
+        val legacyLocked = legacy != null && legacy in policy.locked
+
+        if (legacyLocked && legacyEffect != DecisionEffect.INHERIT) {
+            return ResolvedFlag(legacy, legacyEffect, locked = true)
+        }
+        if (dedicatedEffect != DecisionEffect.INHERIT) {
+            return ResolvedFlag(dedicated, dedicatedEffect, dedicated in policy.locked)
+        }
+        return legacy?.let { ResolvedFlag(it, legacyEffect, it in policy.locked) }
+            ?: ResolvedFlag(dedicated, dedicatedEffect, dedicated in policy.locked)
+    }
+
+    private fun legacyFlagFor(action: Action): FlagKey? = when (action) {
+        Action.PISTON_MOVE,
+        Action.LIQUID_FLOW,
+        Action.DISPENSER_USE -> FlagCatalog.BUILD
+        Action.HOPPER_TRANSFER,
+        Action.ITEM_DROP,
+        Action.ITEM_PICKUP -> FlagCatalog.INTERACT_CONTAINER
+        Action.PROJECTILE_LAUNCH -> FlagCatalog.ENTITY_DAMAGE
+        Action.HANGING_ENTITY -> FlagCatalog.BUILD
+        else -> null
+    }
+
+    private data class ResolvedFlag(
+        val key: FlagKey,
+        val effect: DecisionEffect,
+        val locked: Boolean
+    )
+
+    private fun minimalAllowedRole(flag: FlagKey?): String = when (flag) {
+        FlagCatalog.INTERACT_CONTAINER,
+        FlagCatalog.HOPPER_TRANSFER,
+        FlagCatalog.ITEM_DROP,
+        FlagCatalog.ITEM_PICKUP -> RegionRole.TRUSTED.name
+        else -> RegionRole.MEMBER.name
+    }
 
     private fun has(actor: PolicyActorContext, permission: String, context: PermissionContext): Boolean =
         check(actor, permission, context) == PermissionResult.GRANTED

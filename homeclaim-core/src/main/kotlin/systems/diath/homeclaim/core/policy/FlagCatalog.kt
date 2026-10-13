@@ -16,6 +16,20 @@ object FlagCatalog {
     val MOB_GRIEF = FlagKey("MOB_GRIEF")
     val ENTITY_DAMAGE = FlagKey("ENTITY_DAMAGE")
     val VEHICLE_USE = FlagKey("VEHICLE_USE")
+    /** Controls piston source-to-target movements handled by the Paper automation listener. */
+    val PISTON = FlagKey("PISTON")
+    /** Controls natural liquid flow, buckets, and sponge absorption handled by the Paper automation listener. */
+    val LIQUID_FLOW = FlagKey("LIQUID_FLOW")
+    /** Controls inventory-to-inventory automation, including cross-boundary hopper transfers. */
+    val HOPPER_TRANSFER = FlagKey("HOPPER_TRANSFER")
+    /** Controls dispenser and dropper effects aimed at blocks; entity effects retain ENTITY_DAMAGE. */
+    val DISPENSER = FlagKey("DISPENSER")
+    /** Controls projectile launch authorization; hit effects remain covered by their later damage events. */
+    val PROJECTILE = FlagKey("PROJECTILE")
+    /** Controls hanging entities and their related placement, break, leash, and shear interactions. */
+    val HANGING_ENTITY = FlagKey("HANGING_ENTITY")
+    val ITEM_DROP = FlagKey("ITEM_DROP")
+    val ITEM_PICKUP = FlagKey("ITEM_PICKUP")
 
     val flags = setOf(
         BUILD,
@@ -29,7 +43,15 @@ object FlagCatalog {
         PVP,
         MOB_GRIEF,
         ENTITY_DAMAGE,
-        VEHICLE_USE
+        VEHICLE_USE,
+        PISTON,
+        LIQUID_FLOW,
+        HOPPER_TRANSFER,
+        DISPENSER,
+        PROJECTILE,
+        HANGING_ENTITY,
+        ITEM_DROP,
+        ITEM_PICKUP
     )
 }
 
