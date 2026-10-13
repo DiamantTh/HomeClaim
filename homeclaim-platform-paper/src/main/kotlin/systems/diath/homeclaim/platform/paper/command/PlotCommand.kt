@@ -58,6 +58,10 @@ import systems.diath.homeclaim.core.policy.ActionResourceRef
 import systems.diath.homeclaim.core.policy.CorrelationId
 import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator
+import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationOperation
+import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
+import systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict
 import org.bukkit.NamespacedKey
 import io.papermc.paper.registry.RegistryAccess
 import io.papermc.paper.registry.RegistryKey
@@ -94,10 +98,9 @@ class PlotCommand(
     private val biomeService: RegionBiomeService? = null,
     private val ratingService: RegionRatingService? = null,
     private val pendingConfirmations: PendingConfirmationStore = PendingConfirmationStore(),
-    private val biomeMutationService: PaperBiomeMutationService? = null
+    private val biomeMutationService: PaperBiomeMutationService? = null,
+    private val mutationConflicts: RegionMutationConflictCoordinator = RegionMutationConflictCoordinator(mutationJobStore)
 ) {
-    private val operationReservationLock = Any()
-    private val operationReservations = mutableSetOf<RegionId>()
 
     fun execute(sender: CommandSender, args: Array<out String>): Boolean {
         if (sender !is Player) {
@@ -412,6 +415,12 @@ class PlotCommand(
             player.showOperationFailure(validation.detail)
             return
         }
+        val conflict = mutationConflicts.checkAvailable(listOf(region.id))
+        if (conflict != null) {
+            player.showOperationFailure(conflict.detailCode())
+            player.sendMessage(conflict.playerMessage())
+            return
+        }
         val target = "region:${region.id.value}"
         pendingConfirmations.create(
             context.actor,
@@ -453,6 +462,12 @@ class PlotCommand(
             player.sendMessage("§eThe plot changed before confirmation. Run /plot delete again.")
             return
         }
+        val conflict = mutationConflicts.checkAvailable(listOf(id))
+        if (conflict != null) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe plot now has a conflicting mutation. Run /plot delete again after it is resolved.")
+            return
+        }
         if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, signature) == null) {
             player.sendMessage("§eThe confirmation expired. Run /plot delete again.")
             return
@@ -461,14 +476,27 @@ class PlotCommand(
             player.showOperationFailure("UNCLAIM_OPERATION_UNAVAILABLE")
             return
         }
-        val result = service.unclaim(RegionMutationContext(
+        val request = RegionMutationContext(
             actor = actor,
             platform = "paper",
             eventName = "plot_confirm_delete",
             correlationId = pending.correlationId
-        ), id)
-        if (result.succeeded) player.sendMessage("§aPlot released. World contents were not reset.")
-        else player.showOperationFailure(result.detail)
+        ).actionRequest(HomeClaimOperationActions.REGION_UNCLAIM, id, region)
+        val reservation = acquireMutationReservation(
+            RegionMutationOperation.UNCLAIM, listOf(id), region.mergeGroupId, request, player
+        ) ?: return
+        try {
+            val result = service.unclaim(RegionMutationContext(
+                actor = actor,
+                platform = "paper",
+                eventName = "plot_confirm_delete",
+                correlationId = pending.correlationId
+            ), id)
+            if (result.succeeded) player.sendMessage("§aPlot released. World contents were not reset.")
+            else player.showOperationFailure(result.detail)
+        } finally {
+            reservation.close()
+        }
     }
 
     private fun handleBiome(player: Player, rawBiome: String?) {
@@ -504,15 +532,26 @@ class PlotCommand(
             player.showOperationFailure(prepared.detail)
             return
         }
+        val reservation = acquireMutationReservation(
+            RegionMutationOperation.BIOME,
+            plan.regions.map { it.id },
+            region.mergeGroupId,
+            plan.request,
+            player
+        ) ?: return
         player.sendMessage("§7Changing the biome for ${plan.regions.size} plot region(s)…")
-        mutation.apply(plan.regions, biome).whenComplete { _, failure ->
+        mutation.apply(plan.regions, biome, plan.request.correlationId).whenComplete { _, failure ->
             onPaperThread(player, "plot-biome-completion") {
-                if (failure == null) {
-                    operations.completed(plan)
-                    player.sendMessage("§aPlot biome changed to ${key}.")
-                } else {
-                    operations.failed(plan, failure)
-                    player.showOperationFailure(failure.message ?: "BIOME_MUTATION_FAILED")
+                try {
+                    if (failure == null) {
+                        operations.completed(plan)
+                        player.sendMessage("§aPlot biome changed to ${key}.")
+                    } else {
+                        operations.failed(plan, failure)
+                        player.showOperationFailure(failure.message ?: "BIOME_MUTATION_FAILED")
+                    }
+                } finally {
+                    reservation.close()
                 }
             }
         }
@@ -834,12 +873,9 @@ class PlotCommand(
             return
         }
 
-        val reserved = reserveRegions(mergedIds)
-        if (!reserved) {
-            auditOperation(request, AuditStatus.DENIED, "MERGE_ALREADY_IN_PROGRESS", mergedIds.size)
-            player.sendMessage("§cA merge involving one of these plots is already running.")
-            return
-        }
+        val reservation = acquireMutationReservation(
+            RegionMutationOperation.MERGE, mergedIds, null, request, player
+        ) ?: return
 
         try {
             auditOperation(request, AuditStatus.ALLOWED, targetCount = mergedIds.size)
@@ -855,7 +891,7 @@ class PlotCommand(
                     .onFailure { feedbackError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
                         .warning("Could not send merge preflight failure feedback: ${feedbackError.message}") }
             } finally {
-                releaseMergeReservation(mergedIds)
+                reservation.close()
             }
             return
         }
@@ -898,7 +934,7 @@ class PlotCommand(
                     .onFailure { feedbackError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
                         .warning("Could not send merge journal failure feedback $jobId: ${feedbackError.message}") }
             } finally {
-                releaseMergeReservation(mergedIds)
+                reservation.close()
             }
             return
         }
@@ -920,7 +956,7 @@ class PlotCommand(
                     runCatching { if (player.isOnline) player.sendMessage("§cPlot merge requires recovery: $detail") }
                         .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge recovery feedback for $jobId: ${feedbackError.message}") }
                 } finally {
-                    releaseMergeReservation(mergedIds)
+                    reservation.close()
                 }
                 return@whenComplete
             }
@@ -949,7 +985,7 @@ class PlotCommand(
                         }
                     }.onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge completion feedback for $jobId: ${feedbackError.message}") }
                 } finally {
-                    releaseMergeReservation(mergedIds)
+                    reservation.close()
                 }
                 return@whenComplete
             }
@@ -977,22 +1013,46 @@ class PlotCommand(
                     runCatching { if (player.isOnline) player.sendMessage("§cPlot merge failed: $detail") }
                         .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge failure feedback for $jobId: ${feedbackError.message}") }
                 } finally {
-                    releaseMergeReservation(mergedIds)
+                    reservation.close()
                 }
             }
         }
     }
 
-    private fun releaseMergeReservation(regionIds: Collection<RegionId>) {
-        synchronized(operationReservationLock) { operationReservations.removeAll(regionIds.toSet()) }
+    private fun acquireMutationReservation(
+        operation: RegionMutationOperation,
+        regionIds: Collection<RegionId>,
+        mergeGroupId: MergeGroupId?,
+        request: ActionRequest,
+        player: Player
+    ): RegionMutationConflictCoordinator.Lease? {
+        return when (val attempt = mutationConflicts.reserve(
+            operation = operation,
+            regionIds = regionIds,
+            mergeGroupId = mergeGroupId,
+            actor = request.actor,
+            correlationId = request.correlationId
+        )) {
+            is ReservationAttempt.Acquired -> attempt.lease
+            is ReservationAttempt.Conflict -> {
+                val detail = attempt.conflict.detailCode()
+                auditOperation(request, AuditStatus.DENIED, detail, regionIds.size)
+                player.sendMessage(attempt.conflict.playerMessage())
+                null
+            }
+        }
     }
 
-    private fun reserveRegions(regionIds: Collection<RegionId>): Boolean = synchronized(operationReservationLock) {
-        if (regionIds.any(operationReservations::contains)) false
-        else {
-            operationReservations.addAll(regionIds)
-            true
-        }
+    private fun MutationConflict.detailCode(): String = when (this) {
+        is MutationConflict.Active -> "MUTATION_CONFLICT_ACTIVE_${operation.name}"
+        is MutationConflict.RecoveryRequired -> "MUTATION_RECOVERY_REQUIRED:$jobId"
+        is MutationConflict.RecoveryLookupFailed -> "MUTATION_RECOVERY_LOOKUP_FAILED"
+    }
+
+    private fun MutationConflict.playerMessage(): String = when (this) {
+        is MutationConflict.Active -> "§cA ${operation.name.lowercase()} operation already affects this plot. Please wait for it to finish."
+        is MutationConflict.RecoveryRequired -> "§cThis plot has a recovery-required ${operation.lowercase()} job ($jobId). Inspect /plot jobs inspect $jobId before starting another mutation."
+        is MutationConflict.RecoveryLookupFailed -> "§cPlot mutation recovery status is unavailable; no destructive operation was started."
     }
 
     private fun handleUnlink(player: Player, createRoadsArg: String?) {
@@ -1046,13 +1106,19 @@ class PlotCommand(
             player.sendMessage(i18n.msg("plot.unlink_not_merged"))
             return
         }
-        if (!reserveRegions(groupedRegions.map { it.id })) {
-            auditOperation(request, AuditStatus.DENIED, "PLOT_OPERATION_ALREADY_RUNNING", groupedRegions.size)
-            player.sendMessage("§cA plot operation involving this merge group is already running.")
+        val reservation = acquireMutationReservation(
+            RegionMutationOperation.UNLINK, groupedRegions.map { it.id }, mergeGroupId, request, player
+        ) ?: return
+
+        try {
+            auditOperation(request, AuditStatus.ALLOWED, targetCount = groupedRegions.size)
+        } catch (auditError: Throwable) {
+            val detail = "Could not record unlink authorization before mutation: ${auditError.message ?: auditError.javaClass.simpleName}"
+            runCatching { auditOperation(request, AuditStatus.FAILED, detail, groupedRegions.size) }
+            reservation.close()
+            player.sendMessage("§cPlot unlink was not started because its authorization could not be recorded.")
             return
         }
-
-        auditOperation(request, AuditStatus.ALLOWED, targetCount = groupedRegions.size)
         val originalRegions = groupedRegions.toList()
         val updatedRegions = originalRegions.map { it.copy(mergeGroupId = null) }
         val jobId = UUID.randomUUID()
@@ -1075,7 +1141,7 @@ class PlotCommand(
         } catch (journalError: Throwable) {
             auditOperation(request, AuditStatus.FAILED, "Could not persist unlink operation before mutation")
             player.sendMessage("§cPlot unlink was not started because its operation state could not be persisted.")
-            releaseMergeReservation(originalRegions.map { it.id })
+            reservation.close()
             return
         }
         try {
@@ -1091,7 +1157,7 @@ class PlotCommand(
                 .onFailure { journalError -> org.bukkit.Bukkit.getLogger().severe("Could not persist unlink recovery state for job $jobId: ${journalError.message}") }
             auditOperation(request, if (rollbackError == null) AuditStatus.ROLLED_BACK else AuditStatus.FAILED, detail, groupedRegions.size)
             player.sendMessage("§cPlot unlink failed: $detail")
-            releaseMergeReservation(originalRegions.map { it.id })
+            reservation.close()
             return
         }
 
@@ -1111,7 +1177,7 @@ class PlotCommand(
                 }
                 auditOperation(request, AuditStatus.COMPLETED, targetCount = updatedRegions.size)
                 if (player.isOnline) player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
-                releaseMergeReservation(originalRegions.map { it.id })
+                reservation.close()
             } else {
                 val cause = mutationError.cause ?: mutationError
                 val rollbackError = runCatching { originalRegions.forEach(regionService::updateRegion) }.exceptionOrNull()
@@ -1131,7 +1197,7 @@ class PlotCommand(
                         .onFailure { journalError -> org.bukkit.Bukkit.getLogger().severe("Could not persist unlink terminal state for job $jobId: ${journalError.message}") }
                     auditOperation(request, if (recoveryRequired) AuditStatus.FAILED else AuditStatus.ROLLED_BACK, detail, groupedRegions.size)
                     if (player.isOnline) player.sendMessage("§cPlot unlink failed: $detail")
-                    releaseMergeReservation(originalRegions.map { it.id })
+                    reservation.close()
                 }
             }
         }
@@ -1153,11 +1219,9 @@ class PlotCommand(
 
         val request = operationRequest(player, HomeClaimOperationActions.REGION_RESET, region, "plot-reset")
         auditOperation(request, AuditStatus.ATTEMPTED)
-        if (!reserveRegions(listOf(region.id))) {
-            auditOperation(request, AuditStatus.DENIED, "PLOT_OPERATION_ALREADY_RUNNING")
-            player.sendMessage("§cA plot operation involving this region is already running.")
-            return
-        }
+        val reservation = acquireMutationReservation(
+            RegionMutationOperation.RESET, listOf(region.id), region.mergeGroupId, request, player
+        ) ?: return
         val queued = runCatching {
             plotResetService.queueReset(region, PlotResetReason.MANUAL, request.correlationId) { completion ->
                 try {
@@ -1180,11 +1244,11 @@ class PlotCommand(
                         }
                     }
                 } finally {
-                    releaseMergeReservation(listOf(region.id))
+                    reservation.close()
                 }
             }
         }.getOrElse {
-            releaseMergeReservation(listOf(region.id))
+            reservation.close()
             auditOperation(request, AuditStatus.FAILED, it.message ?: "Reset queue failed")
             player.sendMessage("§cPlot reset failed: ${it.message ?: "unknown error"}")
             return
@@ -1194,7 +1258,7 @@ class PlotCommand(
             auditOperation(request, AuditStatus.ALLOWED)
             player.sendMessage(i18n.msg("plot.reset_queued"))
         } else {
-            releaseMergeReservation(listOf(region.id))
+            reservation.close()
             auditOperation(request, AuditStatus.FAILED, "Reset could not be queued")
             player.sendMessage(i18n.msg("plot.reset_unavailable"))
         }
@@ -1219,12 +1283,15 @@ class PlotCommand(
                 player.sendMessage("§7Job: §f${record.id}")
                 player.sendMessage("§7Operation: §f${record.operation}  §7Status: §e${record.status}")
                 player.sendMessage("§7Region(s): §f${record.regionIds.joinToString { it.value.toString() }}")
-                player.sendMessage("§7Area: §f${record.areaId.value}  §7World: §f${record.worldName}")
+                player.sendMessage("§7Area: §f${record.areaId.value}  §7WorldId: §f${record.worldId?.value ?: "unbound"}")
+                player.sendMessage("§7World display: §f${record.worldName}")
                 player.sendMessage("§7Backend: §f${record.backend}  §7Progress: §f${record.completedUnits}/${record.totalUnits}")
                 player.sendMessage("§7Correlation: §f${record.correlationId}")
-                player.sendMessage("§7Updated: §f${record.updatedAt}")
+                player.sendMessage("§7Created: §f${record.createdAt}  §7Started: §f${record.startedAt ?: "not started"}")
+                player.sendMessage("§7Updated: §f${record.updatedAt}  §7Finished: §f${record.completedAt ?: "not finished"}")
                 record.error?.let { player.sendMessage("§cError: §f$it") }
                 if (record.status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
+                    player.sendMessage("§eMutation side: §f${record.recoverySideDescription()}")
                     player.sendMessage("§eDiagnostic only: inspect the plot and start a new explicit operation if recovery is safe. HomeClaim does not resume this job automatically.")
                 } else {
                     player.sendMessage("§7This is a historical job record. Inspection does not change its state.")
@@ -1285,6 +1352,13 @@ class PlotCommand(
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
         }
+    }
+
+    private fun PlotMutationJobRecord.recoverySideDescription(): String = when {
+        operation.startsWith("RESET") || operation == "BIOME" -> "world may be partially changed; database ownership was not changed by this job"
+        operation == "MERGE" -> "world and merge persistence may have diverged"
+        operation == "UNLINK" -> "world and merge persistence may have diverged despite compensation"
+        else -> "unknown; inspect the region and correlated audit records"
     }
 
     private fun handleAlias(player: Player, args: Array<out String>) {

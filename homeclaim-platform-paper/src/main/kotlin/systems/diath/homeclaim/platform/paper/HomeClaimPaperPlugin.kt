@@ -62,6 +62,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
     private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
     private var plotMutationJobStore: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore? = null
+    private var biomeMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService? = null
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
     private var migrationConfig: MigrationConfig = MigrationConfig()
@@ -105,8 +106,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             systems.diath.homeclaim.core.service.RegionRatingService(services.regionService, repository, services.auditService)
         }
         val biomeMutation = services.worldAreaService?.let { worldAreas ->
-            systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService(this, worldAreas)
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService(this, worldAreas, plotMutationJobStore)
         }
+        biomeMutationService = biomeMutation
         plotCommand = systems.diath.homeclaim.platform.paper.command.PlotCommand(
             services.regionService,
             guiManager!!,
@@ -446,6 +448,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             PlayerCleanupManager.cleanupAll(server.onlinePlayers)
             guiManager?.closeAll()
             plotResetService.shutdown()
+            biomeMutationService?.shutdown()
         }
         
         // Execute graceful shutdown with all registered hooks
@@ -514,6 +517,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     restServer = null
                     guiManager?.closeAll()
                     plotResetService.shutdown()
+                    biomeMutationService?.shutdown()
                     plotMutationService.cancelPendingJobs()
                     HandlerList.unregisterAll(this)
                     plotMutationEventListener?.let { eventDispatcher?.unregisterListener(it) }
