@@ -5,7 +5,9 @@ import org.bukkit.Location
 import org.bukkit.block.Block
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
 import org.bukkit.event.Event
+import org.bukkit.projectiles.BlockProjectileSource
 import systems.diath.homeclaim.core.model.Position
 import systems.diath.homeclaim.core.model.WorldId
 import systems.diath.homeclaim.core.platform.PolicyGuard
@@ -132,6 +134,29 @@ internal fun Block.toHomeClaimPosition(): Position = location.toHomeClaimPositio
 internal fun Entity.toActionActor(): ActionActor = when (this) {
     is Player -> ActionActor.Player(uniqueId)
     else -> ActionActor.Entity(uniqueId, type.name)
+}
+
+/** Keeps a projectile's cause as its shooter where Paper exposes one. */
+internal fun Entity.protectionActionActor(): ActionActor = when (this) {
+    is Projectile -> when (val source = shooter) {
+        is Entity -> source.toActionActor()
+        is BlockProjectileSource -> ActionActor.Automation(
+            "dispenser:${source.block.toHomeClaimPosition()}",
+            "minecraft:dispenser"
+        )
+        else -> toActionActor()
+    }
+    else -> toActionActor()
+}
+
+/** Uses the causal shooter's location when available, otherwise the projectile's own location. */
+internal fun Entity.protectionActionSource(): Position = when (this) {
+    is Projectile -> when (val source = shooter) {
+        is Entity -> source.location.toHomeClaimPosition()
+        is BlockProjectileSource -> source.block.toHomeClaimPosition()
+        else -> location.toHomeClaimPosition()
+    }
+    else -> location.toHomeClaimPosition()
 }
 
 internal fun Block.relativePosition(face: org.bukkit.block.BlockFace): Position = getRelative(face).toHomeClaimPosition()

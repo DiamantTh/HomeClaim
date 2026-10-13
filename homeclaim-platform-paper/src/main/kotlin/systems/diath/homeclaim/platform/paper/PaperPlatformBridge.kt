@@ -11,6 +11,7 @@ import systems.diath.homeclaim.platform.paper.protection.EntityProtectionListene
 import systems.diath.homeclaim.platform.paper.protection.ExplosionProtectionListener
 import systems.diath.homeclaim.platform.paper.protection.MovementProtectionListener
 import systems.diath.homeclaim.platform.paper.protection.PaperProtectionAdapter
+import systems.diath.homeclaim.platform.paper.protection.PortalProtectionListener
 import systems.diath.homeclaim.platform.paper.protection.VehicleProtectionListener
 
 class PaperPlatformBridge(
@@ -29,6 +30,7 @@ class PaperPlatformBridge(
             ExplosionProtectionListener(protectionAdapter),
             AutomationProtectionListener(protectionAdapter),
             EntityProtectionListener(protectionAdapter),
+            PortalProtectionListener(protectionAdapter),
             VehicleProtectionListener(protectionAdapter)
         ).forEach { listener -> plugin.server.pluginManager.registerEvents(listener, plugin) }
         plugin.server.pluginManager.registerEvents(

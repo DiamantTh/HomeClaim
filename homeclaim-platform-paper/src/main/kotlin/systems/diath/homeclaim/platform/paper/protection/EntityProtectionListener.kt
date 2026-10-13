@@ -66,8 +66,8 @@ internal class EntityProtectionListener(private val adapter: PaperProtectionAdap
     fun onDamage(event: EntityDamageEvent) = protectionEvent(event, "entity-damage") {
         val byEntity = event as? EntityDamageByEntityEvent
         val damager = byEntity?.damager
-        val actor = damager?.actionActorForDamage() ?: ActionActor.System("damage:${event.cause.name.lowercase()}")
-        val source = damager?.actionSourceForDamage()
+        val actor = damager?.protectionActionActor() ?: ActionActor.System("damage:${event.cause.name.lowercase()}")
+        val source = damager?.protectionActionSource()
         val victim = event.entity
         val action = if (victim is Player && actor is ActionActor.Player) Action.REGION_PVP else Action.REGION_ENTITY_DAMAGE
         val request = adapter.request(
@@ -260,25 +260,4 @@ internal class EntityProtectionListener(private val adapter: PaperProtectionAdap
         player?.let { adapter.deny(it, decision) }
         adapter.auditDenied(request, decision)
     }
-}
-
-private fun Entity.actionActorForDamage(): ActionActor = when (this) {
-    is Projectile -> when (val projectileSource = shooter) {
-        is Entity -> projectileSource.toActionActor()
-        is BlockProjectileSource -> ActionActor.Automation(
-            "dispenser:${projectileSource.block.toHomeClaimPosition()}",
-            "minecraft:dispenser"
-        )
-        else -> ActionActor.Entity(uniqueId, type.name)
-    }
-    else -> toActionActor()
-}
-
-private fun Entity.actionSourceForDamage(): systems.diath.homeclaim.core.model.Position = when (this) {
-    is Projectile -> when (val projectileSource = shooter) {
-        is Entity -> projectileSource.location.toHomeClaimPosition()
-        is BlockProjectileSource -> projectileSource.block.toHomeClaimPosition()
-        else -> location.toHomeClaimPosition()
-    }
-    else -> location.toHomeClaimPosition()
 }

@@ -82,8 +82,28 @@ internal class AutomationProtectionListener(private val adapter: PaperProtection
 
     @EventHandler(ignoreCancelled = true)
     fun onInventoryMove(event: InventoryMoveItemEvent) = protectionEvent(event, "inventory-move") {
-        val source = event.source.protectionPosition() ?: return@protectionEvent
-        val target = event.destination.protectionPosition() ?: return@protectionEvent
+        val source = event.source.protectionPosition()
+        val target = event.destination.protectionPosition()
+        if (source == null && target == null) return@protectionEvent
+        val attributes = mapOf(
+            "sourceSpatial" to (source != null).toString(),
+            "destinationSpatial" to (target != null).toString()
+        )
+        // Plugin and entity inventories may have no physical location. Evaluate each
+        // endpoint Paper can resolve; never invent a block position for the other.
+        if (source == null || target == null) {
+            val resolved = source ?: target ?: return@protectionEvent
+            checkAcross(
+                actor = ActionActor.Automation("inventory-transfer", "minecraft:hopper"),
+                action = Action.HOPPER_TRANSFER,
+                source = null,
+                target = resolved,
+                eventName = "InventoryMoveItemEvent",
+                cancel = { event.isCancelled = true },
+                attributes = attributes + ("positionlessEndpoint" to if (source == null) "source" else "destination")
+            )
+            return@protectionEvent
+        }
         checkAcross(
             actor = ActionActor.Automation("inventory-transfer", "minecraft:hopper"),
             action = Action.HOPPER_TRANSFER,
@@ -91,7 +111,7 @@ internal class AutomationProtectionListener(private val adapter: PaperProtection
             target = target,
             eventName = "InventoryMoveItemEvent",
             cancel = { event.isCancelled = true },
-            attributes = mapOf("item" to event.item.type.name)
+            attributes = attributes
         )
     }
 
@@ -163,12 +183,12 @@ internal class AutomationProtectionListener(private val adapter: PaperProtection
     @EventHandler(ignoreCancelled = true)
     fun onIgnite(event: BlockIgniteEvent) = protectionEvent(event, "block-ignite") {
         val actor = event.player?.let { ActionActor.Player(it.uniqueId) }
-            ?: event.ignitingEntity?.toActionActor()
+            ?: event.ignitingEntity?.protectionActionActor()
             ?: ActionActor.System("fire:${event.cause.name.lowercase()}")
         checkAcross(
             actor = actor,
             action = Action.REGION_FIRE,
-            source = event.ignitingBlock?.toHomeClaimPosition() ?: event.ignitingEntity?.location?.toHomeClaimPosition(),
+            source = event.ignitingBlock?.toHomeClaimPosition() ?: event.ignitingEntity?.protectionActionSource(),
             target = event.block.toHomeClaimPosition(),
             eventName = "BlockIgniteEvent",
             cancel = { event.isCancelled = true },
