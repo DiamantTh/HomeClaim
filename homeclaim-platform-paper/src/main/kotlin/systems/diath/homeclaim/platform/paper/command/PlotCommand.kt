@@ -7,6 +7,10 @@ import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.RegionAdminService
 import systems.diath.homeclaim.core.service.RegionHomeService
+import systems.diath.homeclaim.core.service.RegionUnclaimService
+import systems.diath.homeclaim.core.service.RegionBiomeService
+import systems.diath.homeclaim.core.service.RegionRatingService
+import systems.diath.homeclaim.core.service.PendingConfirmationStore
 import systems.diath.homeclaim.core.service.RoleService
 import systems.diath.homeclaim.core.service.RoleMutationRequest
 import systems.diath.homeclaim.core.service.RoleMutationKind
@@ -53,6 +57,10 @@ import systems.diath.homeclaim.core.policy.ActionRequest
 import systems.diath.homeclaim.core.policy.ActionResourceRef
 import systems.diath.homeclaim.core.policy.CorrelationId
 import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService
+import org.bukkit.NamespacedKey
+import io.papermc.paper.registry.RegistryAccess
+import io.papermc.paper.registry.RegistryKey
 import java.util.UUID
 
 /**
@@ -81,7 +89,12 @@ class PlotCommand(
     private val mutationJobStore: PlotMutationJobStore? = null,
     private val adminService: RegionAdminService? = null,
     private val roleService: RoleService? = null,
-    private val homeService: RegionHomeService? = null
+    private val homeService: RegionHomeService? = null,
+    private val unclaimService: RegionUnclaimService? = null,
+    private val biomeService: RegionBiomeService? = null,
+    private val ratingService: RegionRatingService? = null,
+    private val pendingConfirmations: PendingConfirmationStore = PendingConfirmationStore(),
+    private val biomeMutationService: PaperBiomeMutationService? = null
 ) {
     private val operationReservationLock = Any()
     private val operationReservations = mutableSetOf<RegionId>()
@@ -117,6 +130,19 @@ class PlotCommand(
             "sethome" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_SETHOME)) return true
                 handleSetHome(sender)
+            }
+            "delete", "unclaim" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_DELETE)) return true
+                handleDelete(player = sender)
+            }
+            "confirm" -> handleConfirm(sender)
+            "biome" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_BIOME)) return true
+                handleBiome(sender, args.getOrNull(1))
+            }
+            "rate" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RATE)) return true
+                handleRate(sender, args.getOrNull(1))
             }
             "add", "trust", "deny", "remove" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_ROLE)) return true
@@ -369,6 +395,150 @@ class PlotCommand(
         ))
         if (result.succeeded) player.sendMessage("§aPlot home saved.")
         else player.showOperationFailure(result.detail)
+    }
+
+    private fun handleDelete(player: Player) {
+        val service = unclaimService ?: run {
+            player.showOperationFailure("UNCLAIM_OPERATION_UNAVAILABLE")
+            return
+        }
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        val context = RegionMutationContext(ActionActor.Player(player.uniqueId), "paper", "plot_delete")
+        val validation = service.validate(context, region.id)
+        if (!validation.succeeded) {
+            player.showOperationFailure(validation.detail)
+            return
+        }
+        val target = "region:${region.id.value}"
+        pendingConfirmations.create(
+            context.actor,
+            HomeClaimOperationActions.REGION_UNCLAIM,
+            target,
+            unclaimStateSignature(region),
+            correlationId = context.correlationId
+        )
+        player.sendMessage("§eThis releases your plot and clears its home, roles, alias, description and price.")
+        player.sendMessage("§eThe world contents, local policies, components, ratings and entry-deny rules stay unchanged.")
+        player.sendMessage("§6Confirm with /plot confirm within 30 seconds.")
+    }
+
+    private fun handleConfirm(player: Player) {
+        val actor = ActionActor.Player(player.uniqueId)
+        val pending = pendingConfirmations.peek(actor) ?: run {
+            player.sendMessage("§eThere is nothing to confirm.")
+            return
+        }
+        if (pending.operation != HomeClaimOperationActions.REGION_UNCLAIM) {
+            player.sendMessage("§eThe pending operation cannot be confirmed by this command.")
+            return
+        }
+        val id = pending.targetSignature.removePrefix("region:").let { raw ->
+            runCatching { RegionId(UUID.fromString(raw)) }.getOrNull()
+        } ?: run {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§cThe pending confirmation is invalid.")
+            return
+        }
+        val region = regionService.getRegionById(id) ?: run {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe plot changed before confirmation. Run /plot delete again.")
+            return
+        }
+        val signature = unclaimStateSignature(region)
+        if (signature != pending.stateSignature) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe plot changed before confirmation. Run /plot delete again.")
+            return
+        }
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, signature) == null) {
+            player.sendMessage("§eThe confirmation expired. Run /plot delete again.")
+            return
+        }
+        val service = unclaimService ?: run {
+            player.showOperationFailure("UNCLAIM_OPERATION_UNAVAILABLE")
+            return
+        }
+        val result = service.unclaim(RegionMutationContext(
+            actor = actor,
+            platform = "paper",
+            eventName = "plot_confirm_delete",
+            correlationId = pending.correlationId
+        ), id)
+        if (result.succeeded) player.sendMessage("§aPlot released. World contents were not reset.")
+        else player.showOperationFailure(result.detail)
+    }
+
+    private fun handleBiome(player: Player, rawBiome: String?) {
+        if (rawBiome.isNullOrBlank()) {
+            player.sendMessage("§cUsage: /plot biome <biome>")
+            return
+        }
+        val key = NamespacedKey.fromString(rawBiome.lowercase())
+            ?: NamespacedKey.minecraft(rawBiome.lowercase())
+        val biome = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME).get(key) ?: run {
+            player.sendMessage("§cUnknown biome '$rawBiome'.")
+            return
+        }
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        val operations = biomeService ?: run {
+            player.showOperationFailure("BIOME_OPERATION_UNAVAILABLE")
+            return
+        }
+        val mutation = biomeMutationService ?: run {
+            player.showOperationFailure("BIOME_MUTATION_BACKEND_UNAVAILABLE")
+            return
+        }
+        val prepared = operations.prepare(
+            RegionMutationContext(ActionActor.Player(player.uniqueId), "paper", "plot_biome"),
+            region.id,
+            key.toString()
+        )
+        val plan = prepared.value
+        if (!prepared.succeeded || plan == null) {
+            player.showOperationFailure(prepared.detail)
+            return
+        }
+        player.sendMessage("§7Changing the biome for ${plan.regions.size} plot region(s)…")
+        mutation.apply(plan.regions, biome).whenComplete { _, failure ->
+            onPaperThread(player, "plot-biome-completion") {
+                if (failure == null) {
+                    operations.completed(plan)
+                    player.sendMessage("§aPlot biome changed to ${key}.")
+                } else {
+                    operations.failed(plan, failure)
+                    player.showOperationFailure(failure.message ?: "BIOME_MUTATION_FAILED")
+                }
+            }
+        }
+    }
+
+    private fun handleRate(player: Player, rawValue: String?) {
+        val value = rawValue?.toIntOrNull() ?: run {
+            player.sendMessage("§cUsage: /plot rate <1-5>")
+            return
+        }
+        val region = currentRegion(player) ?: run {
+            player.sendMessage(i18n.msg("plot.not_on_plot"))
+            return
+        }
+        val service = ratingService ?: run {
+            player.showOperationFailure("RATING_OPERATION_UNAVAILABLE")
+            return
+        }
+        val result = service.rate(
+            RegionMutationContext(ActionActor.Player(player.uniqueId), "paper", "plot_rate"),
+            region.id,
+            value
+        )
+        if (!result.succeeded) player.showOperationFailure(result.detail)
+        else if (result.detail == "UPDATED") player.sendMessage("§aYour plot rating was updated.")
+        else player.sendMessage("§aYour plot rating was saved.")
     }
 
     private fun handleRoleMutation(player: Player, command: String, targetName: String?) {
@@ -1350,6 +1520,9 @@ class PlotCommand(
         player.sendMessage(i18n.msg("plot.help_merge"))
         player.sendMessage(i18n.msg("plot.help_unlink"))
         player.sendMessage(i18n.msg("plot.help_reset"))
+        player.sendMessage("§7/plot delete - Release an unmerged plot after confirmation")
+        player.sendMessage("§7/plot biome <biome> - Change the biome of your plot")
+        player.sendMessage("§7/plot rate <1-5> - Rate another player's unmerged plot")
         player.sendMessage(i18n.msg("plot.help_alias"))
         player.sendMessage(i18n.msg("plot.help_description"))
         player.sendMessage("§7/plot jobs status [world] - Show queued plot jobs")
@@ -1389,6 +1562,23 @@ class PlotCommand(
     ) {
         auditService?.append(AuditEntries.operationResult(request, status, error, targetCount))
     }
+
+    /** Covers ownership, merge identity and relevant owner-managed state between delete and confirm. */
+    private fun unclaimStateSignature(region: Region): String = listOf(
+        region.id.value,
+        region.owner,
+        region.areaId.value,
+        region.mergeGroupId?.value ?: "none",
+        region.roles.trusted.sorted().joinToString(),
+        region.roles.members.sorted().joinToString(),
+        region.roles.banned.sorted().joinToString(),
+        region.home?.let { "${it.x},${it.y},${it.z},${it.yaw},${it.pitch}" } ?: "none",
+        region.price,
+        region.metadata["alias"] ?: "",
+        region.metadata["description"] ?: "",
+        region.flags.toSortedMap(compareBy { it.value }).entries.joinToString(),
+        region.limits.toSortedMap(compareBy { it.value }).entries.joinToString()
+    ).joinToString("|")
     
     private enum class MergeDirection {
         NORTH, EAST, SOUTH, WEST, ALL

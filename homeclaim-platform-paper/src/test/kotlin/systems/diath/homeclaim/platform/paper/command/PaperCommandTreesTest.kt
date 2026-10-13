@@ -27,6 +27,10 @@ class PaperCommandTreesTest {
         assertEquals(1, dispatcher.execute("plot gui", source))
         assertEquals(1, dispatcher.execute("plot home 2", source))
         assertEquals(1, dispatcher.execute("plot visit Alice 12345678-1234-1234-1234-123456789abc", source))
+        assertEquals(1, dispatcher.execute("plot delete", source))
+        assertEquals(1, dispatcher.execute("plot confirm", source))
+        assertEquals(1, dispatcher.execute("plot biome minecraft:plains", source))
+        assertEquals(1, dispatcher.execute("plot rate 5", source))
         assertEquals(
             listOf(
                 "plot" to listOf("merge", "north"),
@@ -34,6 +38,10 @@ class PaperCommandTreesTest {
                 "plot" to listOf("gui"),
                 "plot" to listOf("home", "2"),
                 "plot" to listOf("visit", "Alice", "12345678-1234-1234-1234-123456789abc")
+                , "plot" to listOf("delete")
+                , "plot" to listOf("confirm")
+                , "plot" to listOf("biome", "minecraft:plains")
+                , "plot" to listOf("rate", "5")
             ),
             calls
         )

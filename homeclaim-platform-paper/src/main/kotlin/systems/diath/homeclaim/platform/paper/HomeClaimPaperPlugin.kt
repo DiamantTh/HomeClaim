@@ -101,6 +101,12 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val ratingRepository = services.dataSource?.let { ds ->
             systems.diath.homeclaim.platform.paper.store.JdbcRatingRepository(ds)
         }
+        val ratingOperations = ratingRepository?.let { repository ->
+            systems.diath.homeclaim.core.service.RegionRatingService(services.regionService, repository, services.auditService)
+        }
+        val biomeMutation = services.worldAreaService?.let { worldAreas ->
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService(this, worldAreas)
+        }
         plotCommand = systems.diath.homeclaim.platform.paper.command.PlotCommand(
             services.regionService,
             guiManager!!,
@@ -121,7 +127,11 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             mutationJobStore = plotMutationJobStore,
             adminService = services.adminService,
             roleService = services.roleService,
-            homeService = services.regionHomeService
+            homeService = services.regionHomeService,
+            unclaimService = services.regionUnclaimService,
+            biomeService = services.regionBiomeService,
+            ratingService = ratingOperations,
+            biomeMutationService = biomeMutation
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -851,6 +861,12 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val homes = systems.diath.homeclaim.core.service.RegionHomeService(
             regionRepo, auditService, mutationAuthorizer
         )
+        val unclaims = systems.diath.homeclaim.core.service.RegionUnclaimService(
+            regionRepo, auditService, mutationAuthorizer
+        )
+        val biomes = systems.diath.homeclaim.core.service.RegionBiomeService(
+            regionRepo, auditService, mutationAuthorizer
+        )
         val componentOperations = systems.diath.homeclaim.core.service.ComponentOperationService(
             components = componentRepo,
             regions = regionRepo,
@@ -878,6 +894,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             eventDispatcher = eventDispatcher,
             worldAreaService = worldAreaRepo,
             roleService = roleRepository,
+            regionUnclaimService = unclaims,
+            regionBiomeService = biomes,
             auditReader = auditReader,
             regionHomeService = homes
         )

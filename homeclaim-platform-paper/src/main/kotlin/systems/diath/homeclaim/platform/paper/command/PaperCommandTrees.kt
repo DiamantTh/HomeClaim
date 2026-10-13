@@ -6,6 +6,8 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import com.mojang.brigadier.tree.LiteralCommandNode
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
+import io.papermc.paper.registry.RegistryAccess
+import io.papermc.paper.registry.RegistryKey
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 
@@ -26,7 +28,7 @@ internal object PaperCommandTrees {
         val root = Commands.literal("plot")
             .executes { context -> dispatch(context.source.sender, "plot", emptyList()) }
 
-        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear", "sethome")
+        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear", "sethome", "delete", "unclaim", "confirm")
             .forEach { name ->
                 root.then(Commands.literal(name).executes { context -> dispatch(context.source.sender, "plot", listOf(name)) })
             }
@@ -86,6 +88,26 @@ internal object PaperCommandTrees {
                     .executes { context -> dispatch(context.source.sender, "plot", listOf(name, StringArgumentType.getString(context, "player"))) }
             ))
         }
+
+        root.then(Commands.literal("biome").then(
+            Commands.argument("biome", StringArgumentType.greedyString())
+                .suggests { _, builder ->
+                    RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME).asSequence().map { it.key.toString() }
+                        .filter { it.startsWith(builder.remaining, ignoreCase = true) }
+                        .forEach(builder::suggest)
+                    builder.buildFuture()
+                }
+                .executes { context -> dispatch(context.source.sender, "plot", listOf("biome", StringArgumentType.getString(context, "biome"))) }
+        ))
+
+        root.then(Commands.literal("rate").then(
+            Commands.argument("value", StringArgumentType.word())
+                .suggests { _, builder ->
+                    (1..5).map(Int::toString).filter { it.startsWith(builder.remaining) }.forEach(builder::suggest)
+                    builder.buildFuture()
+                }
+                .executes { context -> dispatch(context.source.sender, "plot", listOf("rate", StringArgumentType.getString(context, "value"))) }
+        ))
 
         listOf("merge", "m").forEach { name ->
             root.then(Commands.literal(name)

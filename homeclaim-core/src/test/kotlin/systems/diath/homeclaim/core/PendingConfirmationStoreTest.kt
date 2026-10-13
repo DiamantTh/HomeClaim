@@ -18,10 +18,13 @@ class PendingConfirmationStoreTest {
         val actor = ActionActor.Player(UUID.randomUUID())
         store.create(actor, ActionKey("homeclaim:region_delete"), "region:1", "v1")
         assertNull(store.consume(actor, ActionKey("homeclaim:region_reset"), "region:1", "v1"))
-        store.create(actor, ActionKey("homeclaim:region_delete"), "region:1", "v1")
+        assertNotNull(store.peek(actor))
         assertNull(store.consume(actor, ActionKey("homeclaim:region_delete"), "region:2", "v1"))
-        store.create(actor, ActionKey("homeclaim:region_delete"), "region:1", "v1")
+        assertNotNull(store.peek(actor))
+        assertNull(store.consume(actor, ActionKey("homeclaim:region_delete"), "region:1", "changed"))
+        assertNotNull(store.peek(actor))
         assertNotNull(store.consume(actor, ActionKey("homeclaim:region_delete"), "region:1", "v1"))
+        assertNull(store.consume(actor, ActionKey("homeclaim:region_delete"), "region:1", "v1"))
     }
 
     @Test fun `expired confirmation is rejected`() {

@@ -18,9 +18,10 @@ class PaperRegionMutationAuthorizer : RegionMutationAuthorizer {
         val player = Bukkit.getPlayer(playerId) ?: return false
         val adminNode = when (capability) {
             RegionMutationCapability.COMPONENT_CHANGE -> "homeclaim.admin.components"
+            RegionMutationCapability.UNCLAIM -> "homeclaim.admin.delete.any"
             else -> "homeclaim.admin"
         }
-        if (player.hasPermission(adminNode) || player.hasPermission("homeclaim.admin.*")) return true
+        if (player.hasPermission(adminNode) || player.hasPermission("homeclaim.admin") || player.hasPermission("homeclaim.admin.*")) return true
         if (capability == RegionMutationCapability.GLOBAL_PROFILE_CHANGE) return false
         val target = region ?: return false
         if (target.owner == playerId) return true

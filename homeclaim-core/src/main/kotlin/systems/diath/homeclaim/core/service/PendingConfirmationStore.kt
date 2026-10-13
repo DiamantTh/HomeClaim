@@ -23,9 +23,29 @@ class PendingConfirmationStore(private val clock: Clock = Clock.systemUTC()) {
 
     fun consume(actor: ActionActor, operation: ActionKey, targetSignature: String, stateSignature: String): PendingConfirmation? {
         val key = actorKey(actor)
-        val value = pending.remove(key) ?: return null
-        if (value.expiresAt <= clock.instant() || value.operation != operation || value.targetSignature != targetSignature || value.stateSignature != stateSignature) return null
-        return value
+        var consumed: PendingConfirmation? = null
+        pending.compute(key) { _, value ->
+            when {
+                value == null -> null
+                value.expiresAt <= clock.instant() -> null
+                value.operation != operation || value.targetSignature != targetSignature || value.stateSignature != stateSignature -> value
+                else -> {
+                    consumed = value
+                    null
+                }
+            }
+        }
+        return consumed
+    }
+
+    /** Returns the caller's unexpired pending operation without consuming it. */
+    fun peek(actor: ActionActor): PendingConfirmation? {
+        val key = actorKey(actor)
+        var found: PendingConfirmation? = null
+        pending.computeIfPresent(key) { _, value ->
+            if (value.expiresAt <= clock.instant()) null else value.also { found = it }
+        }
+        return found
     }
 
     fun invalidate(actor: ActionActor) { pending.remove(actorKey(actor)) }
