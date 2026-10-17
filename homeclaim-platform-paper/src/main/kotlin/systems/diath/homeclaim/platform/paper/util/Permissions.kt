@@ -63,6 +63,7 @@ object Permissions {
     const val PLOT_DELETE = "homeclaim.plot.delete"
     const val PLOT_BIOME = "homeclaim.plot.biome"
     const val PLOT_RATE = "homeclaim.plot.rate"
+    const val PLOT_TRANSFER = "homeclaim.plot.transfer"
     const val PLOT_INFO_PLATFORM = "homeclaim.plot.info.platform"
     const val PLOT_INFO_OWNER_NAME = "homeclaim.plot.info.owner.name"
     

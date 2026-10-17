@@ -64,6 +64,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
     private var plotMutationJobStore: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore? = null
     private var plotBackupService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService? = null
+    private var plotTransferService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService? = null
     private var plotMutationConflicts: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator? = null
     private var biomeMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService? = null
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
@@ -138,7 +139,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             ratingService = ratingOperations,
             biomeMutationService = biomeMutation,
             backupService = plotBackupService,
-            mutationConflicts = plotMutationConflicts ?: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore)
+            mutationConflicts = plotMutationConflicts ?: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore),
+            transferService = plotTransferService,
+            componentService = services.componentService
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -377,6 +380,15 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 plotMutationConflicts
             )
         } }
+        plotTransferService = if (plotBackupService != null && plotMutationJobStore != null && plotMutationConflicts != null) {
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService(
+                this,
+                requireNotNull(plotBackupService),
+                requireNotNull(plotMutationConflicts),
+                requireNotNull(plotMutationJobStore),
+                services.auditService
+            )
+        } else null
         plotMutationService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(
             this,
             mutationBackend = backend,
@@ -480,6 +492,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             PlayerCleanupManager.cleanupAll(server.onlinePlayers)
             guiManager?.closeAll()
             plotResetService.shutdown()
+            plotTransferService?.shutdown()
             plotBackupService?.shutdown()
             biomeMutationService?.shutdown()
         }

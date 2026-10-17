@@ -46,6 +46,15 @@ internal object PaperCommandTrees {
                 .executes { context -> dispatch(context.source.sender, "plot", listOf("restore", StringArgumentType.getString(context, "backupId"))) }
         ))
 
+        listOf("copy", "move", "swap").forEach { operation ->
+            root.then(Commands.literal(operation).then(
+                Commands.argument("targetRegionId", StringArgumentType.word())
+                    .executes { context ->
+                        dispatch(context.source.sender, "plot", listOf(operation, StringArgumentType.getString(context, "targetRegionId")))
+                    }
+            ))
+        }
+
         listOf("home", "h").forEach { name ->
             root.then(Commands.literal(name)
                 .executes { context -> dispatch(context.source.sender, "plot", listOf(name)) }

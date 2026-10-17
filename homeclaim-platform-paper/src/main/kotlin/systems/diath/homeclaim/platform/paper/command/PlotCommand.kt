@@ -6,6 +6,7 @@ import org.bukkit.entity.Player
 import systems.diath.homeclaim.core.service.RegionService
 import systems.diath.homeclaim.core.service.RegionOperationLimitService
 import systems.diath.homeclaim.core.service.RegionAdminService
+import systems.diath.homeclaim.core.service.ComponentService
 import systems.diath.homeclaim.core.service.RegionHomeService
 import systems.diath.homeclaim.core.service.RegionUnclaimService
 import systems.diath.homeclaim.core.service.RegionBiomeService
@@ -64,6 +65,11 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
 import systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferOperation
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanResult
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanner
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferResult
 import org.bukkit.NamespacedKey
 import io.papermc.paper.registry.RegistryAccess
 import io.papermc.paper.registry.RegistryKey
@@ -102,7 +108,9 @@ class PlotCommand(
     private val pendingConfirmations: PendingConfirmationStore = PendingConfirmationStore(),
     private val biomeMutationService: PaperBiomeMutationService? = null,
     private val mutationConflicts: RegionMutationConflictCoordinator = RegionMutationConflictCoordinator(mutationJobStore),
-    private val backupService: PaperPlotBackupService? = null
+    private val backupService: PaperPlotBackupService? = null,
+    private val transferService: PaperPlotTransferService? = null,
+    private val componentService: ComponentService? = null
 ) {
 
     fun execute(sender: CommandSender, args: Array<out String>): Boolean {
@@ -152,6 +160,10 @@ class PlotCommand(
             "restore" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RESET)) return true
                 handleRestoreRequest(sender, args.getOrNull(1))
+            }
+            "copy", "move", "swap" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_TRANSFER)) return true
+                handleTransferRequest(sender, subCommand, args.getOrNull(1))
             }
             "biome" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_BIOME)) return true
@@ -458,9 +470,179 @@ class PlotCommand(
             HomeClaimOperationActions.REGION_UNCLAIM -> confirmUnclaim(player, actor, pending)
             HomeClaimOperationActions.REGION_RESET -> confirmReset(player, actor, pending)
             HomeClaimOperationActions.REGION_RESTORE -> confirmRestore(player, actor, pending)
+            HomeClaimOperationActions.REGION_COPY,
+            HomeClaimOperationActions.REGION_MOVE,
+            HomeClaimOperationActions.REGION_SWAP -> confirmTransfer(player, actor, pending)
             else -> player.sendMessage("§eThe pending operation cannot be confirmed here.")
         }
     }
+
+    private fun handleTransferRequest(player: Player, rawOperation: String, rawTargetId: String?) {
+        val targetId = rawTargetId?.let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val target = targetId?.let(regionService::getRegionById)
+        val source = currentRegion(player)
+        if (rawTargetId.isNullOrBlank() || targetId == null || target == null || source == null) {
+            player.sendMessage("§cUsage: /plot <copy|move|swap> <target-region-uuid>; source is the plot you are standing in.")
+            return
+        }
+        val operation = when (rawOperation.lowercase()) {
+            "move" -> PlotTransferOperation.MOVE
+            "swap" -> PlotTransferOperation.SWAP
+            else -> PlotTransferOperation.COPY
+        }
+        requestTransferConfirmation(player, operation, source, target)
+    }
+
+    private fun requestTransferConfirmation(player: Player, operation: PlotTransferOperation, source: Region, target: Region) {
+        if (RegionOwnership.isUnclaimed(source.owner) || RegionOwnership.isUnclaimed(target.owner)) {
+            player.sendMessage("§cSource and target must both be claimed plots.")
+            return
+        }
+        if (!canTransferRegion(player, source) || !canTransferRegion(player, target)) {
+            player.sendMessage(i18n.msg("permission.denied"))
+            auditOperation(operationRequest(player, actionForTransfer(operation), source, "plot_${operation.name.lowercase()}"), AuditStatus.DENIED,
+                "Actor must own both plots or have the plot-edit administration capability")
+            return
+        }
+        val sourceWorld = resolveBoundTransferWorld(source)
+        val targetWorld = resolveBoundTransferWorld(target)
+        val worldAreas = worldAreaService
+        val sourceWorldId = worldAreas?.getArea(source.areaId)?.worldId
+        val targetWorldId = worldAreas?.getArea(target.areaId)?.worldId
+        val components = componentService
+        val plan = when (val planned = PlotTransferPlanner.plan(
+            operation, source, target, sourceWorldId, targetWorldId,
+            sourceWorld?.uid, targetWorld?.uid,
+            sourceHasComponents = components?.listComponents(source.id)?.isNotEmpty() == true,
+            targetHasComponents = components?.listComponents(target.id)?.isNotEmpty() == true
+        )) {
+            is PlotTransferPlanResult.Ready -> planned.plan
+            is PlotTransferPlanResult.Rejected -> {
+                player.sendMessage("§cTransfer cannot run: ${planned.reason.name.lowercase().replace('_', ' ')}.")
+                return
+            }
+        }
+        val conflict = mutationConflicts.checkAvailable(plan.regionIds)
+        if (conflict != null) {
+            player.sendMessage("§cA plot mutation conflicts with this transfer: $conflict")
+            return
+        }
+        val targetSignature = "transfer:${operation.name}:${source.id.value}:${target.id.value}"
+        val stateSignature = transferStateSignature(source, target, sourceWorldId, targetWorldId, sourceWorld?.uid, targetWorld?.uid)
+        val correlation = CorrelationId.newId()
+        pendingConfirmations.create(ActionActor.Player(player.uniqueId), actionForTransfer(operation), targetSignature, stateSignature,
+            correlationId = correlation)
+        when (operation) {
+            PlotTransferOperation.COPY -> {
+                player.sendMessage("§eCOPY replaces the target plot's world blocks and supported container contents with a source snapshot.")
+                player.sendMessage("§eThe source is unchanged; ownership and HomeClaim metadata are not copied.")
+            }
+            PlotTransferOperation.MOVE -> {
+                player.sendMessage("§cMOVE replaces the target blocks, then clears the source only after the target is verified.")
+                player.sendMessage("§eOwnership and HomeClaim metadata remain attached to their plots.")
+            }
+            PlotTransferOperation.SWAP -> {
+                player.sendMessage("§cSWAP replaces both plots' world blocks after both original snapshots are ready.")
+                player.sendMessage("§eOwnership and HomeClaim metadata remain attached to their plots.")
+            }
+        }
+        player.sendMessage("§7Both plots are backed up before mutation. Snapshot capture is tick-wise and not atomic.")
+        player.sendMessage("§6Confirm with /plot confirm within 30 seconds.")
+    }
+
+    private fun confirmTransfer(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
+        if (!Permissions.checkWithMessage(player, Permissions.PLOT_TRANSFER)) return
+        val parsed = Regex("^transfer:(COPY|MOVE|SWAP):([0-9a-fA-F-]{36}):([0-9a-fA-F-]{36})$").matchEntire(pending.targetSignature)
+        val operation = parsed?.groupValues?.get(1)?.let { runCatching { PlotTransferOperation.valueOf(it) }.getOrNull() }
+        val sourceId = parsed?.groupValues?.get(2)?.let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val targetId = parsed?.groupValues?.get(3)?.let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val source = sourceId?.let(regionService::getRegionById)
+        val target = targetId?.let(regionService::getRegionById)
+        if (operation == null || source == null || target == null || currentRegion(player)?.id != source.id) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe transfer target or source changed. Request the operation again.")
+            return
+        }
+        val sourceWorld = resolveBoundTransferWorld(source)
+        val targetWorld = resolveBoundTransferWorld(target)
+        val sourceWorldId = worldAreaService?.getArea(source.areaId)?.worldId
+        val targetWorldId = worldAreaService?.getArea(target.areaId)?.worldId
+        val components = componentService
+        val currentState = transferStateSignature(source, target, sourceWorldId, targetWorldId, sourceWorld?.uid, targetWorld?.uid)
+        if (pending.operation != actionForTransfer(operation) || currentState != pending.stateSignature ||
+            RegionOwnership.isUnclaimed(source.owner) || RegionOwnership.isUnclaimed(target.owner)) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§ePlot ownership, bounds, world binding, or merge state changed. Request the transfer again.")
+            return
+        }
+        if (!canTransferRegion(player, source) || !canTransferRegion(player, target)) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+        val plan = when (val planned = PlotTransferPlanner.plan(operation, source, target, sourceWorldId, targetWorldId,
+            sourceWorld?.uid, targetWorld?.uid,
+            sourceHasComponents = components?.listComponents(source.id)?.isNotEmpty() == true,
+            targetHasComponents = components?.listComponents(target.id)?.isNotEmpty() == true)) {
+            is PlotTransferPlanResult.Ready -> planned.plan
+            is PlotTransferPlanResult.Rejected -> {
+                pendingConfirmations.invalidate(actor)
+                player.sendMessage("§eTransfer is no longer valid: ${planned.reason.name.lowercase().replace('_', ' ')}.")
+                return
+            }
+        }
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, pending.stateSignature) == null) {
+            player.sendMessage("§eThe confirmation expired. Request the transfer again.")
+            return
+        }
+        val service = transferService ?: run { player.showOperationFailure("PLOT_TRANSFER_UNAVAILABLE"); return }
+        val world = sourceWorld ?: run { player.showOperationFailure("PLOT_WORLD_UNAVAILABLE"); return }
+        player.sendMessage("§7Starting ${operation.name.lowercase()} for job journal…")
+        service.execute(plan, world, actor, pending.correlationId).whenComplete { result, failure ->
+            onPaperThread(player, "plot-transfer-completion") {
+                when {
+                    failure != null -> player.showOperationFailure(failure.message ?: "PLOT_TRANSFER_FAILED")
+                    result is PlotTransferResult.Completed -> player.sendMessage("§aTransfer completed. Job ${result.jobId}; backups ${result.sourceBackupId} and ${result.targetBackupId}.")
+                    result is PlotTransferResult.Conflict -> player.sendMessage("§cTransfer was denied because another mutation conflicts: ${result.reason}")
+                    result is PlotTransferResult.Failed && result.recoveryRequired -> player.sendMessage("§cTransfer stopped in a partial state. Inspect job ${result.jobId}; backups are retained.")
+                    result is PlotTransferResult.Failed -> player.showOperationFailure(result.reason)
+                }
+            }
+        }
+    }
+
+    private fun canTransferRegion(player: Player, region: Region): Boolean =
+        Permissions.canEditAnyPlot(player) || region.owner == player.uniqueId
+
+    private fun resolveBoundTransferWorld(region: Region): World? {
+        val worldAreas = worldAreaService ?: return null
+        val area = worldAreas.getArea(region.areaId) ?: return null
+        val binding = worldAreas.getWorld(area.worldId)?.platformWorldId ?: return null
+        return org.bukkit.Bukkit.getWorld(binding)?.takeIf { it.uid == binding }
+    }
+
+    private fun actionForTransfer(operation: PlotTransferOperation) = when (operation) {
+        PlotTransferOperation.COPY -> HomeClaimOperationActions.REGION_COPY
+        PlotTransferOperation.MOVE -> HomeClaimOperationActions.REGION_MOVE
+        PlotTransferOperation.SWAP -> HomeClaimOperationActions.REGION_SWAP
+    }
+
+    private fun transferStateSignature(
+        source: Region, target: Region,
+        sourceWorldId: systems.diath.homeclaim.core.model.WorldId?,
+        targetWorldId: systems.diath.homeclaim.core.model.WorldId?,
+        sourcePaperId: UUID?, targetPaperId: UUID?
+    ): String = listOf(
+        source.id.value, source.owner, source.areaId.value, source.bounds, source.mergeGroupId?.value,
+        source.roles.trusted.sortedBy(UUID::toString), source.roles.members.sortedBy(UUID::toString), source.roles.banned.sortedBy(UUID::toString),
+        source.flags.toSortedMap(compareBy { it.value }), source.limits.toSortedMap(compareBy { it.value }), source.metadata.toSortedMap(),
+        source.home, source.price,
+        target.id.value, target.owner, target.areaId.value, target.bounds, target.mergeGroupId?.value,
+        target.roles.trusted.sortedBy(UUID::toString), target.roles.members.sortedBy(UUID::toString), target.roles.banned.sortedBy(UUID::toString),
+        target.flags.toSortedMap(compareBy { it.value }), target.limits.toSortedMap(compareBy { it.value }), target.metadata.toSortedMap(),
+        target.home, target.price,
+        sourceWorldId?.value, targetWorldId?.value, sourcePaperId, targetPaperId
+    ).joinToString("|")
 
     private fun confirmUnclaim(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
         val id = pending.targetSignature.removePrefix("region:").let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
@@ -1414,6 +1596,7 @@ class PlotCommand(
                 player.sendMessage("§7Correlation: §f${record.correlationId}")
                 player.sendMessage("§7Created: §f${record.createdAt}  §7Started: §f${record.startedAt ?: "not started"}")
                 player.sendMessage("§7Updated: §f${record.updatedAt}  §7Finished: §f${record.completedAt ?: "not finished"}")
+                record.details?.let { player.sendMessage("§7Operation details: §f${it.replace("\n", " | ")}") }
                 record.error?.let { player.sendMessage("§cError: §f$it") }
                 if (record.status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
                     player.sendMessage("§eMutation side: §f${record.recoverySideDescription()}")
@@ -1722,6 +1905,10 @@ class PlotCommand(
         player.sendMessage("§7/plot delete - Release an unmerged plot after confirmation")
         player.sendMessage("§7/plot biome <biome> - Change the biome of your plot")
         player.sendMessage("§7/plot rate <1-5> - Rate another player's unmerged plot")
+        player.sendMessage("§7/plot backup list - List backups for this plot")
+        player.sendMessage("§7/plot restore <backup-uuid> - Restore a backup after confirmation")
+        player.sendMessage("§7/plot copy|move|swap <target-region-uuid> - Transfer blocks from this plot after confirmation")
+        player.sendMessage("§8Target UUID is shown by /plot info. Transfer requires same Area/world, equal bounds, and unmerged plots without Components.")
         player.sendMessage(i18n.msg("plot.help_alias"))
         player.sendMessage(i18n.msg("plot.help_description"))
         player.sendMessage("§7/plot jobs status [world] - Show queued plot jobs")

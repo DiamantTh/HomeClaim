@@ -52,6 +52,7 @@ class PaperPlotBackupService(
     }
     private val capturesByRegion = ConcurrentHashMap<RegionId, CaptureTask>()
     private val restores = ConcurrentHashMap<UUID, RestoreTask>()
+    private val applies = ConcurrentHashMap.newKeySet<ApplyTask>()
     private val closed = AtomicBoolean(false)
 
     fun listBackups(regionId: RegionId, limit: Int = 10): CompletableFuture<List<PlotBackupRecord>> = async {
@@ -59,6 +60,14 @@ class PaperPlotBackupService(
     }
 
     fun findBackup(id: UUID): CompletableFuture<PlotBackupRecord?> = async { index.find(id) }
+
+    /** Rechecks a completed snapshot's manifest and payload before a multi-snapshot mutation starts. */
+    fun validateReadyBackup(id: UUID): CompletableFuture<PlotBackupRecord> = async {
+        val record = index.find(id) ?: throw IllegalArgumentException("Backup $id was not found")
+        require(record.status == PlotBackupStatus.READY) { "Backup $id is not READY" }
+        PlotBackupFormat.validate(backupFile(record), record)
+        record
+    }
 
     /** Starts a pre-reset backup. Completion is delivered on Paper's server thread. */
     fun createBeforeReset(
@@ -69,6 +78,7 @@ class PaperPlotBackupService(
         actor: ActionActor,
         correlationId: CorrelationId,
         cause: String,
+        backupId: UUID = UUID.randomUUID(),
         onComplete: (Result<PlotBackupRecord>) -> Unit
     ): Boolean {
         if (closed.get() || capturesByRegion.containsKey(region.id)) return false
@@ -77,7 +87,7 @@ class PaperPlotBackupService(
         val count = runCatching { PlotBackupFormat.blockCount(bounds) }.getOrElse { return false }
         if (minY < world.minHeight || maxY >= world.maxHeight) return false
 
-        val id = UUID.randomUUID()
+        val id = backupId
         val record = PlotBackupRecord(
             id = id,
             correlationId = correlationId,
@@ -119,6 +129,219 @@ class PaperPlotBackupService(
             return false
         }
         return true
+    }
+
+    /** Creates a durable snapshot for a transfer while leaving mutation ownership to its caller. */
+    fun createSnapshot(
+        region: Region,
+        world: World,
+        actor: ActionActor,
+        correlationId: CorrelationId,
+        cause: String,
+        backupId: UUID = UUID.randomUUID()
+    ): CompletableFuture<PlotBackupRecord> {
+        val result = CompletableFuture<PlotBackupRecord>()
+        val minY = world.minHeight
+        val maxY = world.maxHeight - 1
+        val accepted = createBeforeReset(region, world, minY, maxY, actor, correlationId, cause, backupId) { backup ->
+            backup.fold(result::complete) { error -> result.completeExceptionally(error) }
+        }
+        if (!accepted) result.completeExceptionally(IllegalStateException("Backup capture could not be started for ${region.id}"))
+        return result
+    }
+
+    /** Applies a validated source snapshot to an equal-sized target; reservation and journaling belong to the transfer operation. */
+    fun applyBackupToTarget(
+        backupId: UUID,
+        source: Region,
+        target: Region,
+        world: World,
+        expectedWorldId: systems.diath.homeclaim.core.model.WorldId,
+        correlationId: CorrelationId,
+        onProgress: ((Int) -> Unit)? = null
+    ): CompletableFuture<Int> {
+        val result = CompletableFuture<Int>()
+        // Read Paper properties while called from the server thread; the worker only retains immutable values.
+        val paperWorldId = world.uid
+        val minHeight = world.minHeight
+        val maxHeight = world.maxHeight
+        val task = ApplyTask(backupId, source, target, world, paperWorldId, minHeight, maxHeight, correlationId, result, onProgress)
+        if (closed.get()) return CompletableFuture.failedFuture(IllegalStateException("Backup service is shutting down"))
+        applies += task
+        result.whenComplete { _, _ -> applies.remove(task) }
+        try {
+            io.execute {
+                try {
+                    val record = index.find(backupId) ?: throw IllegalArgumentException("Transfer backup was not found")
+                    require(record.status == PlotBackupStatus.READY) { "Transfer backup is not READY" }
+                    val sourceWorldId = worldAreaService.getArea(source.areaId)?.worldId
+                        ?: throw IllegalStateException("Source Area no longer exists")
+                    val targetWorldId = worldAreaService.getArea(target.areaId)?.worldId
+                        ?: throw IllegalStateException("Target Area no longer exists")
+                    require(record.regionId == source.id && record.areaId == source.areaId) { "Backup is not the declared source plot snapshot" }
+                    require(record.worldId == expectedWorldId && sourceWorldId == expectedWorldId && targetWorldId == expectedWorldId) {
+                        "Transfer source and target must remain in the same HomeClaim WorldId"
+                    }
+                    require(record.paperWorldId == paperWorldId) { "Transfer snapshot belongs to another Paper world binding" }
+                    val sourceSize = plotDimensions(source)
+                    val targetSize = plotDimensions(target)
+                    require(sourceSize == targetSize) { "Transfer source and target dimensions differ" }
+                    require(record.bounds.minX == source.bounds.minX && record.bounds.maxX == source.bounds.maxX &&
+                        record.bounds.minZ == source.bounds.minZ && record.bounds.maxZ == source.bounds.maxZ) {
+                        "Source bounds changed after its snapshot was created"
+                    }
+                    require(record.bounds.minY >= minHeight && record.bounds.maxY < maxHeight) {
+                        "Snapshot height range is outside the currently loaded world"
+                    }
+                    val targetBounds = Bounds(target.bounds.minX, target.bounds.maxX, record.bounds.minY, record.bounds.maxY,
+                        target.bounds.minZ, target.bounds.maxZ)
+                    require(PlotBackupFormat.blockCount(targetBounds) == record.blockCount) { "Transfer snapshot volume does not match the target" }
+                    val file = backupFile(record)
+                    task.file = file
+                    task.header = PlotBackupFormat.validate(file, record)
+                    task.input = PlotBackupFormat.openPayload(file, requireNotNull(task.header))
+                    io.execute { runOnServer { applyTransferBatch(task, targetBounds) } }
+                } catch (failure: Throwable) {
+                    result.completeExceptionally(failure)
+                }
+            }
+        } catch (failure: Throwable) {
+            result.completeExceptionally(failure)
+        }
+        return result
+    }
+
+    private fun applyTransferBatch(task: ApplyTask, targetBounds: Bounds) {
+        if (task.completed.get()) return
+        try {
+            val record = requireNotNull(task.header).record
+            val remaining = record.blockCount - task.applied
+            if (remaining == 0L) {
+                if (!task.verifying) {
+                    task.verifying = true
+                    io.execute {
+                        try {
+                            task.input?.close()
+                            task.input = PlotBackupFormat.openPayload(task.file!!, task.header!!)
+                            task.applied = 0
+                            runOnServer { verifyTransferBatch(task, targetBounds) }
+                        } catch (failure: Throwable) {
+                            runOnServer { failApply(task, failure) }
+                        }
+                    }
+                } else {
+                    task.input?.close()
+                    if (task.completed.compareAndSet(false, true)) task.result.complete(task.applied)
+                }
+                return
+            }
+            val batchSize = minOf(RESTORE_BATCH_BLOCKS.toLong(), remaining).toInt()
+            io.execute {
+                try {
+                    val batch = PlotBackupFormat.readBatch(requireNotNull(task.input), record.bounds, batchSize)
+                    runOnServer {
+                        if (task.completed.get()) return@runOnServer
+                        try {
+                            val dx = targetBounds.minX - record.bounds.minX
+                            val dz = targetBounds.minZ - record.bounds.minZ
+                            for (snapshot in batch) {
+                                val x = Math.addExact(snapshot.x, dx)
+                                val z = Math.addExact(snapshot.z, dz)
+                                val block = task.world.getBlockAt(x, snapshot.y, z)
+                                block.setBlockData(Bukkit.createBlockData(snapshot.blockData), false)
+                                task.applied++
+                                task.onProgress?.invoke(task.applied)
+                                val items = snapshot.inventoryItems ?: continue
+                                val state = block.state
+                                require(state is Container) { "Source container does not match the restored block at $x,${snapshot.y},$z" }
+                                val inventory = state.snapshotInventory
+                                require(inventory.size == items.size) { "Container size changed at $x,${snapshot.y},$z" }
+                                inventory.contents = items.map { bytes -> bytes?.let(ItemStack::deserializeBytes) }.toTypedArray()
+                                check(state.update(true, false)) { "Could not apply transferred container at $x,${snapshot.y},$z" }
+                            }
+                            applyTransferBatch(task, targetBounds)
+                        } catch (failure: Throwable) {
+                            failApply(task, failure)
+                        }
+                    }
+                } catch (failure: Throwable) {
+                    runOnServer { failApply(task, failure) }
+                }
+            }
+        } catch (failure: Throwable) {
+            failApply(task, failure)
+        }
+    }
+
+    private fun verifyTransferBatch(task: ApplyTask, targetBounds: Bounds) {
+        if (task.completed.get()) return
+        try {
+            val record = requireNotNull(task.header).record
+            val remaining = record.blockCount - task.applied
+            if (remaining == 0L) {
+                task.input?.close()
+                if (task.completed.compareAndSet(false, true)) task.result.complete(task.applied)
+                return
+            }
+            val count = minOf(RESTORE_BATCH_BLOCKS.toLong(), remaining).toInt()
+            io.execute {
+                try {
+                    val expected = PlotBackupFormat.readBatch(requireNotNull(task.input), record.bounds, count)
+                    runOnServer {
+                        if (task.completed.get()) return@runOnServer
+                        try {
+                            val dx = targetBounds.minX - record.bounds.minX
+                            val dz = targetBounds.minZ - record.bounds.minZ
+                            expected.forEach { snapshot ->
+                                val x = Math.addExact(snapshot.x, dx)
+                                val z = Math.addExact(snapshot.z, dz)
+                                val block = task.world.getBlockAt(x, snapshot.y, z)
+                                check(block.blockData.asString == snapshot.blockData) { "Transferred block validation failed at $x,${snapshot.y},$z" }
+                                val items = snapshot.inventoryItems ?: return@forEach
+                                val state = block.state
+                                require(state is Container) { "Transferred container is missing at $x,${snapshot.y},$z" }
+                                val contents = state.snapshotInventory.contents
+                                require(contents.size == items.size) { "Transferred container size changed at $x,${snapshot.y},$z" }
+                                items.indices.forEach { index ->
+                                    val actual = contents[index]?.takeUnless { it.type.isAir }?.serializeAsBytes()
+                                    val wanted = items[index]
+                                    check(actual.contentEqualsNullable(wanted)) { "Transferred container contents differ at $x,${snapshot.y},$z slot $index" }
+                                }
+                            }
+                            task.applied += expected.size
+                            applyTransferBatch(task, targetBounds)
+                        } catch (failure: Throwable) {
+                            failApply(task, failure)
+                        }
+                    }
+                } catch (failure: Throwable) {
+                    runOnServer { failApply(task, failure) }
+                }
+            }
+        } catch (failure: Throwable) {
+            failApply(task, failure)
+        }
+    }
+
+    private fun failApply(task: ApplyTask, failure: Throwable) {
+        if (!task.completed.compareAndSet(false, true)) return
+        runCatching { task.input?.close() }
+        val decorated = if (task.applied > 0) IllegalStateException(
+            "Transfer apply partially changed ${task.applied} blocks; recovery required", failure
+        ) else failure
+        task.result.completeExceptionally(decorated)
+    }
+
+    private fun plotDimensions(region: Region): Triple<Long, Long, Long> = Triple(
+        region.bounds.maxX.toLong() - region.bounds.minX + 1,
+        region.bounds.maxY.toLong() - region.bounds.minY + 1,
+        region.bounds.maxZ.toLong() - region.bounds.minZ + 1
+    )
+
+    private fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean = when {
+        this == null -> other == null
+        other == null -> false
+        else -> java.security.MessageDigest.isEqual(this, other)
     }
 
     /** Validates and restores only to the exact originating region and Paper world. */
@@ -212,6 +435,7 @@ class PaperPlotBackupService(
         restores.values.toList().forEach { task ->
             finishRestore(task, IllegalStateException("Restore interrupted by plugin shutdown"))
         }
+        applies.toList().forEach { task -> failApply(task, IllegalStateException("Transfer snapshot application interrupted by plugin shutdown")) }
         io.shutdown()
         runCatching { if (!io.awaitTermination(5, TimeUnit.SECONDS)) io.shutdownNow() }
     }
@@ -513,6 +737,26 @@ class PaperPlotBackupService(
         @Volatile var job: PlotMutationJobRecord? = null
         @Volatile var applied: Int = 0
         @Volatile var scheduled: BukkitTask? = null
+    }
+
+    private inner class ApplyTask(
+        val backupId: UUID,
+        val source: Region,
+        val target: Region,
+        val world: World,
+        val paperWorldId: UUID,
+        val minHeight: Int,
+        val maxHeight: Int,
+        val correlationId: CorrelationId,
+        val result: CompletableFuture<Int>,
+        val onProgress: ((Int) -> Unit)?,
+        val completed: AtomicBoolean = AtomicBoolean()
+    ) {
+        @Volatile var header: PlotBackupFormat.Header? = null
+        @Volatile var file: Path? = null
+        @Volatile var input: java.io.DataInputStream? = null
+        @Volatile var applied: Int = 0
+        @Volatile var verifying: Boolean = false
     }
 
     companion object {

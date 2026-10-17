@@ -107,7 +107,7 @@ class RegionMutationConflictCoordinator(
     }
 }
 
-enum class RegionMutationOperation { MERGE, UNLINK, RESET, RESTORE, BIOME, UNCLAIM }
+enum class RegionMutationOperation { MERGE, UNLINK, RESET, RESTORE, COPY, MOVE, SWAP, BIOME, UNCLAIM }
 
 data class ActiveReservation(
     val id: UUID,

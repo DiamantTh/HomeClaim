@@ -31,6 +31,9 @@ class PaperCommandTreesTest {
         assertEquals(1, dispatcher.execute("plot confirm", source))
         assertEquals(1, dispatcher.execute("plot biome minecraft:plains", source))
         assertEquals(1, dispatcher.execute("plot rate 5", source))
+        assertEquals(1, dispatcher.execute("plot copy 12345678-1234-1234-1234-123456789abc", source))
+        assertEquals(1, dispatcher.execute("plot move 12345678-1234-1234-1234-123456789abc", source))
+        assertEquals(1, dispatcher.execute("plot swap 12345678-1234-1234-1234-123456789abc", source))
         assertEquals(
             listOf(
                 "plot" to listOf("merge", "north"),
@@ -42,6 +45,9 @@ class PaperCommandTreesTest {
                 , "plot" to listOf("confirm")
                 , "plot" to listOf("biome", "minecraft:plains")
                 , "plot" to listOf("rate", "5")
+                , "plot" to listOf("copy", "12345678-1234-1234-1234-123456789abc")
+                , "plot" to listOf("move", "12345678-1234-1234-1234-123456789abc")
+                , "plot" to listOf("swap", "12345678-1234-1234-1234-123456789abc")
             ),
             calls
         )

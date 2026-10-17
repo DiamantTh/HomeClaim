@@ -35,7 +35,8 @@ data class PlotMutationJobRecord(
     val createdAt: Instant = Instant.now(),
     val startedAt: Instant? = null,
     val updatedAt: Instant = createdAt,
-    val completedAt: Instant? = null
+    val completedAt: Instant? = null,
+    val details: String? = null
 )
 
 /** Persistent operational journal for long-running world mutations. */
@@ -43,6 +44,7 @@ interface PlotMutationJobStore {
     fun create(record: PlotMutationJobRecord)
     fun markRunning(id: UUID)
     fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int)
+    fun updateDetails(id: UUID, details: String) = Unit
     fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String? = null)
     fun markInterruptedAsRecoveryRequired(): Int
     /**
@@ -59,8 +61,8 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             INSERT INTO plot_mutation_jobs (
                 id, correlation_id, operation, world_id, area_id, world_name, region_ids,
                 backend, status, completed_units, total_units, error, created_at, started_at,
-                updated_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at, completed_at, details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
         dataSource.connection.use { connection ->
             connection.prepareStatement(sql).use { statement ->
@@ -80,6 +82,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.setTimestamp(14, record.startedAt?.let(Timestamp::from))
                 statement.setTimestamp(15, Timestamp.from(record.updatedAt))
                 statement.setTimestamp(16, record.completedAt?.let(Timestamp::from))
+                statement.setString(17, record.details)
                 statement.executeUpdate()
             }
         }
@@ -100,6 +103,14 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             SET completed_units = ?, total_units = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = ?
         """.trimIndent(), completedUnits, totalUnits, id, PlotMutationJobStatus.RUNNING.name)
+    }
+
+    override fun updateDetails(id: UUID, details: String) {
+        require(details.length <= MAX_DETAILS_LENGTH)
+        update("""
+            UPDATE plot_mutation_jobs SET details = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status IN (?, ?)
+        """.trimIndent(), details, id, PlotMutationJobStatus.QUEUED.name, PlotMutationJobStatus.RUNNING.name)
     }
 
     override fun finish(
@@ -144,7 +155,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
         connection.prepareStatement("""
             SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
                    world_id, status, completed_units, total_units, error, created_at, started_at,
-                   updated_at, completed_at
+                   updated_at, completed_at, details
             FROM plot_mutation_jobs
             WHERE id = ?
         """.trimIndent()).use { statement ->
@@ -162,7 +173,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
                        world_id,
                        status, completed_units, total_units, error, created_at, started_at,
-                       updated_at, completed_at
+                       updated_at, completed_at, details
                 FROM plot_mutation_jobs
                 WHERE status = ?
                 ORDER BY created_at DESC, id DESC
@@ -201,7 +212,8 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             createdAt = getTimestamp("created_at").toInstant(),
             startedAt = getTimestamp("started_at")?.toInstant(),
             updatedAt = getTimestamp("updated_at").toInstant(),
-            completedAt = getTimestamp("completed_at")?.toInstant()
+            completedAt = getTimestamp("completed_at")?.toInstant(),
+            details = getString("details")
         )
     }.getOrNull()
 
@@ -213,5 +225,9 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 check(updated == 1) { "Mutation job state update affected $updated rows" }
             }
         }
+    }
+
+    private companion object {
+        const val MAX_DETAILS_LENGTH = 8192
     }
 }

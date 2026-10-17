@@ -31,6 +31,12 @@ class DatabaseRuntimeTest {
                 }
                 requiredTables.forEach { assertTrue(it in found, "Missing initial-schema table: $it") }
 
+                val jobColumns = connection.metaData.getColumns(null, null, "plot_mutation_jobs", "%")
+                val foundJobColumns = buildSet {
+                    while (jobColumns.next()) add(jobColumns.getString("COLUMN_NAME").lowercase())
+                }
+                assertTrue("details" in foundJobColumns, "Mutation job details column is missing")
+
                 connection.createStatement().use { statement ->
                     statement.executeQuery("SELECT area_id, price, home_x, home_y, home_z, home_yaw, home_pitch FROM regions LIMIT 0").use {
                         assertNotNull(it.metaData)

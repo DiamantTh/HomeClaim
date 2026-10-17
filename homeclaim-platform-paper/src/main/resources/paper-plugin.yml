@@ -115,6 +115,9 @@ permissions:
   homeclaim.plot.reset:
     description: Allows queueing a plot reset job
     default: true
+  homeclaim.plot.transfer:
+    description: Allows requesting plot world-state copy, move, or swap operations
+    default: true
   homeclaim.plot.alias:
     description: Allows setting/clearing plot alias on current plot
     default: true

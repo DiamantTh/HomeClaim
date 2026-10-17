@@ -315,10 +315,12 @@ class DatabaseDialectRuntimeTest {
                     regionIds = listOf(firstId),
                     backend = "runtime-test",
                     status = PlotMutationJobStatus.QUEUED,
-                    totalUnits = 10
+                    totalUnits = 10,
+                    details = "format=homeclaim-transfer-v1\noperation=COPY\nphase=BACKING_UP"
                 )
             )
             jobStore.markRunning(jobId)
+            jobStore.updateDetails(jobId, "format=homeclaim-transfer-v1\noperation=COPY\nphase=APPLYING_TARGET")
             jobStore.updateProgress(jobId, 3, 10)
             assertEquals(1, jobStore.markInterruptedAsRecoveryRequired())
             val interruptedJob = jobStore.findRecoveryRequired().single { it.id == jobId }
@@ -328,6 +330,7 @@ class DatabaseDialectRuntimeTest {
             assertEquals(jobCorrelation, interruptedJob.correlationId)
             assertEquals(3, interruptedJob.completedUnits)
             assertEquals(10, interruptedJob.totalUnits)
+            assertTrue(interruptedJob.details?.contains("phase=APPLYING_TARGET") == true)
             assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, interruptedJob.status)
             assertEquals(0, jobStore.markInterruptedAsRecoveryRequired())
 

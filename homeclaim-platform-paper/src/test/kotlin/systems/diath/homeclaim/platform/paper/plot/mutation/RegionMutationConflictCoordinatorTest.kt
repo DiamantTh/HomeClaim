@@ -37,6 +37,23 @@ class RegionMutationConflictCoordinatorTest {
     }
 
     @Test
+    fun `transfer reserves both plots and blocks inverse transfers and resets`() {
+        val coordinator = RegionMutationConflictCoordinator()
+        val a = RegionId(UUID.randomUUID())
+        val b = RegionId(UUID.randomUUID())
+        val transfer = assertInstanceOf(ReservationAttempt.Acquired::class.java,
+            coordinator.reserve(RegionMutationOperation.SWAP, listOf(a, b)))
+
+        assertInstanceOf(ReservationAttempt.Conflict::class.java,
+            coordinator.reserve(RegionMutationOperation.MOVE, listOf(b, a)))
+        assertInstanceOf(ReservationAttempt.Conflict::class.java,
+            coordinator.reserve(RegionMutationOperation.RESET, listOf(a)))
+        transfer.lease.close()
+        assertInstanceOf(ReservationAttempt.Acquired::class.java,
+            coordinator.reserve(RegionMutationOperation.COPY, listOf(b, a)))
+    }
+
+    @Test
     fun `recovery required job blocks a new destructive mutation without creating runtime lock`() {
         val region = RegionId(UUID.randomUUID())
         val store = object : PlotMutationJobStore {
