@@ -43,6 +43,8 @@ object HomeClaimOperationActions {
     val REGION_MERGE = ActionKey("homeclaim:region_merge")
     val REGION_UNLINK = ActionKey("homeclaim:region_unlink")
     val REGION_RESET = ActionKey("homeclaim:region_reset")
+    val REGION_BACKUP_CREATE = ActionKey("homeclaim:region_backup_create")
+    val REGION_RESTORE = ActionKey("homeclaim:region_restore")
     val REGION_HOME_SET = ActionKey("homeclaim:region_home_set")
     val REGION_UNCLAIM = ActionKey("homeclaim:region_unclaim")
     val REGION_BIOME_CHANGE = ActionKey("homeclaim:region_biome_change")

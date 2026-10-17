@@ -15,8 +15,12 @@ class PendingConfirmationStore(private val clock: Clock = Clock.systemUTC()) {
     fun create(actor: ActionActor, operation: ActionKey, targetSignature: String, stateSignature: String,
                lifetime: Duration = Duration.ofSeconds(30), correlationId: CorrelationId = CorrelationId.newId()): PendingConfirmation {
         require(!lifetime.isNegative && !lifetime.isZero) { "Confirmation lifetime must be positive" }
+        pruneExpired()
         val value = PendingConfirmation(actor.stableId ?: actor.kind, operation, targetSignature, stateSignature,
             clock.instant(), clock.instant().plus(lifetime), correlationId)
+        if (pending.size >= MAX_PENDING_ACTORS) {
+            pending.entries.minByOrNull { it.value.expiresAt }?.let { pending.remove(it.key, it.value) }
+        }
         pending[actorKey(actor)] = value
         return value
     }
@@ -50,7 +54,14 @@ class PendingConfirmationStore(private val clock: Clock = Clock.systemUTC()) {
 
     fun invalidate(actor: ActionActor) { pending.remove(actorKey(actor)) }
 
+    private fun pruneExpired() {
+        val now = clock.instant()
+        pending.forEach { (key, value) -> if (value.expiresAt <= now) pending.remove(key, value) }
+    }
+
     private fun actorKey(actor: ActionActor): String = "${actor.kind}:${actor.stableId ?: actor.kind}"
+
+    private companion object { const val MAX_PENDING_ACTORS = 4096 }
 }
 
 data class PendingConfirmation(

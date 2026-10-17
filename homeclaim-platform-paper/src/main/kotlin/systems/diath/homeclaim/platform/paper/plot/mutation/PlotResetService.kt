@@ -3,6 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import systems.diath.homeclaim.core.mutation.MutationJobInfo
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.policy.CorrelationId
+import systems.diath.homeclaim.core.policy.ActionActor
 
 /**
  * Separate, potentially heavier reset path for restoring a plot's interior.
@@ -35,6 +36,14 @@ interface PlotResetService {
         if (queued) onComplete(PlotResetCompletion(PlotResetCompletionStatus.COMPLETED, 0, false))
         return queued
     }
+
+    fun queueReset(
+        region: Region,
+        reason: PlotResetReason,
+        correlationId: CorrelationId,
+        actor: ActionActor,
+        onComplete: (PlotResetCompletion) -> Unit
+    ): Boolean = queueReset(region, reason, correlationId, onComplete)
 
     fun cancelPendingJobs(worldName: String? = null): Int = 0
 

@@ -37,6 +37,7 @@ import systems.diath.homeclaim.platform.paper.gui.GuiManager
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationService
 import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.persistentJobStatus
@@ -44,6 +45,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatu
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobRecord
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore
 import systems.diath.homeclaim.core.policy.CorrelationId
+import systems.diath.homeclaim.core.policy.ActionActor
 import java.time.Instant
 import systems.diath.homeclaim.platform.paper.util.CommandRateLimiter
 import java.util.UUID
@@ -105,6 +107,41 @@ class PlotCommandTest {
         )
         assertEquals(1, records.map { it.correlationId }.distinct().size)
         assertEquals("homeclaim:region_claim", records.first().actionKey?.value)
+    }
+
+    @Test
+    fun `reset is not queued until the actor confirms the same current plot`() {
+        val regionService = InMemoryRegionStore()
+        val player = mock(Player::class.java)
+        val world = mock(World::class.java)
+        val actorId = UUID.randomUUID()
+        val region = Region(
+            id = RegionId(UUID.randomUUID()), world = "plots", shape = RegionShape.CUBOID,
+            bounds = Bounds(0, 15, 0, 255, 0, 15), owner = actorId
+        )
+        regionService.createRegion(region)
+        doReturn(false).`when`(player).isOp
+        doReturn(actorId).`when`(player).uniqueId
+        doReturn(true).`when`(player).hasPermission(anyString())
+        doReturn(world).`when`(player).world
+        doReturn(Location(world, 4.0, 70.0, 4.0)).`when`(player).location
+        doReturn("plots").`when`(world).name
+        doReturn(UUID.randomUUID()).`when`(world).uid
+        val resets = mock(PlotResetService::class.java)
+        val command = PlotCommand(regionService, mock(GuiManager::class.java), null, plotResetService = resets)
+
+        command.execute(player, arrayOf("reset"))
+        assertTrue(Mockito.mockingDetails(resets).invocations.none { it.method.name == "queueReset" })
+
+        command.execute(player, arrayOf("reset", "confirm"))
+        val queued = Mockito.mockingDetails(resets).invocations.any { invocation ->
+            invocation.method.name.startsWith("queueReset") && invocation.arguments.getOrNull(0) == region &&
+                invocation.arguments.getOrNull(1) == PlotResetReason.MANUAL && invocation.arguments.getOrNull(3) == ActionActor.Player(actorId)
+        }
+        val messages = Mockito.mockingDetails(player).invocations
+            .filter { it.method.name == "sendMessage" }
+            .map { it.arguments.firstOrNull() }
+        assertTrue(queued, "reset invocations=${Mockito.mockingDetails(resets).invocations}; messages=$messages")
     }
 
     @Test
@@ -279,7 +316,8 @@ class PlotCommandTest {
     fun `merge authorization audit failure releases reservation before any world mutation`() {
         val ownerId = UUID.randomUUID()
         val regions = mergedPair(ownerId)
-        val player = mergePlayer(mock(World::class.java), ownerId)
+        val world = mock(World::class.java)
+        val player = mergePlayer(world, ownerId)
         val failAllowedAuditOnce = AtomicBoolean(true)
         val auditRecords = mutableListOf<AuditEntry>()
         val auditService = object : AuditService {
@@ -311,11 +349,25 @@ class PlotCommandTest {
 
         assertEquals(0, mutationCalls.get(), "a merge whose ALLOWED audit cannot be written must stop before changing the world")
         assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
-        assertTrue(auditRecords.any { it.status == AuditStatus.FAILED })
+        val firstAttemptMessages = Mockito.mockingDetails(player).invocations
+            .filter { it.method.name == "sendMessage" }
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(
+            auditRecords.any { it.status == AuditStatus.FAILED },
+            "expected terminal failed audit after ALLOWED sink failure; statuses=${auditRecords.map { it.status }}, messages=$firstAttemptMessages"
+        )
 
-        command.execute(player, arrayOf("merge"))
+        val retryPlayer = mergePlayer(world, ownerId)
+        command.execute(retryPlayer, arrayOf("merge"))
 
-        assertEquals(1, mutationCalls.get(), "the failed preflight must release its reservation so the next request can proceed")
+        val finalMessages = Mockito.mockingDetails(player).invocations
+            .filter { it.method.name == "sendMessage" }
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertEquals(
+            1,
+            mutationCalls.get(),
+            "the failed preflight must release its reservation so the next request can proceed; audit=${auditRecords.map { it.status to it.correlationId }}, messages=$finalMessages"
+        )
         assertTrue(regions.listAllRegions().all { it.mergeGroupId != null })
         assertEquals(2, auditRecords.map { it.correlationId }.distinct().size)
     }
@@ -534,10 +586,10 @@ class PlotCommandTest {
 
         command.execute(player, arrayOf("merge"))
 
-        assertTrue(worldRestored)
-        assertTrue(backingStore.listAllRegions().all { it.mergeGroupId == null })
         val messages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(worldRestored, "world restoration was not requested; messages=$messages")
+        assertTrue(backingStore.listAllRegions().all { it.mergeGroupId == null })
         assertTrue(messages.any { it.contains("failed", ignoreCase = true) || it.contains("fehlgeschlagen", ignoreCase = true) })
         assertTrue(messages.none { it.contains("group") || it.contains("Gruppe") })
         val auditRecords = Mockito.mockingDetails(auditService).invocations
@@ -579,7 +631,12 @@ class PlotCommandTest {
 
         command.execute(player, arrayOf("unlink"))
 
-        assertTrue(regionService.listAllRegions().all { it.mergeGroupId == null })
+        val unlinkMessages = Mockito.mockingDetails(player).invocations
+            .mapNotNull { it.arguments.firstOrNull() as? String }
+        assertTrue(
+            regionService.listAllRegions().all { it.mergeGroupId == null },
+            "unlink should persist before waiting for world mutation; messages=$unlinkMessages, region=${regionService.listAllRegions()}, location=${player.location}"
+        )
         val preCompletionMessages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
         assertTrue(preCompletionMessages.none { it.contains("unlink", ignoreCase = true) && it.contains("success", ignoreCase = true) })

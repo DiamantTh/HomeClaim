@@ -2,6 +2,7 @@ package systems.diath.homeclaim.platform.paper
 
 import systems.diath.homeclaim.api.EntryForceGrantDto
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionRole
 import systems.diath.homeclaim.core.policy.SimplePolicyService
 import systems.diath.homeclaim.core.service.AuditEntry
@@ -62,6 +63,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         systems.diath.homeclaim.platform.paper.plot.mutation.NoOpPlotResetService
     private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
     private var plotMutationJobStore: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore? = null
+    private var plotBackupService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService? = null
+    private var plotMutationConflicts: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator? = null
     private var biomeMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService? = null
     private var storageType: StorageType = StorageType.JDBC  // SQLite by default
     private var currentStorageConfig: StorageConfig? = null
@@ -133,7 +136,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             unclaimService = services.regionUnclaimService,
             biomeService = services.regionBiomeService,
             ratingService = ratingOperations,
-            biomeMutationService = biomeMutation
+            biomeMutationService = biomeMutation,
+            backupService = plotBackupService,
+            mutationConflicts = plotMutationConflicts ?: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore)
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
             services.zoneService,
@@ -361,6 +366,17 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         plotMutationJobStore = services.dataSource?.let { dataSource ->
             systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore(dataSource)
         }
+        plotMutationConflicts = systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore)
+        plotBackupService = services.dataSource?.let { dataSource -> services.worldAreaService?.let { worldAreas ->
+            systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService(
+                this,
+                systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotBackupIndex(dataSource),
+                worldAreas,
+                requireNotNull(plotMutationJobStore),
+                services.auditService,
+                plotMutationConflicts
+            )
+        } }
         plotMutationService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService(
             this,
             mutationBackend = backend,
@@ -370,14 +386,30 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             this,
             mutationBackend = backend,
             jobStore = plotMutationJobStore,
-            worldAreaService = services.worldAreaService
+            worldAreaService = services.worldAreaService,
+            backupService = plotBackupService,
+            conflicts = plotMutationConflicts
         )
 
         dispatcher.registerListener(
             systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener(
                 services.regionService,
                 plotMutationService,
-                plotResetService
+                plotResetService,
+                deferReset = { region, reason, onComplete ->
+                    runCatching {
+                        server.scheduler.runTask(this, Runnable {
+                            val queued = plotResetService.queueReset(region, reason, onComplete)
+                            if (!queued) onComplete(systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion(
+                                systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus.FAILED,
+                                0,
+                                false,
+                                "Reset was not queued"
+                            ))
+                        })
+                        true
+                    }.getOrDefault(false)
+                }
             ).also { plotMutationEventListener = it }
         )
         server.pluginManager.registerEvents(
@@ -448,6 +480,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             PlayerCleanupManager.cleanupAll(server.onlinePlayers)
             guiManager?.closeAll()
             plotResetService.shutdown()
+            plotBackupService?.shutdown()
             biomeMutationService?.shutdown()
         }
         

@@ -23,7 +23,7 @@ class DatabaseRuntimeTest {
             DriverManager.getConnection(jdbcUrl).use { connection ->
                 val requiredTables = listOf(
                     "worlds", "areas", "regions", "region_roles", "region_flags", "region_limits",
-                    "zones", "components", "region_entry_denies", "plot_ratings", "audit_log"
+                    "zones", "components", "region_entry_denies", "plot_ratings", "audit_log", "plot_backups"
                 )
                 val tables = connection.metaData.getTables(null, null, "%", arrayOf("TABLE"))
                 val found = buildSet {

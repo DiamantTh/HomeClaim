@@ -28,10 +28,23 @@ internal object PaperCommandTrees {
         val root = Commands.literal("plot")
             .executes { context -> dispatch(context.source.sender, "plot", emptyList()) }
 
-        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "reset", "clear", "sethome", "delete", "unclaim", "confirm")
+        listOf("claim", "c", "auto", "a", "info", "i", "list", "l", "gui", "menu", "clear", "sethome", "delete", "unclaim", "confirm")
             .forEach { name ->
                 root.then(Commands.literal(name).executes { context -> dispatch(context.source.sender, "plot", listOf(name)) })
             }
+
+        root.then(Commands.literal("reset")
+            .executes { context -> dispatch(context.source.sender, "plot", listOf("reset")) }
+            .then(Commands.literal("confirm")
+                .executes { context -> dispatch(context.source.sender, "plot", listOf("reset", "confirm")) }))
+
+        root.then(Commands.literal("backup").then(
+            Commands.literal("list").executes { context -> dispatch(context.source.sender, "plot", listOf("backup", "list")) }
+        ))
+        root.then(Commands.literal("restore").then(
+            Commands.argument("backupId", StringArgumentType.word())
+                .executes { context -> dispatch(context.source.sender, "plot", listOf("restore", StringArgumentType.getString(context, "backupId"))) }
+        ))
 
         listOf("home", "h").forEach { name ->
             root.then(Commands.literal(name)

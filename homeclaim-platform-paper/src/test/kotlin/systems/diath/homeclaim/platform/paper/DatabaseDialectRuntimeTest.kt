@@ -19,6 +19,10 @@ import systems.diath.homeclaim.core.store.*
 import systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobRecord
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotBackupIndex
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupRecord
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCompression
 import java.net.ServerSocket
 import java.net.URI
 import java.net.http.HttpClient
@@ -81,6 +85,21 @@ class DatabaseDialectRuntimeTest {
                 .baselineOnMigrate(false)
                 .load()
                 .migrate()
+
+            val backupIndex = JdbcPlotBackupIndex(dataSource)
+            val backup = PlotBackupRecord(
+                id = UUID.randomUUID(), correlationId = CorrelationId.newId(),
+                worldId = WorldId(UUID.randomUUID()), paperWorldId = UUID.randomUUID(),
+                areaId = AreaId(UUID.randomUUID()), regionId = RegionId(UUID.randomUUID()),
+                bounds = Bounds(0, 0, 0, 0, 0, 0), createdByKind = "SYSTEM", createdByRef = "test",
+                cause = "test", status = PlotBackupStatus.CREATING, formatVersion = 1,
+                compression = PlotBackupCompression.NONE, blockCount = 1
+            )
+            backupIndex.create(backup)
+            backupIndex.markReady(backup.id, 32, "a".repeat(64))
+            assertEquals(PlotBackupStatus.READY, backupIndex.find(backup.id)?.status)
+            assertEquals(backup.areaId, backupIndex.find(backup.id)?.areaId)
+            assertEquals(backup.id, backupIndex.list(backup.regionId, 1).single().id)
 
             if (dataSource.connection.use { it.metaData.databaseProductName.equals("PostgreSQL", ignoreCase = true) }) {
                 dataSource.connection.use { connection ->

@@ -1,6 +1,6 @@
 # HomeClaim database support
 
-This page records the database support contract and the runtime checks for the Paper plugin. The pre-release Flyway baseline is still development schema, not a published upgrade history. Until the first release, schema corrections belong in the canonical baseline or dialect-specific repeatables; do not add an artificial `V6`, `V7`, and so on for unreleased states.
+This page records the database support contract and the runtime checks for the Paper plugin. The pre-release Flyway baseline is still development schema, not a published upgrade history. The backup feature adds a small `V3__plot_backups.sql` metadata table while retaining existing V1/V2 databases; this is additive feature schema, not a claim that MySQL is supported. Avoid artificial version history for internal unreleased edits.
 
 ## Support policy
 
@@ -17,7 +17,7 @@ MySQL must not be described as supported based on Connector/J being packaged, co
 
 ## Current schema and dialect implementation
 
-The common pre-release initial schema is `homeclaim-platform-paper/src/main/resources/db/migration/common/V1__init.sql`. It is followed by dialect-specific repeatables where configured. Domain UUID columns use `UUID`, including World/Area identity and references, region/role/component/zone identifiers, and structured audit UUID fields. Opaque resource references and external actor references remain strings because they are not necessarily HomeClaim UUIDs. This keeps a stable domain identity distinct from world names and arbitrary external resource keys.
+The common pre-release initial schema is `homeclaim-platform-paper/src/main/resources/db/migration/common/V1__init.sql`, followed by `V2__plot_homes.sql` and the additive `V3__plot_backups.sql`; dialect-specific repeatables are applied where configured. Backup metadata uses UUID IDs and scope, while payload bytes live under the plugin data directory. Domain UUID columns use `UUID`, including World/Area identity and references, region/role/component/zone identifiers, and structured audit UUID fields. Opaque resource references and external actor references remain strings because they are not necessarily HomeClaim UUIDs. This keeps a stable domain identity distinct from world names and arbitrary external resource keys.
 
 JSON-shaped columns currently use the common `JSON` type. The PostgreSQL path uses a typed JDBC JSON parameter; MariaDB and SQLite bind the serialized text through their JSON-compatible column behavior. No JSONB/GIN index is currently installed: the runtime repositories fetch JSON by relational keys and decode it into snapshots rather than using JSON containment filters. Do not add a JSON index until a concrete query uses it.
 
@@ -42,7 +42,7 @@ The Area/Region lookup has an Area/chunk candidate index and still applies exact
 
 ## Runtime verification
 
-`DatabaseDialectRuntimeTest` exercises fresh Flyway initialization, world/Area resolution, profile persistence, region CRUD and spatial lookup, roles, flags, limits, zone defaults, components, entry-deny, claim and merge, audit correlation, a mutating REST trust request, and reconstruction of runtime repository snapshots from persisted records. The PostgreSQL and MariaDB cases are opt-in and require isolated disposable databases. The SQLite case creates and removes a temporary local database.
+`DatabaseDialectRuntimeTest` exercises fresh Flyway initialization, backup-index create/ready/list/read, world/Area resolution, profile persistence, region CRUD and spatial lookup, roles, flags, limits, zone defaults, components, entry-deny, claim and merge, audit correlation, a mutating REST trust request, and reconstruction of runtime repository snapshots from persisted records. The PostgreSQL and MariaDB cases are opt-in and require isolated disposable databases. The SQLite case creates and removes a temporary local database.
 
 To run the three dialect cases against throwaway databases, provide these variables to the Paper test task:
 
@@ -58,3 +58,5 @@ HOMECLAIM_TEST_MARIADB_PASSWORD
 The external databases must be disposable because Flyway and the test write schema and domain records. Never point these variables at production.
 
 The current local verification for this support-policy change ran the complete runtime exercise on PostgreSQL 17.11, MariaDB 11.4.13, and a fresh SQLite database. It verified successful REST mutation and persisted audit on each, plus persisted-state reload after repository snapshots were recreated. The runtime suite also covers REST `200`, `400`, `401`, `403`, `404`, and a simulated backend `500` response. It did not run MySQL or Paper/Purpur server smoke tests. The current REST routes do not expose claim/merge operations and do not map structured conflict or limit results to `409`/a limit status, so those response cases are not yet available to verify through REST. Record future database version changes and any failures here when runtime support changes.
+
+Step 11's verification ran the backup-index repository and fresh V3 migration on SQLite through `DatabaseDialectRuntimeTest`, then upgraded existing local Paper and Purpur SQLite databases from Flyway V2 to V3 using the distributable plugin JAR. PostgreSQL and MariaDB opt-in URLs were not configured for this step, so the V3 migration has not been reverified on those dialects here. The earlier dialect run above predates the backup table; it is not evidence for the V3 migration on PostgreSQL or MariaDB.

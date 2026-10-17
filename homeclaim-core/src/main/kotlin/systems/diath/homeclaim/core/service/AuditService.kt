@@ -134,6 +134,8 @@ object AuditPolicy {
         HomeClaimOperationActions.REGION_MERGE.value,
         HomeClaimOperationActions.REGION_UNLINK.value,
         HomeClaimOperationActions.REGION_RESET.value,
+        HomeClaimOperationActions.REGION_BACKUP_CREATE.value,
+        HomeClaimOperationActions.REGION_RESTORE.value,
         HomeClaimOperationActions.REGION_HOME_SET.value,
         HomeClaimOperationActions.REGION_UNCLAIM.value,
         HomeClaimOperationActions.REGION_BIOME_CHANGE.value,

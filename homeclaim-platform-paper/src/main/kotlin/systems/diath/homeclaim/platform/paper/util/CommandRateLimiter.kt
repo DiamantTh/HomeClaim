@@ -54,12 +54,16 @@ object CommandRateLimiter {
         val now = System.currentTimeMillis()
         val playerId = player.uniqueId
         val commandLower = command.lowercase()
+        val isConfirmation = commandLower.endsWith("confirm")
         
-        // Check global cooldown first
-        val lastGlobal = globalCooldowns[playerId] ?: 0L
-        val globalRemaining = (lastGlobal + DEFAULT_GLOBAL_COOLDOWN_MS) - now
-        if (globalRemaining > 0) {
-            return false to globalRemaining
+        // A confirmation must remain usable immediately after its warning command.
+        // It still receives its own per-command limit below.
+        if (!isConfirmation) {
+            val lastGlobal = globalCooldowns[playerId] ?: 0L
+            val globalRemaining = (lastGlobal + DEFAULT_GLOBAL_COOLDOWN_MS) - now
+            if (globalRemaining > 0) {
+                return false to globalRemaining
+            }
         }
         
         // Check command-specific cooldown
@@ -78,7 +82,7 @@ object CommandRateLimiter {
         }
         
         // Record this execution
-        globalCooldowns[playerId] = now
+        if (!isConfirmation) globalCooldowns[playerId] = now
         commandMap[playerId] = now
         
         return true to 0L

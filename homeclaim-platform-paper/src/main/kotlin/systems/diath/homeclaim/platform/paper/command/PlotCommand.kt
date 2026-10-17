@@ -62,6 +62,8 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConfli
 import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationOperation
 import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
 import systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
 import org.bukkit.NamespacedKey
 import io.papermc.paper.registry.RegistryAccess
 import io.papermc.paper.registry.RegistryKey
@@ -99,7 +101,8 @@ class PlotCommand(
     private val ratingService: RegionRatingService? = null,
     private val pendingConfirmations: PendingConfirmationStore = PendingConfirmationStore(),
     private val biomeMutationService: PaperBiomeMutationService? = null,
-    private val mutationConflicts: RegionMutationConflictCoordinator = RegionMutationConflictCoordinator(mutationJobStore)
+    private val mutationConflicts: RegionMutationConflictCoordinator = RegionMutationConflictCoordinator(mutationJobStore),
+    private val backupService: PaperPlotBackupService? = null
 ) {
 
     fun execute(sender: CommandSender, args: Array<out String>): Boolean {
@@ -111,7 +114,10 @@ class PlotCommand(
         val subCommand = args.getOrNull(0)?.lowercase() ?: "help"
         
         // Rate limiting check
-        val (allowed, remainingMs) = CommandRateLimiter.checkAndRecord(sender, "plot.$subCommand")
+        val rateLimitCommand = if (args.getOrNull(1)?.equals("confirm", ignoreCase = true) == true) {
+            "$subCommand.confirm"
+        } else subCommand
+        val (allowed, remainingMs) = CommandRateLimiter.checkAndRecord(sender, "plot.$rateLimitCommand")
         if (!allowed) {
             sender.sendMessage(i18n.msg("plot.ratelimit", CommandRateLimiter.getRemainingFormatted(remainingMs)))
             return true
@@ -139,6 +145,14 @@ class PlotCommand(
                 handleDelete(player = sender)
             }
             "confirm" -> handleConfirm(sender)
+            "backup" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RESET)) return true
+                handleBackup(sender, args.getOrNull(1))
+            }
+            "restore" -> {
+                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RESET)) return true
+                handleRestoreRequest(sender, args.getOrNull(1))
+            }
             "biome" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_BIOME)) return true
                 handleBiome(sender, args.getOrNull(1))
@@ -177,7 +191,7 @@ class PlotCommand(
             }
             "reset", "clear" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_RESET)) return true
-                handleReset(sender)
+                handleReset(sender, args.getOrNull(1) == "confirm")
             }
             "jobs", "job" -> {
                 if (!Permissions.checkWithMessage(sender, Permissions.PLOT_JOBS)) return true
@@ -440,24 +454,18 @@ class PlotCommand(
             player.sendMessage("§eThere is nothing to confirm.")
             return
         }
-        if (pending.operation != HomeClaimOperationActions.REGION_UNCLAIM) {
-            player.sendMessage("§eThe pending operation cannot be confirmed by this command.")
-            return
+        when (pending.operation) {
+            HomeClaimOperationActions.REGION_UNCLAIM -> confirmUnclaim(player, actor, pending)
+            HomeClaimOperationActions.REGION_RESET -> confirmReset(player, actor, pending)
+            HomeClaimOperationActions.REGION_RESTORE -> confirmRestore(player, actor, pending)
+            else -> player.sendMessage("§eThe pending operation cannot be confirmed here.")
         }
-        val id = pending.targetSignature.removePrefix("region:").let { raw ->
-            runCatching { RegionId(UUID.fromString(raw)) }.getOrNull()
-        } ?: run {
-            pendingConfirmations.invalidate(actor)
-            player.sendMessage("§cThe pending confirmation is invalid.")
-            return
-        }
-        val region = regionService.getRegionById(id) ?: run {
-            pendingConfirmations.invalidate(actor)
-            player.sendMessage("§eThe plot changed before confirmation. Run /plot delete again.")
-            return
-        }
-        val signature = unclaimStateSignature(region)
-        if (signature != pending.stateSignature) {
+    }
+
+    private fun confirmUnclaim(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
+        val id = pending.targetSignature.removePrefix("region:").let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val region = id?.let(regionService::getRegionById)
+        if (id == null || region == null || unclaimStateSignature(region) != pending.stateSignature) {
             pendingConfirmations.invalidate(actor)
             player.sendMessage("§eThe plot changed before confirmation. Run /plot delete again.")
             return
@@ -468,34 +476,70 @@ class PlotCommand(
             player.sendMessage("§eThe plot now has a conflicting mutation. Run /plot delete again after it is resolved.")
             return
         }
-        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, signature) == null) {
-            player.sendMessage("§eThe confirmation expired. Run /plot delete again.")
-            return
+        val service = unclaimService ?: run { player.showOperationFailure("UNCLAIM_OPERATION_UNAVAILABLE"); return }
+        val request = RegionMutationContext(actor, "paper", "plot_confirm_delete", pending.correlationId)
+            .actionRequest(HomeClaimOperationActions.REGION_UNCLAIM, id, region)
+        val reservation = acquireMutationReservation(RegionMutationOperation.UNCLAIM, listOf(id), region.mergeGroupId, request, player) ?: return
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, pending.stateSignature) == null) {
+            reservation.close(); player.sendMessage("§eThe confirmation expired. Run /plot delete again."); return
         }
-        val service = unclaimService ?: run {
-            player.showOperationFailure("UNCLAIM_OPERATION_UNAVAILABLE")
-            return
-        }
-        val request = RegionMutationContext(
-            actor = actor,
-            platform = "paper",
-            eventName = "plot_confirm_delete",
-            correlationId = pending.correlationId
-        ).actionRequest(HomeClaimOperationActions.REGION_UNCLAIM, id, region)
-        val reservation = acquireMutationReservation(
-            RegionMutationOperation.UNCLAIM, listOf(id), region.mergeGroupId, request, player
-        ) ?: return
         try {
-            val result = service.unclaim(RegionMutationContext(
-                actor = actor,
-                platform = "paper",
-                eventName = "plot_confirm_delete",
-                correlationId = pending.correlationId
-            ), id)
-            if (result.succeeded) player.sendMessage("§aPlot released. World contents were not reset.")
-            else player.showOperationFailure(result.detail)
-        } finally {
-            reservation.close()
+            val result = service.unclaim(RegionMutationContext(actor, "paper", "plot_confirm_delete", pending.correlationId), id)
+            if (result.succeeded) player.sendMessage("§aPlot released. World contents were not reset.") else player.showOperationFailure(result.detail)
+        } finally { reservation.close() }
+    }
+
+    private fun confirmReset(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
+        if (!Permissions.checkWithMessage(player, Permissions.PLOT_RESET)) return
+        val id = pending.targetSignature.removePrefix("region:").let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val region = id?.let(regionService::getRegionById)
+        if (id == null || region == null || currentRegion(player)?.id != id || resetStateSignature(region, player) != pending.stateSignature) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe plot changed or is no longer selected. Run /plot reset again.")
+            return
+        }
+        if (RegionOwnership.isUnclaimed(region.owner) || (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player))) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage(i18n.msg("permission.denied"))
+            return
+        }
+        val request = operationRequest(player, HomeClaimOperationActions.REGION_RESET, region, "plot-reset-confirm", correlationId = pending.correlationId)
+        auditOperation(request, AuditStatus.ATTEMPTED)
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, pending.stateSignature) == null) {
+            player.sendMessage("§eThe confirmation expired. Run /plot reset again."); return
+        }
+        queueReset(player, region, request)
+    }
+
+    private fun confirmRestore(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
+        val match = Regex("^region:([0-9a-fA-F-]{36}):backup:([0-9a-fA-F-]{36})$").matchEntire(pending.targetSignature)
+        val regionId = match?.groupValues?.get(1)?.let { runCatching { RegionId(UUID.fromString(it)) }.getOrNull() }
+        val backupId = match?.groupValues?.get(2)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val region = regionId?.let(regionService::getRegionById)
+        if (region == null || backupId == null || currentRegion(player)?.id != region.id || unclaimStateSignature(region) != pending.stateSignature) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe restore target changed or is no longer selected. Run /plot restore again.")
+            return
+        }
+        if (RegionOwnership.isUnclaimed(region.owner) || (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player))) {
+            pendingConfirmations.invalidate(actor); player.sendMessage(i18n.msg("permission.denied")); return
+        }
+        val world = resolvePaperWorld(region) ?: run { pendingConfirmations.invalidate(actor); player.sendMessage("§cThe original plot world is unavailable."); return }
+        val service = backupService ?: run { player.showOperationFailure("BACKUP_SERVICE_UNAVAILABLE"); return }
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, pending.stateSignature) == null) {
+            player.sendMessage("§eThe confirmation expired. Run /plot restore again."); return
+        }
+        player.sendMessage("§7Validating and restoring backup $backupId…")
+        val restore = runCatching { service.restore(backupId, region, world, actor, pending.correlationId) }
+            .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
+        restore.whenComplete { restored, failure ->
+            onPaperThread(player, "plot-restore-completion") {
+                if (failure == null) {
+                    player.sendMessage("§aRestored ${restored.restoredBlocks} blocks from backup $backupId.")
+                    if (!restored.auditRecorded) player.sendMessage("§eRestore completed, but its terminal audit could not be queued; check server logs.")
+                }
+                else player.showOperationFailure(failure.message ?: "PLOT_RESTORE_FAILED")
+            }
         }
     }
 
@@ -1203,7 +1247,14 @@ class PlotCommand(
         }
     }
 
-    private fun handleReset(player: Player) {
+    private fun handleReset(player: Player, confirm: Boolean = false) {
+        if (confirm) {
+            val actor = ActionActor.Player(player.uniqueId)
+            val pending = pendingConfirmations.peek(actor)
+            if (pending?.operation == HomeClaimOperationActions.REGION_RESET) confirmReset(player, actor, pending)
+            else player.sendMessage("§eThere is no pending plot reset to confirm.")
+            return
+        }
         val region = currentRegion(player) ?: run {
             player.sendMessage(i18n.msg("plot.not_on_plot"))
             return
@@ -1216,16 +1267,30 @@ class PlotCommand(
             player.sendMessage(i18n.msg("permission.denied"))
             return
         }
+        val conflict = mutationConflicts.checkAvailable(listOf(region.id))
+        if (conflict != null) {
+            player.showOperationFailure(conflict.detailCode())
+            player.sendMessage(conflict.playerMessage())
+            return
+        }
+        pendingConfirmations.create(
+            ActionActor.Player(player.uniqueId),
+            HomeClaimOperationActions.REGION_RESET,
+            "region:${region.id.value}",
+            resetStateSignature(region, player)
+        )
+        player.sendMessage("§cReset will change blocks and container contents in plot ${region.id.value}. A persistent backup must be created first.")
+        player.sendMessage("§6Confirm with /plot reset confirm within 30 seconds.")
+    }
 
-        val request = operationRequest(player, HomeClaimOperationActions.REGION_RESET, region, "plot-reset")
-        auditOperation(request, AuditStatus.ATTEMPTED)
-        val reservation = acquireMutationReservation(
-            RegionMutationOperation.RESET, listOf(region.id), region.mergeGroupId, request, player
-        ) ?: return
+    private fun queueReset(
+        player: Player,
+        region: Region,
+        request: ActionRequest
+    ) {
         val queued = runCatching {
-            plotResetService.queueReset(region, PlotResetReason.MANUAL, request.correlationId) { completion ->
-                try {
-                    when (completion.status) {
+            plotResetService.queueReset(region, PlotResetReason.MANUAL, request.correlationId, request.actor) { completion ->
+                when (completion.status) {
                         PlotResetCompletionStatus.COMPLETED -> {
                             auditOperation(request, AuditStatus.COMPLETED)
                             if (player.isOnline) player.sendMessage("§aPlot reset completed.")
@@ -1242,13 +1307,9 @@ class PlotCommand(
                             auditOperation(request, AuditStatus.FAILED, detail)
                             if (player.isOnline) player.sendMessage("§cPlot reset ${completion.status.name.lowercase()}: $state")
                         }
-                    }
-                } finally {
-                    reservation.close()
                 }
             }
         }.getOrElse {
-            reservation.close()
             auditOperation(request, AuditStatus.FAILED, it.message ?: "Reset queue failed")
             player.sendMessage("§cPlot reset failed: ${it.message ?: "unknown error"}")
             return
@@ -1258,9 +1319,73 @@ class PlotCommand(
             auditOperation(request, AuditStatus.ALLOWED)
             player.sendMessage(i18n.msg("plot.reset_queued"))
         } else {
-            reservation.close()
             auditOperation(request, AuditStatus.FAILED, "Reset could not be queued")
             player.sendMessage(i18n.msg("plot.reset_unavailable"))
+        }
+    }
+
+    private fun handleBackup(player: Player, action: String?) {
+        if (action != "list") {
+            player.sendMessage("§cUsage: /plot backup list")
+            return
+        }
+        val region = currentRegion(player) ?: run { player.sendMessage(i18n.msg("plot.not_on_plot")); return }
+        if (RegionOwnership.isUnclaimed(region.owner) || (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player))) {
+            player.sendMessage(i18n.msg("permission.denied")); return
+        }
+        val service = backupService ?: run { player.showOperationFailure("BACKUP_SERVICE_UNAVAILABLE"); return }
+        service.listBackups(region.id).whenComplete { records, failure ->
+            onPaperThread(player, "plot-backup-list") {
+                if (failure != null) {
+                    player.showOperationFailure(failure.message ?: "BACKUP_LIST_FAILED")
+                } else if (records.isEmpty()) {
+                    player.sendMessage("§eNo ready backups exist for this plot.")
+                } else {
+                    player.sendMessage("§6Ready plot backups (newest first):")
+                    records.forEach { record ->
+                        player.sendMessage("§7${record.id} §8${record.createdAt} §7${record.blockCount} blocks §8${record.payloadBytes} bytes")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleRestoreRequest(player: Player, rawBackupId: String?) {
+        val backupId = rawBackupId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: run { player.sendMessage("§cUsage: /plot restore <backup-id>"); return }
+        val region = currentRegion(player) ?: run { player.sendMessage(i18n.msg("plot.not_on_plot")); return }
+        if (RegionOwnership.isUnclaimed(region.owner) || (region.owner != player.uniqueId && !Permissions.canEditAnyPlot(player))) {
+            player.sendMessage(i18n.msg("permission.denied")); return
+        }
+        val service = backupService ?: run { player.showOperationFailure("BACKUP_SERVICE_UNAVAILABLE"); return }
+        service.findBackup(backupId).whenComplete { record, failure ->
+            onPaperThread(player, "plot-restore-preflight") {
+                if (failure != null || record == null) {
+                    player.sendMessage("§eNo backup with that id is available.")
+                    return@onPaperThread
+                }
+                val current = currentRegion(player)
+                if (current?.id != region.id || unclaimStateSignature(current) != unclaimStateSignature(region) ||
+                    RegionOwnership.isUnclaimed(current.owner) || (current.owner != player.uniqueId && !Permissions.canEditAnyPlot(player))) {
+                    player.sendMessage("§eThe plot or your access changed while checking the backup. Try again.")
+                    return@onPaperThread
+                }
+                if (record.status != PlotBackupStatus.READY || record.regionId != region.id || record.areaId != region.areaId) {
+                    player.sendMessage("§cThat backup is not ready for this exact plot.")
+                    return@onPaperThread
+                }
+                val conflict = mutationConflicts.checkAvailable(listOf(region.id))
+                if (conflict != null) {
+                    player.sendMessage(conflict.playerMessage())
+                    return@onPaperThread
+                }
+                val actor = ActionActor.Player(player.uniqueId)
+                val target = "region:${region.id.value}:backup:${backupId}"
+                val correlation = CorrelationId.newId()
+                pendingConfirmations.create(actor, HomeClaimOperationActions.REGION_RESTORE, target, unclaimStateSignature(region), correlationId = correlation)
+                player.sendMessage("§cRestore backup $backupId to its original plot. This changes plot blocks and container contents.")
+                player.sendMessage("§6Confirm with /plot confirm within 30 seconds.")
+            }
         }
     }
 
@@ -1609,7 +1734,8 @@ class PlotCommand(
         actionKey: systems.diath.homeclaim.core.policy.ActionKey,
         region: Region,
         eventName: String,
-        attributes: Map<String, String> = emptyMap()
+        attributes: Map<String, String> = emptyMap(),
+        correlationId: CorrelationId = CorrelationId.newId()
     ): ActionRequest = ActionRequest(
         actor = ActionActor.Player(player.uniqueId),
         actionKey = actionKey,
@@ -1625,7 +1751,7 @@ class PlotCommand(
             playerName = player.name,
             attributes = attributes
         ),
-        correlationId = CorrelationId.newId()
+        correlationId = correlationId
     )
 
     private fun auditOperation(
@@ -1642,6 +1768,7 @@ class PlotCommand(
         region.id.value,
         region.owner,
         region.areaId.value,
+        region.bounds,
         region.mergeGroupId?.value ?: "none",
         region.roles.trusted.sorted().joinToString(),
         region.roles.members.sorted().joinToString(),
@@ -1652,6 +1779,12 @@ class PlotCommand(
         region.metadata["description"] ?: "",
         region.flags.toSortedMap(compareBy { it.value }).entries.joinToString(),
         region.limits.toSortedMap(compareBy { it.value }).entries.joinToString()
+    ).joinToString("|")
+
+    private fun resetStateSignature(region: Region, player: Player): String = listOf(
+        unclaimStateSignature(region),
+        player.world.uid,
+        worldAreaService?.getArea(region.areaId)?.worldId?.value
     ).joinToString("|")
     
     private enum class MergeDirection {
