@@ -17,6 +17,7 @@ dependencies {
     implementation(project(":homeclaim-core"))
     implementation(project(":homeclaim-liftlink"))
     implementation(project(":homeclaim-api"))
+    implementation(project(":homeclaim-webux"))
     compileOnly("io.papermc.paper:paper-api:26.3.build.+")
     testImplementation("io.papermc.paper:paper-api:26.3.build.+")
     implementation("org.flywaydb:flyway-core:10.10.0")

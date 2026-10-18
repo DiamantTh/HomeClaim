@@ -21,6 +21,12 @@ rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
 
+[homeclaim.webux]
+# The read-oriented WebUX server is opt-in and has no per-user authentication yet.
+enabled = false
+port = 8081
+host = "0.0.0.0"
+
 [homeclaim.limits]
 # -1 means unlimited. These operation quotas are enforced by the shared plot operation service.
 maxPlotsPerPlayer = -1

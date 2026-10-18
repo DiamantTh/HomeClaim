@@ -3,14 +3,28 @@ package systems.diath.homeclaim.webux
 import io.pebbletemplates.pebble.PebbleEngine
 import io.pebbletemplates.pebble.loader.ClasspathLoader
 import io.ktor.server.application.*
-import io.ktor.server.http.content.*
+import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
+import io.ktor.http.*
+import io.ktor.http.content.OutgoingContent
+import io.ktor.server.request.*
 import io.ktor.websocket.*
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.jvm.javaio.toByteReadChannel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import systems.diath.homeclaim.api.http.AcceptEncodingNegotiation
+import systems.diath.homeclaim.api.http.ContentEncodingPolicy
+import java.net.URL
+import java.security.MessageDigest
 import java.io.StringWriter
 import java.time.Duration
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 
 /**
  * WebUX Server Module
@@ -22,6 +36,10 @@ class HomeClaimWebUxServer(
     private val port: Int = 8081,
     private val host: String = "0.0.0.0"
 ) {
+    fun start(): ApplicationEngine = embeddedServer(Netty, host = host, port = port) {
+        module()
+    }.start(wait = false)
+
     private val pebble: PebbleEngine = PebbleEngine.Builder()
         .loader(ClasspathLoader().apply {
             prefix = "templates"
@@ -46,16 +64,12 @@ class HomeClaimWebUxServer(
         }
 
         routing {
-            // Static assets
-            staticResources("/static", "static")
-            staticResources("/app", "static/spa")
-
-            get("/app") {
-                respondSvelteApp(call)
-            }
-
-            get("/app/{...}") {
-                respondSvelteApp(call)
+            get("/static/{path...}") { serveStatic(call, "static", call.parameters.getAll("path")) }
+            get("/app") { respondSvelteApp(call) }
+            get("/app/{path...}") {
+                val path = call.parameters.getAll("path")
+                val assetPath = path?.joinToString("/")
+                if (assetPath == null || !serveSpaResourceIfPresent(call, assetPath)) respondSvelteApp(call)
             }
 
             // WebSocket endpoint
@@ -224,8 +238,7 @@ class HomeClaimWebUxServer(
      * Serve the built SvelteKit app if available, otherwise fall back to the legacy Pebble page.
      */
     private suspend fun respondSvelteApp(call: ApplicationCall) {
-        val resource = javaClass.classLoader.getResourceAsStream("static/spa/index.html")
-        if (resource == null) {
+        if (javaClass.classLoader.getResource("static/spa/index.html") == null) {
             renderTemplate(call, "plots-list", mapOf(
                 "title" to "HomeClaim - Alle Plots",
                 "user" to getCurrentUser(call),
@@ -237,9 +250,102 @@ class HomeClaimWebUxServer(
             ))
             return
         }
+        serveStatic(call, "static/spa", listOf("index.html"))
+    }
 
-        val html = resource.bufferedReader().use { it.readText() }
-        call.respondText(html, io.ktor.http.ContentType.Text.Html)
+    private suspend fun serveSpaResourceIfPresent(call: ApplicationCall, path: String): Boolean =
+        serveStatic(call, "static/spa", listOf(path), missingIsNotFound = path.substringAfterLast('/', "").contains('.'))
+
+    private suspend fun serveStatic(
+        call: ApplicationCall,
+        resourceRoot: String,
+        pathParts: List<String>?,
+        missingIsNotFound: Boolean = true
+    ): Boolean {
+        val clean = pathParts?.joinToString("/") ?: ""
+        if (!isSafeResourcePath(clean)) {
+            call.respond(HttpStatusCode.BadRequest)
+            return true
+        }
+
+        val logicalPath = "$resourceRoot/$clean"
+        val loader = javaClass.classLoader
+        val raw = loader.getResource(logicalPath)
+        if (raw == null) {
+            if (missingIsNotFound) {
+                call.respond(HttpStatusCode.NotFound)
+                return true
+            }
+            return false
+        }
+
+        val negotiation = AcceptEncodingNegotiation.parse(call.request.headers.getAll(HttpHeaders.AcceptEncoding))
+        val isText = logicalPath.substringAfterLast('.', "").lowercase() in setOf("js", "mjs", "css", "html", "json", "svg", "xml", "txt", "map")
+        val representations = linkedMapOf<String, URL>()
+        if (isText) {
+            loader.getResource("$logicalPath.br")?.let { representations["br"] = it }
+            loader.getResource("$logicalPath.zst")?.let { representations["zstd"] = it }
+        }
+        representations["identity"] = raw
+        val encoding = negotiation.select(ContentEncodingPolicy.STATIC, representations.keys)
+        if (encoding == null) {
+            call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding, safeOnly = true)
+            call.respond(HttpStatusCode.NotAcceptable)
+            return true
+        }
+        respondStaticRepresentation(call, logicalPath, representations.getValue(encoding), encoding)
+        return true
+    }
+
+    private suspend fun respondStaticRepresentation(call: ApplicationCall, logicalPath: String, resource: URL, encoding: String) {
+        val connection = resource.openConnection().apply { useCaches = true }
+        val lastModified = connection.lastModified
+        val length = connection.contentLengthLong
+        val weakTag = staticWeakTag(logicalPath, encoding, length, lastModified)
+        call.ensureVaryAcceptEncoding()
+        call.response.header(HttpHeaders.ETag, weakTag)
+        call.response.header(HttpHeaders.AcceptRanges, "none")
+        if (lastModified > 0) call.response.header(HttpHeaders.LastModified, DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.ofEpochMilli(lastModified).atZone(java.time.ZoneOffset.UTC)))
+        if (encoding != "identity") call.response.header(HttpHeaders.ContentEncoding, encoding)
+
+        val matchingTags = call.request.headers.getAll(HttpHeaders.IfNoneMatch).orEmpty()
+            .flatMap { it.split(',') }.map(String::trim)
+        val notModified = matchingTags.any { it == "*" || it == weakTag || it.removePrefix("W/") == weakTag.removePrefix("W/") } ||
+            (matchingTags.isEmpty() && lastModified > 0 && call.request.headers[HttpHeaders.IfModifiedSince]?.let { header ->
+                runCatching { Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(header)).toEpochMilli() >= lastModified / 1000 * 1000 }.getOrDefault(false)
+            } == true)
+        if (notModified) {
+            call.respond(HttpStatusCode.NotModified)
+            return
+        }
+
+        val type = ContentType.defaultForFilePath(logicalPath)
+        call.respond(object : OutgoingContent.ReadChannelContent() {
+            override val contentType: ContentType = type
+            override val contentLength: Long? = length.takeIf { it >= 0 }
+            override fun readFrom(): ByteReadChannel = resource.openStream().toByteReadChannel(context = Dispatchers.IO)
+        })
+    }
+
+    private fun isSafeResourcePath(path: String): Boolean =
+        path.isNotBlank() && !path.startsWith('/') && !path.contains('\\') && !path.contains('\u0000') &&
+            path.split('/').all { it.isNotBlank() && it != "." && it != ".." }
+
+    private fun staticWeakTag(path: String, encoding: String, length: Long, modified: Long): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$path|$encoding|$length|$modified".toByteArray())
+            .take(12).joinToString("") { "%02x".format(it) }
+        return "W/\"$digest\""
+    }
+
+    private fun ApplicationCall.ensureVaryAcceptEncoding() {
+        val varyValues = response.headers.values(HttpHeaders.Vary)
+            .flatMap { it.split(',') }
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        if (varyValues.none { it.equals(HttpHeaders.AcceptEncoding, ignoreCase = true) }) {
+            response.header(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+        }
     }
 
     /**

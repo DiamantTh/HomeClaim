@@ -1,0 +1,7 @@
+Brotli4j 1.23.0 and its selected native artifacts are distributed under the Apache License 2.0.
+
+Project: https://github.com/hyperxpro/Brotli4j
+License text: https://www.apache.org/licenses/LICENSE-2.0
+
+This notice identifies the third-party component bundled with HomeClaim. The authoritative
+license text is available at the URL above.

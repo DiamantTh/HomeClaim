@@ -52,6 +52,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var plotMutationEventListener: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationEventListener? = null
     private var econService: systems.diath.homeclaim.core.economy.SimpleEconService? = null
     private var restServer: io.ktor.server.engine.ApplicationEngine? = null
+    private var webUxServer: io.ktor.server.engine.ApplicationEngine? = null
     private var services: PlatformServices? = null
     private var guiManager: systems.diath.homeclaim.platform.paper.gui.GuiManager? = null
     private var plotCommand: systems.diath.homeclaim.platform.paper.command.PlotCommand? = null
@@ -151,6 +152,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         )
         
         maybeStartRest(services)
+        maybeStartWebUx()
         setupClientLinkChannels()
         this.services = services
         recoverPendingPlotWorlds(services.regionService)
@@ -476,6 +478,9 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         ShutdownManager.registerHook("RestServer", priority = 100) {
             restServer?.stop(500, 1000)
         }
+        ShutdownManager.registerHook("WebUxServer", priority = 100) {
+            webUxServer?.stop(500, 1000)
+        }
 
         ShutdownManager.registerHook("AuditWriter", priority = 800) {
             (services?.auditService as? AutoCloseable)?.close()
@@ -513,6 +518,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         // Clear references
         bridge = null
         restServer = null
+        webUxServer = null
         services = null
     }
 
@@ -566,6 +572,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     sender.sendMessage(i18n.msg("storage.changed"))
                     restServer?.stop(500, 1000)
                     restServer = null
+                    webUxServer?.stop(500, 1000)
+                    webUxServer = null
                     guiManager?.closeAll()
                     plotResetService.shutdown()
                     biomeMutationService?.shutdown()
@@ -587,11 +595,14 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 } else {
                     restServer?.stop(500, 1000)
                     restServer = null
+                    webUxServer?.stop(500, 1000)
+                    webUxServer = null
                     val svc = services
                     if (svc != null) {
                         val jdbc = svc.flagProfileService as? JdbcFlagProfileService
                         loadProfilesFromConfig(null, jdbc, clearExisting = true)
                         maybeStartRest(svc)
+                        maybeStartWebUx()
                         setupClientLinkChannels()
                         sender.sendMessage(i18n.msg("storage.reload.ok"))
                     } else {
@@ -1151,6 +1162,19 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         } catch (failure: Throwable) {
             restServer = null
             logger.log(java.util.logging.Level.SEVERE, i18n.msg("rest.start.failed", port), failure)
+        }
+    }
+
+    private fun maybeStartWebUx() {
+        if (!homeClaimConfig.getBoolean("homeclaim.webux.enabled", false)) return
+        val port = homeClaimConfig.getInt("homeclaim.webux.port", 8081)
+        val host = homeClaimConfig.getString("homeclaim.webux.host", "0.0.0.0").ifBlank { "0.0.0.0" }
+        try {
+            webUxServer = systems.diath.homeclaim.webux.HomeClaimWebUxServer(port, host).start()
+            logger.info("HomeClaim WebUX started on $host:$port")
+        } catch (failure: Exception) {
+            webUxServer = null
+            logger.severe("HomeClaim WebUX failed to start: ${failure.message ?: failure.javaClass.simpleName}")
         }
     }
 

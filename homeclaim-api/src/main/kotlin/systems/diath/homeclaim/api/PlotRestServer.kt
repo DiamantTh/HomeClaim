@@ -8,6 +8,7 @@ import systems.diath.homeclaim.core.policy.FlagProfile
 import systems.diath.homeclaim.core.policy.Action
 import systems.diath.homeclaim.core.policy.PolicyActorContext
 import systems.diath.homeclaim.core.service.*
+import systems.diath.homeclaim.api.http.installHomeClaimHttpCompression
 import systems.diath.homeclaim.core.policy.ActionActor
 import systems.diath.homeclaim.core.policy.ActionEndpoint
 import systems.diath.homeclaim.core.policy.ActionRequest
@@ -124,6 +125,7 @@ class PlotRestServer(
                 setSerializationInclusion(JsonInclude.Include.NON_NULL)
             }
         }
+        installHomeClaimHttpCompression()
         
         install(StatusPages) {
             exception<IllegalArgumentException> { call, cause ->

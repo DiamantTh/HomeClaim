@@ -96,6 +96,11 @@ rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
 
+[homeclaim.webux]
+enabled = false
+port = 8081
+host = "0.0.0.0"
+
 [homeclaim.limits]
 maxPlotsPerPlayer = -1
 maxMergedRegions = -1
