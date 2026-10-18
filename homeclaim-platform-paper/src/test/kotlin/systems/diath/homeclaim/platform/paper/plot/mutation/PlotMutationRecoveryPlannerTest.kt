@@ -47,6 +47,13 @@ class PlotMutationRecoveryPlannerTest {
             PlotMutationRecoveryAction.RESTORE_TARGET)
         assertEquals(listOf(PlotMutationRecoveryTarget(RegionId(region), backup)),
             assertInstanceOf(PlotMutationRecoveryPlanResult.Ready::class.java, restore).targets)
+        val restoreSafety = UUID.randomUUID()
+        val safeRestore = PlotMutationRecoveryPlanner.plan(
+            job("RESTORE", "sourceRegion=$region\nbackupId=$backup\nrestoreSafetyBackupId=$restoreSafety"),
+            PlotMutationRecoveryAction.RESTORE_TARGET
+        )
+        assertEquals(listOf(PlotMutationRecoveryTarget(RegionId(region), restoreSafety)),
+            assertInstanceOf(PlotMutationRecoveryPlanResult.Ready::class.java, safeRestore).targets)
         val acknowledged = PlotMutationRecoveryPlanner.plan(job("MERGE", "phase=RECOVERY_REQUIRED"),
             PlotMutationRecoveryAction.ACKNOWLEDGE)
         assertEquals(emptyList<PlotMutationRecoveryTarget>(),

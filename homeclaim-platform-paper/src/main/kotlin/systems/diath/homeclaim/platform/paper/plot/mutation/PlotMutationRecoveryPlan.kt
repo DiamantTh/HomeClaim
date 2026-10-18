@@ -42,7 +42,10 @@ object PlotMutationRecoveryPlanner {
             else -> if (action == PlotMutationRecoveryAction.RESTORE_TARGET &&
                 (job.operation.startsWith("RESET_") || job.operation == "RESTORE")) {
                 val region = id("regionId") ?: id("sourceRegion") ?: job.regionIds.firstOrNull()?.value
-                val backup = id("backupId")
+                // A restore's own pre-image is the correct recovery target. For old jobs
+                // created before restore-safety existed, retain the historical ability to
+                // reapply the requested backup, but never mislabel it as a pre-image.
+                val backup = if (job.operation == "RESTORE") id("restoreSafetyBackupId") ?: id("backupId") else id("backupId")
                 if (region == null || backup == null) null else listOf(PlotMutationRecoveryTarget(RegionId(region), backup))
             } else null
         }

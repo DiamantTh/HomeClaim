@@ -100,6 +100,9 @@ allowedHosts = []
 maxPlotsPerPlayer = -1
 maxMergedRegions = -1
 
+[homeclaim.backup]
+compression = "zstd"
+
 [homeclaim.migrations]
 enabled = true
 allowNonPostgres = true

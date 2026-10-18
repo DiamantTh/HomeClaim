@@ -39,9 +39,12 @@ class PlotMutationRestartClassifierTest {
             "format=homeclaim-reset-v1\nphase=RESETTING"))
         val restoring = PlotMutationRestartClassifier.classify(job("RESTORE", PlotMutationJobStatus.RUNNING,
             "format=homeclaim-restore-v1\nphase=RESTORING"))
+        val restoreSafety = PlotMutationRestartClassifier.classify(job("RESTORE", PlotMutationJobStatus.RUNNING,
+            "format=homeclaim-restore-v1\nphase=BACKING_UP_SAFETY"))
         assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, legacyReset.status)
         assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, resetting.status)
         assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, restoring.status)
+        assertEquals(PlotMutationJobStatus.FAILED, restoreSafety.status)
     }
 
     @Test

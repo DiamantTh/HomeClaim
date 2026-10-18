@@ -1543,7 +1543,9 @@ class PlotCommand(
                 } else {
                     player.sendMessage("§6Ready plot backups (newest first):")
                     records.forEach { record ->
-                        player.sendMessage("§7${record.id} §8${record.createdAt} §7${record.blockCount} blocks §8${record.payloadBytes} bytes")
+                        val uncompressed = record.uncompressedPayloadBytes?.let { " §8(${it} bytes raw)" }.orEmpty()
+                        val checksum = record.checksumSha256?.take(12) ?: "unknown"
+                        player.sendMessage("§7${record.id} §8${record.createdAt} §7v${record.formatVersion}/${record.compression.name.lowercase()} §7${record.blockCount} blocks §8${record.payloadBytes} stored bytes$uncompressed sha256=$checksum")
                     }
                 }
             }

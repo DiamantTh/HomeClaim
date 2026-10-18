@@ -370,6 +370,10 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore(dataSource)
         }
         plotMutationConflicts = systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore)
+        val backupCompression = systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCompression.parse(
+            homeClaimConfig.getString("homeclaim.backup.compression", "zstd")
+        )
+        logger.info("Plot backup compression: ${backupCompression.name.lowercase()}")
         plotBackupService = services.dataSource?.let { dataSource -> services.worldAreaService?.let { worldAreas ->
             systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService(
                 this,
@@ -377,7 +381,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                 worldAreas,
                 requireNotNull(plotMutationJobStore),
                 services.auditService,
-                plotMutationConflicts
+                plotMutationConflicts,
+                backupCompression
             )
         } }
         plotTransferService = if (plotBackupService != null && plotMutationJobStore != null && plotMutationConflicts != null) {

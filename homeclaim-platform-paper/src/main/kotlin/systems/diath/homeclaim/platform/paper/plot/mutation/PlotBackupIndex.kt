@@ -11,7 +11,18 @@ import java.util.UUID
 import javax.sql.DataSource
 
 enum class PlotBackupStatus { CREATING, READY, FAILED, CORRUPT }
-enum class PlotBackupCompression { NONE }
+enum class PlotBackupCompression {
+    NONE,
+    ZSTD;
+
+    companion object {
+        fun parse(value: String): PlotBackupCompression = when (value.trim().lowercase()) {
+            "none" -> NONE
+            "zstd" -> ZSTD
+            else -> throw IllegalArgumentException("Unsupported backup compression '$value'; expected 'zstd' or 'none'")
+        }
+    }
+}
 
 /** Persistent metadata for a versioned file payload. The file path is derived from UUIDs, never stored as input. */
 data class PlotBackupRecord(
@@ -33,7 +44,9 @@ data class PlotBackupRecord(
     val checksumSha256: String? = null,
     val error: String? = null,
     val createdAt: Instant = Instant.now(),
-    val readyAt: Instant? = null
+    val readyAt: Instant? = null,
+    /** Read from the versioned manifest; the database index stores the encoded payload size. */
+    val uncompressedPayloadBytes: Long? = null
 )
 
 interface PlotBackupIndex {

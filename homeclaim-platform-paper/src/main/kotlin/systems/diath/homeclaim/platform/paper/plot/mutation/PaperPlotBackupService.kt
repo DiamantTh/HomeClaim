@@ -44,7 +44,8 @@ class PaperPlotBackupService(
     private val worldAreaService: WorldAreaService,
     private val jobStore: PlotMutationJobStore,
     private val auditService: AuditService?,
-    private val conflicts: RegionMutationConflictCoordinator? = null
+    private val conflicts: RegionMutationConflictCoordinator? = null,
+    private val compression: PlotBackupCompression = PlotBackupCompression.ZSTD
 ) {
     private val dataRoot = plugin.dataFolder.toPath().resolve("backups").toAbsolutePath().normalize()
     private val io: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -56,7 +57,10 @@ class PaperPlotBackupService(
     private val closed = AtomicBoolean(false)
 
     fun listBackups(regionId: RegionId, limit: Int = 10): CompletableFuture<List<PlotBackupRecord>> = async {
-        index.list(regionId, limit)
+        index.list(regionId, limit).map { record ->
+            runCatching { PlotBackupFormat.readUncompressedPayloadBytes(backupFile(record), record) }
+                .getOrNull()?.let { size -> record.copy(uncompressedPayloadBytes = size) } ?: record
+        }
     }
 
     fun findBackup(id: UUID): CompletableFuture<PlotBackupRecord?> = async { index.find(id) }
@@ -101,7 +105,7 @@ class PaperPlotBackupService(
             cause = cause.take(32),
             status = PlotBackupStatus.CREATING,
             formatVersion = PlotBackupFormat.CURRENT_VERSION,
-            compression = PlotBackupCompression.NONE,
+            compression = compression,
             blockCount = count,
             createdAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
         )
@@ -415,7 +419,7 @@ class PaperPlotBackupService(
                             "areaId=${record.areaId.value}\nworldId=${record.worldId.value}\n" +
                             "paperWorldId=${record.paperWorldId}\nactorKind=${actor.kind}\n" +
                             "actorRef=${actor.stableId ?: ""}\n" +
-                            "recoveryOfJobId=${recoveryParentJobId ?: ""}\nphase=RESTORING"
+                        "recoveryOfJobId=${recoveryParentJobId ?: ""}\nphase=BACKING_UP_SAFETY"
                     )
                     task.job = job
                     jobStore.create(job)
@@ -469,18 +473,21 @@ class PaperPlotBackupService(
                 if (snapshots.isEmpty()) {
                     io.execute {
                         try {
-                            val (payloadBytes, checksum) = PlotBackupFormat.finalizeFile(
+                            val finalized = PlotBackupFormat.finalizeFile(
                                 task.payload, task.temporary, task.finalFile, task.record
                             )
-                            index.markReady(task.record.id, payloadBytes, checksum)
+                            index.markReady(task.record.id, finalized.payloadBytes, finalized.checksum)
                             val ready = task.record.copy(
                                 status = PlotBackupStatus.READY,
-                                payloadBytes = payloadBytes,
-                                checksumSha256 = checksum,
-                                readyAt = Instant.now()
+                                payloadBytes = finalized.payloadBytes,
+                                checksumSha256 = finalized.checksum,
+                                readyAt = Instant.now(),
+                                uncompressedPayloadBytes = finalized.uncompressedPayloadBytes
                             )
                             audit(task.actor, task.region, ready.correlationId, HomeClaimOperationActions.REGION_BACKUP_CREATE,
-                                AuditStatus.COMPLETED, "backupId" to ready.id.toString(), "checksum" to checksum)
+                                AuditStatus.COMPLETED, "backupId" to ready.id.toString(), "checksum" to finalized.checksum,
+                                "compression" to ready.compression.name, "payloadBytes" to finalized.payloadBytes.toString(),
+                                "uncompressedPayloadBytes" to finalized.uncompressedPayloadBytes.toString())
                             completeCapture(task, Result.success(ready))
                         } catch (failure: Throwable) {
                             failCapture(task, failure)
@@ -524,7 +531,7 @@ class PaperPlotBackupService(
                     require(it.size <= PlotBackupFormat.MAX_ITEM_BYTES) { "A container item exceeds the backup format limit at $x,$y,$z" }
                 }
             }
-            is TileState -> throw IllegalStateException("Backup v1 cannot preserve ${block.type.key} block-state data at $x,$y,$z; reset was not started")
+            is TileState -> throw IllegalStateException("The plot backup format cannot preserve ${block.type.key} block-state data at $x,$y,$z; mutation was not started")
             else -> null
         }
         return PlotBackupFormat.BlockSnapshot(x, y, z, block.blockData.asString, inventoryItems)
@@ -535,8 +542,30 @@ class PaperPlotBackupService(
         val job = requireNotNull(task.job)
         try {
             jobStore.markRunning(job.id)
-            task.input = PlotBackupFormat.openPayload(requireNotNull(task.file), requireNotNull(task.header))
-            scheduleRestoreBatch(task)
+            PlotRestoreSafetyGate.prepare(
+                capture = { createSnapshot(task.region, task.world, task.actor, task.correlationId, "restore_safety") },
+                validate = ::validateReadyBackup,
+                persistReady = { validated ->
+                    val details = requireNotNull(job.details).replace("phase=BACKING_UP_SAFETY", "restoreSafetyBackupId=${validated.id}\nphase=RESTORING")
+                    jobStore.updateDetails(job.id, details)
+                    task.safetyBackupId = validated.id
+                }
+            ).whenComplete { _, failure ->
+                if (task.completed.get()) return@whenComplete
+                if (failure != null) {
+                    finishRestore(task, failure.cause ?: failure)
+                } else {
+                    io.execute {
+                        try {
+                            val input = PlotBackupFormat.openPayload(requireNotNull(task.file), requireNotNull(task.header))
+                            task.input = input
+                            runOnServer { scheduleRestoreBatch(task) }
+                        } catch (openFailure: Throwable) {
+                            finishRestore(task, openFailure)
+                        }
+                    }
+                }
+            }
         } catch (failure: Throwable) {
             finishRestore(task, failure)
         }
@@ -603,14 +632,17 @@ class PaperPlotBackupService(
                 if (failure == null) {
                     val auditRecorded = runCatching {
                         audit(task.actor, task.region, task.correlationId, HomeClaimOperationActions.REGION_RESTORE,
-                            AuditStatus.COMPLETED, "backupId" to task.backupId.toString())
+                            AuditStatus.COMPLETED, "backupId" to task.backupId.toString(),
+                            "restoreSafetyBackupId" to (task.safetyBackupId?.toString() ?: ""))
                     }.onFailure { auditFailure -> plugin.logger.log(Level.SEVERE, "Restore completed but terminal audit could not be queued for ${task.backupId}", auditFailure) }.isSuccess
                     val restoreResult = PlotRestoreResult(task.backupId, applied, status, auditRecorded)
                     if (closed.get()) task.result.complete(restoreResult) else runOnServer { task.result.complete(restoreResult) }
                 } else {
                     runCatching {
                         audit(task.actor, task.region, task.correlationId, HomeClaimOperationActions.REGION_RESTORE,
-                            AuditStatus.FAILED, "backupId" to task.backupId.toString(), "failure" to (failure.message ?: failure.javaClass.simpleName))
+                            AuditStatus.FAILED, "backupId" to task.backupId.toString(),
+                            "restoreSafetyBackupId" to (task.safetyBackupId?.toString() ?: ""),
+                            "failure" to (failure.message ?: failure.javaClass.simpleName))
                     }.onFailure { auditFailure -> plugin.logger.log(Level.SEVERE, "Restore failure audit could not be queued for ${task.backupId}", auditFailure) }
                     val exception = IllegalStateException(
                         if (applied > 0) "Restore partially changed the world; recovery required (job ${job?.id})"
@@ -742,6 +774,7 @@ class PaperPlotBackupService(
         @Volatile var header: PlotBackupFormat.Header? = null
         @Volatile var input: java.io.DataInputStream? = null
         @Volatile var job: PlotMutationJobRecord? = null
+        @Volatile var safetyBackupId: UUID? = null
         @Volatile var applied: Int = 0
         @Volatile var scheduled: BukkitTask? = null
     }
@@ -780,3 +813,14 @@ data class PlotRestoreResult(
     val jobStatus: PlotMutationJobStatus,
     val auditRecorded: Boolean = true
 )
+
+/** Enforces the restore pre-image gate: capture, checksum validation and job linkage all precede mutation. */
+internal object PlotRestoreSafetyGate {
+    fun prepare(
+        capture: () -> CompletableFuture<PlotBackupRecord>,
+        validate: (UUID) -> CompletableFuture<PlotBackupRecord>,
+        persistReady: (PlotBackupRecord) -> Unit
+    ): CompletableFuture<PlotBackupRecord> = capture()
+        .thenCompose { captured -> validate(captured.id) }
+        .thenApply { validated -> persistReady(validated); validated }
+}

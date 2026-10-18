@@ -26,6 +26,10 @@ allowedHosts = []
 maxPlotsPerPlayer = -1
 maxMergedRegions = -1
 
+[homeclaim.backup]
+# HCBK backup payload codec: "zstd" (recommended) or "none". Existing backups are not rewritten.
+compression = "zstd"
+
 [homeclaim.migrations]
 enabled = true
 allowNonPostgres = true

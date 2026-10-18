@@ -10,6 +10,7 @@ import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Files
@@ -19,10 +20,13 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import com.github.luben.zstd.ZstdInputStream
+import com.github.luben.zstd.ZstdOutputStream
 
-/** Stable, bounded binary container. Payload compression is deliberately NONE in format v1. */
+/** Stable, bounded binary container. v1/NONE remains readable; new writes use the v2 manifest. */
 internal object PlotBackupFormat {
-    const val CURRENT_VERSION = 1
+    const val CURRENT_VERSION = 2
+    private const val LEGACY_VERSION = 1
     const val MAX_BLOCKS = 10_000_000L
     const val MAX_BACKUP_BYTES = 1_073_741_824L
     const val MAX_BLOCK_DATA_BYTES = 8_192
@@ -41,7 +45,8 @@ internal object PlotBackupFormat {
         val inventoryItems: List<ByteArray?>?
     )
 
-    data class Header(val record: PlotBackupRecord, val payloadOffset: Long)
+    data class Header(val record: PlotBackupRecord, val payloadOffset: Long, val uncompressedPayloadBytes: Long)
+    data class Finalized(val payloadBytes: Long, val checksum: String, val uncompressedPayloadBytes: Long)
 
     fun blockCount(bounds: Bounds): Long {
         val x = bounds.maxX.toLong() - bounds.minX + 1
@@ -62,35 +67,59 @@ internal object PlotBackupFormat {
         ))).use { output -> snapshots.forEach { writeBlock(output, it) } }
     }
 
-    fun finalizeFile(payload: Path, temporaryFile: Path, finalFile: Path, record: PlotBackupRecord): Pair<Long, String> {
-        val payloadSize = Files.size(payload)
-        require(payloadSize <= MAX_BACKUP_BYTES) { "Backup payload exceeds the supported size" }
-        val digest = sha256(payload)
-        val manifest = encodeManifest(record, payloadSize, digest)
-        Files.newOutputStream(temporaryFile, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { raw ->
-            DataOutputStream(BufferedOutputStream(raw)).use { output ->
-                output.writeInt(MAGIC)
-                output.writeInt(manifest.size)
-                output.write(manifest)
-                Files.newInputStream(payload).use { input -> input.copyBoundedTo(output, MAX_BACKUP_BYTES) }
-            }
-        }
+    fun finalizeFile(payload: Path, temporaryFile: Path, finalFile: Path, record: PlotBackupRecord): Finalized {
+        val uncompressedSize = Files.size(payload)
+        require(uncompressedSize <= MAX_BACKUP_BYTES) { "Uncompressed backup payload exceeds the supported size" }
+        val encodedPayload = temporaryFile.resolveSibling("${temporaryFile.fileName}.payload.part")
         try {
-            Files.move(temporaryFile, finalFile, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(temporaryFile, finalFile)
+            when (record.compression) {
+                PlotBackupCompression.NONE -> Files.copy(payload, encodedPayload)
+                PlotBackupCompression.ZSTD -> Files.newInputStream(payload).use { input ->
+                    Files.newOutputStream(encodedPayload, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { raw ->
+                        ZstdOutputStream(BufferedOutputStream(raw), DEFAULT_ZSTD_LEVEL).use { output ->
+                            input.copyBoundedTo(output, MAX_BACKUP_BYTES)
+                        }
+                    }
+                }
+            }
+            val storedSize = Files.size(encodedPayload)
+            require(storedSize <= MAX_BACKUP_BYTES) { "Stored backup payload exceeds the supported size" }
+            val digest = sha256(encodedPayload)
+            val manifest = encodeManifest(record, storedSize, uncompressedSize, digest)
+            Files.newOutputStream(temporaryFile, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { raw ->
+                DataOutputStream(BufferedOutputStream(raw)).use { output ->
+                    output.writeInt(MAGIC)
+                    output.writeInt(manifest.size)
+                    output.write(manifest)
+                    Files.newInputStream(encodedPayload).use { input -> input.copyBoundedTo(output, MAX_BACKUP_BYTES) }
+                }
+            }
+            try {
+                Files.move(temporaryFile, finalFile, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(temporaryFile, finalFile)
+            }
+            return Finalized(storedSize, digest.joinToString("") { "%02x".format(it) }, uncompressedSize)
+        } finally {
+            Files.deleteIfExists(encodedPayload)
         }
-        return payloadSize to digest.joinToString("") { "%02x".format(it) }
     }
 
     fun validate(file: Path, indexed: PlotBackupRecord): Header {
         require(indexed.status == PlotBackupStatus.READY) { "Backup is not ready" }
-        require(indexed.formatVersion == CURRENT_VERSION) { "Unsupported backup format ${indexed.formatVersion}" }
-        require(indexed.compression == PlotBackupCompression.NONE) { "Unsupported backup compression ${indexed.compression}" }
+        require(indexed.formatVersion in LEGACY_VERSION..CURRENT_VERSION) { "Unsupported backup format ${indexed.formatVersion}" }
+        if (indexed.formatVersion == LEGACY_VERSION) {
+            require(indexed.compression == PlotBackupCompression.NONE) { "HCBK v1 only supports NONE compression" }
+        }
         val fileSize = Files.size(file)
         require(fileSize in 9..(MAX_BACKUP_BYTES + MAX_MANIFEST_BYTES + 8)) { "Backup file size is invalid" }
-        val (record, payloadSize, expectedDigest, payloadOffset) = readManifest(file)
+        val manifest = readManifest(file)
+        val record = manifest.record
+        val payloadSize = manifest.payloadSize
+        val expectedDigest = manifest.digest
+        val payloadOffset = manifest.payloadOffset
         require(record.id == indexed.id && record.regionId == indexed.regionId) { "Backup identity does not match its index" }
+        require(record.formatVersion == indexed.formatVersion && record.compression == indexed.compression) { "Backup format or codec does not match its index" }
         require(record.correlationId == indexed.correlationId) { "Backup correlation does not match its index" }
         require(record.worldId == indexed.worldId && record.paperWorldId == indexed.paperWorldId) { "Backup world identity does not match its index" }
         require(record.areaId == indexed.areaId && record.bounds == indexed.bounds) { "Backup scope does not match its index" }
@@ -106,14 +135,37 @@ internal object PlotBackupFormat {
 
         // Validate record framing and bounds before any world mutation. The payload is then
         // streamed again in bounded batches for restore; it is never loaded into one ByteArray.
-        openPayload(file, payloadOffset).use { input ->
+        openPayload(file, Header(record, payloadOffset, manifest.uncompressedPayloadBytes)).use { input ->
             repeat(record.blockCount.toInt()) { readBlock(input, record.bounds) }
             require(input.read() == -1) { "Backup has trailing payload data" }
         }
-        return Header(record.copy(payloadBytes = payloadSize, checksumSha256 = expectedDigest.joinToString("") { "%02x".format(it) }), payloadOffset)
+        return Header(record.copy(payloadBytes = payloadSize, checksumSha256 = expectedDigest.joinToString("") { "%02x".format(it) },
+            uncompressedPayloadBytes = manifest.uncompressedPayloadBytes),
+            payloadOffset, manifest.uncompressedPayloadBytes)
     }
 
-    fun openPayload(file: Path, header: Header): DataInputStream = openPayload(file, header.payloadOffset)
+    fun readUncompressedPayloadBytes(file: Path, indexed: PlotBackupRecord): Long {
+        require(indexed.status == PlotBackupStatus.READY) { "Backup is not ready" }
+        val manifest = readManifest(file)
+        require(manifest.record.id == indexed.id && manifest.record.regionId == indexed.regionId &&
+            manifest.record.formatVersion == indexed.formatVersion && manifest.record.compression == indexed.compression) {
+            "Backup manifest identity does not match its index"
+        }
+        require(manifest.payloadSize == indexed.payloadBytes &&
+            manifest.digest.joinToString("") { "%02x".format(it) } == indexed.checksumSha256) {
+            "Backup manifest integrity metadata does not match its index"
+        }
+        return manifest.uncompressedPayloadBytes
+    }
+
+    fun openPayload(file: Path, header: Header): DataInputStream {
+        val raw = openPayloadBytes(file, header.payloadOffset, header.record.payloadBytes)
+        val decoded: InputStream = when (header.record.compression) {
+            PlotBackupCompression.NONE -> raw
+            PlotBackupCompression.ZSTD -> ZstdInputStream(raw)
+        }
+        return DataInputStream(ExactLengthInputStream(decoded, header.uncompressedPayloadBytes))
+    }
 
     fun readBatch(input: DataInputStream, bounds: Bounds, count: Int): List<BlockSnapshot> = buildList(count) {
         var bytes = 0L
@@ -126,7 +178,7 @@ internal object PlotBackupFormat {
         }
     }
 
-    private fun openPayload(file: Path, payloadOffset: Long): DataInputStream {
+    private fun openPayloadBytes(file: Path, payloadOffset: Long, payloadSize: Long): InputStream {
         val input = BufferedInputStream(Files.newInputStream(file))
         try {
             var remaining = payloadOffset
@@ -135,7 +187,7 @@ internal object PlotBackupFormat {
                 if (skipped <= 0) throw EOFException("Truncated backup header")
                 remaining -= skipped
             }
-            return DataInputStream(input)
+            return LimitedInputStream(input, payloadSize)
         } catch (failure: Throwable) {
             input.close()
             throw failure
@@ -145,6 +197,7 @@ internal object PlotBackupFormat {
     private data class ManifestRead(
         val record: PlotBackupRecord,
         val payloadSize: Long,
+        val uncompressedPayloadBytes: Long,
         val digest: ByteArray,
         val payloadOffset: Long
     )
@@ -158,7 +211,7 @@ internal object PlotBackupFormat {
             input.readFully(bytes)
             val recordInput = DataInputStream(bytes.inputStream())
             val version = recordInput.readInt()
-            require(version == CURRENT_VERSION) { "Unsupported backup format $version" }
+            require(version in LEGACY_VERSION..CURRENT_VERSION) { "Unsupported backup format $version" }
             val id = recordInput.readUuid()
             val correlation = CorrelationId(recordInput.readUuid())
             val world = WorldId(recordInput.readUuid())
@@ -175,19 +228,23 @@ internal object PlotBackupFormat {
             val blockCount = recordInput.readLong()
             val payloadSize = recordInput.readLong()
             require(payloadSize in 0..MAX_BACKUP_BYTES) { "Declared backup payload size is invalid" }
+            val uncompressedPayloadBytes = if (version >= CURRENT_VERSION) recordInput.readLong() else payloadSize
+            require(uncompressedPayloadBytes in 0..MAX_BACKUP_BYTES) { "Declared uncompressed payload size is invalid" }
+            if (version == LEGACY_VERSION) require(compression == PlotBackupCompression.NONE) { "HCBK v1 only supports NONE compression" }
             val checksum = ByteArray(32)
             recordInput.readFully(checksum)
             require(recordInput.read() == -1) { "Backup manifest has trailing fields" }
             val record = PlotBackupRecord(
                 id, correlation, world, paperWorld, area, region, bounds, actorKind, actorRef, cause,
                 PlotBackupStatus.READY, version, compression, blockCount, payloadSize,
-                checksum.joinToString("") { "%02x".format(it) }, createdAt = createdAt
+                checksum.joinToString("") { "%02x".format(it) }, createdAt = createdAt,
+                uncompressedPayloadBytes = uncompressedPayloadBytes
             )
-            return ManifestRead(record, payloadSize, checksum, 8L + manifestLength)
+            return ManifestRead(record, payloadSize, uncompressedPayloadBytes, checksum, 8L + manifestLength)
         }
     }
 
-    private fun encodeManifest(record: PlotBackupRecord, payloadSize: Long, digest: ByteArray): ByteArray {
+    private fun encodeManifest(record: PlotBackupRecord, payloadSize: Long, uncompressedPayloadSize: Long, digest: ByteArray): ByteArray {
         val bytes = java.io.ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
             output.writeInt(CURRENT_VERSION)
@@ -205,6 +262,7 @@ internal object PlotBackupFormat {
             output.writeByte(record.compression.ordinal)
             output.writeLong(record.blockCount)
             output.writeLong(payloadSize)
+            output.writeLong(uncompressedPayloadSize)
             output.write(digest)
         }
         return bytes.toByteArray().also { require(it.size <= MAX_MANIFEST_BYTES) }
@@ -274,7 +332,7 @@ internal object PlotBackupFormat {
     private fun sha256(path: Path): ByteArray = Files.newInputStream(path).use { input -> sha256ToEnd(input) }
 
     private fun sha256(path: Path, offset: Long, length: Long): ByteArray =
-        openPayload(path, offset).use { input -> sha256(input, length) }
+        openPayloadBytes(path, offset, length).use { input -> sha256(input, length) }
 
     private fun sha256(input: InputStream, length: Long): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -344,4 +402,53 @@ internal object PlotBackupFormat {
         require(length == 64 && all { it in '0'..'9' || it in 'a'..'f' })
         return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
+
+    private class LimitedInputStream(input: InputStream, private var remaining: Long) : FilterInputStream(input) {
+        override fun read(): Int {
+            if (remaining == 0L) return -1
+            val value = super.read()
+            if (value < 0) throw EOFException("Stored backup payload is truncated")
+            remaining--
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (length == 0) return 0
+            if (remaining == 0L) return -1
+            val count = super.read(buffer, offset, minOf(length.toLong(), remaining).toInt())
+            if (count < 0) throw EOFException("Stored backup payload is truncated")
+            remaining -= count
+            return count
+        }
+    }
+
+    /** Caps decoded output and probes EOF to trigger frame validation exactly at the declared size. */
+    private class ExactLengthInputStream(input: InputStream, private var remaining: Long) : FilterInputStream(input) {
+        private var verified = false
+
+        private fun verifyEnd() {
+            if (verified) return
+            require(super.read() == -1) { "Decoded backup payload exceeds its declared size" }
+            verified = true
+        }
+
+        override fun read(): Int {
+            if (remaining == 0L) { verifyEnd(); return -1 }
+            val value = super.read()
+            if (value < 0) throw EOFException("Decoded backup payload is truncated")
+            remaining--
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (length == 0) return 0
+            if (remaining == 0L) { verifyEnd(); return -1 }
+            val count = super.read(buffer, offset, minOf(length.toLong(), remaining).toInt())
+            if (count < 0) throw EOFException("Decoded backup payload is truncated")
+            remaining -= count
+            return count
+        }
+    }
+
+    private const val DEFAULT_ZSTD_LEVEL = 3
 }

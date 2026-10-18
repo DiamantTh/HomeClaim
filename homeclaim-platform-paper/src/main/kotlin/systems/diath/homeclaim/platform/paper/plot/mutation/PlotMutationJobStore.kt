@@ -383,7 +383,7 @@ object PlotMutationRestartClassifier {
         val safelyBeforeWorldWrite = when {
             record.operation in setOf("COPY", "MOVE", "SWAP") -> phase in setOf("VALIDATING", "BACKING_UP")
             record.operation.startsWith("RESET_") -> phase in setOf("BACKING_UP", "VALIDATING")
-            record.operation == "RESTORE" -> phase == "VALIDATING"
+            record.operation == "RESTORE" -> phase in setOf("VALIDATING", "BACKING_UP_SAFETY")
             else -> false
         }
         return if (safelyBeforeWorldWrite) {

@@ -100,6 +100,12 @@ class DatabaseDialectRuntimeTest {
             assertEquals(PlotBackupStatus.READY, backupIndex.find(backup.id)?.status)
             assertEquals(backup.areaId, backupIndex.find(backup.id)?.areaId)
             assertEquals(backup.id, backupIndex.list(backup.regionId, 1).single().id)
+            val zstdBackup = backup.copy(id = UUID.randomUUID(), correlationId = CorrelationId.newId(),
+                formatVersion = 2, compression = PlotBackupCompression.ZSTD)
+            backupIndex.create(zstdBackup)
+            backupIndex.markReady(zstdBackup.id, 24, "b".repeat(64))
+            assertEquals(setOf(PlotBackupCompression.NONE, PlotBackupCompression.ZSTD),
+                backupIndex.list(backup.regionId, 10).map { it.compression }.toSet())
 
             if (dataSource.connection.use { it.metaData.databaseProductName.equals("PostgreSQL", ignoreCase = true) }) {
                 dataSource.connection.use { connection ->

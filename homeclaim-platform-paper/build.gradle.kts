@@ -22,6 +22,7 @@ dependencies {
     implementation("org.flywaydb:flyway-core:10.10.0")
     implementation("org.flywaydb:flyway-database-postgresql:10.10.0")
     implementation("org.flywaydb:flyway-mysql:10.10.0")
+    implementation("com.github.luben:zstd-jni:1.5.7-23")
     runtimeOnly("org.xerial:sqlite-jdbc:3.53.4.0")
     runtimeOnly("org.postgresql:postgresql:42.7.7")
     runtimeOnly("org.mariadb.jdbc:mariadb-java-client:3.5.3")
@@ -73,6 +74,7 @@ tasks.shadowJar {
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     mergeServiceFiles()
+    manifest { attributes["Multi-Release"] = "true" }
 
     // Keep subproject build outputs intact so test/IDE classpaths and incremental Kotlin compilation remain stable.
 
