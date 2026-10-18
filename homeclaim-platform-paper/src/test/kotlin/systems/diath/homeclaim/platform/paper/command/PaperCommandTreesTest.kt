@@ -34,6 +34,8 @@ class PaperCommandTreesTest {
         assertEquals(1, dispatcher.execute("plot copy 12345678-1234-1234-1234-123456789abc", source))
         assertEquals(1, dispatcher.execute("plot move 12345678-1234-1234-1234-123456789abc", source))
         assertEquals(1, dispatcher.execute("plot swap 12345678-1234-1234-1234-123456789abc", source))
+        assertEquals(1, dispatcher.execute("plot jobs recover 12345678-1234-1234-1234-123456789abc restore-both", source))
+        assertEquals(1, dispatcher.execute("plot jobs resolve 12345678-1234-1234-1234-123456789abc acknowledge", source))
         assertEquals(
             listOf(
                 "plot" to listOf("merge", "north"),
@@ -48,6 +50,8 @@ class PaperCommandTreesTest {
                 , "plot" to listOf("copy", "12345678-1234-1234-1234-123456789abc")
                 , "plot" to listOf("move", "12345678-1234-1234-1234-123456789abc")
                 , "plot" to listOf("swap", "12345678-1234-1234-1234-123456789abc")
+                , "plot" to listOf("jobs", "recover", "12345678-1234-1234-1234-123456789abc", "restore-both")
+                , "plot" to listOf("jobs", "resolve", "12345678-1234-1234-1234-123456789abc", "acknowledge")
             ),
             calls
         )

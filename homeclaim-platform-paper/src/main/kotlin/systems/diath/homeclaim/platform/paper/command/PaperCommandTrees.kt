@@ -177,6 +177,8 @@ internal object PaperCommandTrees {
                 .then(jobAction("cancel", name, dispatch))
                 .then(jobAction("stop", name, dispatch))
                 .then(jobIdAction("inspect", name, dispatch))
+                .then(jobRecoveryAction("recover", name, dispatch))
+                .then(jobRecoveryAction("resolve", name, dispatch))
             root.then(jobs)
         }
 
@@ -222,6 +224,29 @@ internal object PaperCommandTrees {
                         StringArgumentType.getString(context, "jobId")
                     ))
                 }
+            )
+
+    private fun jobRecoveryAction(
+        action: String,
+        commandName: String,
+        dispatch: (CommandSender, String, List<String>) -> Int
+    ): LiteralArgumentBuilder<CommandSourceStack> =
+        Commands.literal(action)
+            .then(Commands.argument("jobId", StringArgumentType.word())
+                .then(Commands.argument("recoveryAction", StringArgumentType.word())
+                    .suggests { _, builder ->
+                        val choices = if (action == "resolve") listOf("acknowledge")
+                            else listOf("restore-target", "restore-both")
+                        choices.filter { it.startsWith(builder.remaining, ignoreCase = true) }.forEach(builder::suggest)
+                        builder.buildFuture()
+                    }
+                    .executes { context ->
+                        dispatch(context.source.sender, "plot", listOf(
+                            commandName, action, StringArgumentType.getString(context, "jobId"),
+                            StringArgumentType.getString(context, "recoveryAction")
+                        ))
+                    }
+                )
             )
 
     private fun greedy(

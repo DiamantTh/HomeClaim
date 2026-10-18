@@ -127,6 +127,15 @@ permissions:
   homeclaim.plot.jobs:
     description: Allows viewing and cancelling queued plot jobs
     default: op
+  homeclaim.admin.jobs.inspect:
+    description: Allows inspecting persistent plot mutation jobs
+    default: op
+  homeclaim.admin.jobs.recover:
+    description: Allows confirmed recovery actions for persistent plot mutation jobs
+    default: op
+  homeclaim.admin.jobs.resolve:
+    description: Allows confirmed acknowledgement of manually repaired plot mutation jobs
+    default: op
   homeclaim.plot.info.platform:
     description: Allows viewing owner UUID and Java/Bedrock platform in /plot info (admin/rank permission)
     default: op

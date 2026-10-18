@@ -16,7 +16,7 @@ import systems.diath.homeclaim.core.policy.DecisionEffect
 import java.time.Instant
 import java.util.UUID
 
-enum class AuditStatus { ATTEMPTED, ALLOWED, DENIED, COMPLETED, FAILED, ROLLED_BACK }
+enum class AuditStatus { ATTEMPTED, ALLOWED, DENIED, COMPLETED, FAILED, ROLLED_BACK, ACKNOWLEDGED }
 
 /** A sink is a persistence or output boundary; HomeClaim's JDBC sink is canonical. */
 fun interface AuditSink {
@@ -125,7 +125,7 @@ object AuditPolicy {
         if (entry.status == AuditStatus.ALLOWED && key in ADMIN_ACTIONS) return true
         if (entry.status == AuditStatus.ALLOWED && key == "homeclaim:region_explosion" && (entry.targetCount ?: 0) > 0) return true
         return entry.status in setOf(AuditStatus.ATTEMPTED, AuditStatus.COMPLETED, AuditStatus.FAILED,
-            AuditStatus.ROLLED_BACK) && ((ActionKey.definitionOrNull(entry.actionKey ?: return true)?.mutating ?: true) ||
+            AuditStatus.ROLLED_BACK, AuditStatus.ACKNOWLEDGED) && ((ActionKey.definitionOrNull(entry.actionKey ?: return true)?.mutating ?: true) ||
             key in ADMIN_ACTIONS)
     }
 
@@ -139,6 +139,8 @@ object AuditPolicy {
         HomeClaimOperationActions.REGION_COPY.value,
         HomeClaimOperationActions.REGION_MOVE.value,
         HomeClaimOperationActions.REGION_SWAP.value,
+        HomeClaimOperationActions.REGION_RECOVERY.value,
+        HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE.value,
         HomeClaimOperationActions.REGION_HOME_SET.value,
         HomeClaimOperationActions.REGION_UNCLAIM.value,
         HomeClaimOperationActions.REGION_BIOME_CHANGE.value,

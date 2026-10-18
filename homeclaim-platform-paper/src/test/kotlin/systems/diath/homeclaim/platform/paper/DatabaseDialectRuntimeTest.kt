@@ -324,6 +324,7 @@ class DatabaseDialectRuntimeTest {
             jobStore.updateProgress(jobId, 3, 10)
             assertEquals(1, jobStore.markInterruptedAsRecoveryRequired())
             val interruptedJob = jobStore.findRecoveryRequired().single { it.id == jobId }
+            assertEquals(listOf(jobId), jobStore.findRecoveryRequiredForRegions(listOf(firstId)).map { it.id })
             val inspectedJob = jobStore.findById(jobId)
             assertEquals(jobId, interruptedJob.id)
             assertEquals(interruptedJob, inspectedJob)
@@ -333,6 +334,14 @@ class DatabaseDialectRuntimeTest {
             assertTrue(interruptedJob.details?.contains("phase=APPLYING_TARGET") == true)
             assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, interruptedJob.status)
             assertEquals(0, jobStore.markInterruptedAsRecoveryRequired())
+            assertTrue(jobStore.beginRecovery(jobId, "${interruptedJob.details}\nrecoveryAction=RESTORE_BOTH"))
+            assertEquals(PlotMutationJobStatus.RECOVERY_IN_PROGRESS, jobStore.findById(jobId)?.status)
+            assertEquals(1, jobStore.markInterruptedAsRecoveryRequired())
+            assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, jobStore.findById(jobId)?.status)
+            assertTrue(jobStore.beginRecovery(jobId, "${jobStore.findById(jobId)?.details}\nrecoveryAction=RESTORE_BOTH"))
+            assertTrue(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED,
+                "${jobStore.findById(jobId)?.details}\nrecoveryPhase=RECOVERED"))
+            assertEquals(PlotMutationJobStatus.RECOVERED, jobStore.findById(jobId)?.status)
 
             // Runtime wiring gives the canonical operation service the same audit sink as
             // the repositories and REST adapter, so the operation lifecycle is persisted

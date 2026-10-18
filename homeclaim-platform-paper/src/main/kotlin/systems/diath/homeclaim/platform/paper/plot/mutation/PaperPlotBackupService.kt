@@ -350,7 +350,9 @@ class PaperPlotBackupService(
         region: Region,
         world: World,
         actor: ActionActor,
-        correlationId: CorrelationId
+        correlationId: CorrelationId,
+        reservation: RegionMutationConflictCoordinator.Lease? = null,
+        recoveryParentJobId: UUID? = null
     ): CompletableFuture<PlotRestoreResult> {
         val result = CompletableFuture<PlotRestoreResult>()
         // Read Paper world properties on the calling/server thread; workers only use immutable IDs/bounds.
@@ -358,7 +360,7 @@ class PaperPlotBackupService(
         val worldMinHeight = world.minHeight
         val worldMaxHeight = world.maxHeight
         val worldName = world.name
-        val lease = when (val attempt = conflicts?.reserve(RegionMutationOperation.RESTORE, listOf(region.id), region.mergeGroupId, actor, correlationId)) {
+        val lease = if (reservation != null) null else when (val attempt = conflicts?.reserve(RegionMutationOperation.RESTORE, listOf(region.id), region.mergeGroupId, actor, correlationId)) {
             null -> null
             is ReservationAttempt.Acquired -> attempt.lease
             is ReservationAttempt.Conflict -> return CompletableFuture.failedFuture(IllegalStateException("Mutation conflict: ${attempt.conflict}"))
@@ -408,7 +410,12 @@ class PaperPlotBackupService(
                         regionIds = listOf(region.id),
                         backend = "paper-plot-backup-v${record.formatVersion}",
                         status = PlotMutationJobStatus.QUEUED,
-                        totalUnits = record.blockCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                        totalUnits = record.blockCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        details = "format=homeclaim-restore-v1\nbackupId=${record.id}\nsourceRegion=${record.regionId.value}\n" +
+                            "areaId=${record.areaId.value}\nworldId=${record.worldId.value}\n" +
+                            "paperWorldId=${record.paperWorldId}\nactorKind=${actor.kind}\n" +
+                            "actorRef=${actor.stableId ?: ""}\n" +
+                            "recoveryOfJobId=${recoveryParentJobId ?: ""}\nphase=RESTORING"
                     )
                     task.job = job
                     jobStore.create(job)

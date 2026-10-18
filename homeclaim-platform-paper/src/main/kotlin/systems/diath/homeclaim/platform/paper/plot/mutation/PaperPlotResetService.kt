@@ -71,7 +71,7 @@ class PaperPlotResetService(
 
     override fun recoveryRequiredDiagnostics(worldName: String?): List<String> = runCatching {
         jobStore?.findRecoveryRequired()?.filter { worldName == null || it.worldName == worldName }?.map { record ->
-            "recovery-required:${record.operation}:${record.worldName}:${record.id}:regions=${record.regionIds.joinToString()}:progress=${record.completedUnits}/${record.totalUnits}:correlation=${record.correlationId}"
+            "${record.status.name.lowercase()}:${record.operation}:${record.worldName}:${record.id}:regions=${record.regionIds.joinToString()}:progress=${record.completedUnits}/${record.totalUnits}:correlation=${record.correlationId}"
         }.orEmpty()
     }.getOrElse { error ->
         plugin.logger.log(java.util.logging.Level.SEVERE, "Could not read recovery-required plot jobs", error)
@@ -159,6 +159,7 @@ class PaperPlotResetService(
         var completedColumns = 0
         var mutationAttempted = false
         val persistentJobId = UUID.randomUUID()
+        val preResetBackupId = UUID.randomUUID()
         val persistentJob = PlotMutationJobRecord(
             id = persistentJobId,
             correlationId = correlationId,
@@ -169,7 +170,11 @@ class PaperPlotResetService(
             regionIds = listOf(region.id),
             backend = mutationBackend.backendId,
             status = PlotMutationJobStatus.QUEUED,
-            totalUnits = totalColumns
+            totalUnits = totalColumns,
+            details = "format=homeclaim-reset-v1\nreason=${reason.name}\nbackupId=$preResetBackupId\n" +
+                "regionId=${region.id.value}\nareaId=${region.areaId.value}\n" +
+                "worldId=${worldAreaService?.getArea(region.areaId)?.worldId?.value ?: ""}\n" +
+                "paperWorldId=${world.uid}\nactorKind=${actor.kind}\nactorRef=${actor.stableId ?: ""}\nphase=BACKING_UP"
         )
         try {
             jobStore?.create(persistentJob)
@@ -305,10 +310,23 @@ class PaperPlotResetService(
             finish(PlotResetCompletionStatus.FAILED, "Persistent plot backup service is unavailable; reset was not started")
             return false
         }
-        val backupAccepted = backups.createBeforeReset(region, world, minY, clearUntil, actor, correlationId, "reset:${reason.name.lowercase()}") { backupResult ->
+        val backupAccepted = backups.createBeforeReset(region, world, minY, clearUntil, actor, correlationId,
+            "reset:${reason.name.lowercase()}", preResetBackupId) { backupResult ->
             if (backupResult.isFailure) {
                 finish(PlotResetCompletionStatus.FAILED, "Pre-reset backup failed; reset was not started: ${backupResult.exceptionOrNull()?.message ?: "unknown backup error"}")
             } else {
+                val backup = backupResult.getOrThrow()
+                runCatching {
+                    jobStore?.updateDetails(persistentJobId,
+                        "format=homeclaim-reset-v1\nreason=${reason.name}\nbackupId=${backup.id}\n" +
+                            "regionId=${region.id.value}\nareaId=${region.areaId.value}\n" +
+                            "worldId=${backup.worldId.value}\npaperWorldId=${backup.paperWorldId}\n" +
+                            "actorKind=${actor.kind}\nactorRef=${actor.stableId ?: ""}\nphase=RESETTING")
+                }.onFailure { journalFailure ->
+                    finish(PlotResetCompletionStatus.FAILED,
+                        "Pre-reset backup ${backup.id} is READY, but reset phase could not be journaled: ${journalFailure.message}")
+                    return@createBeforeReset
+                }
                 startMutation()
             }
         }

@@ -79,4 +79,59 @@ class RegionMutationConflictCoordinatorTest {
         assertInstanceOf(MutationConflict.RecoveryRequired::class.java, conflict)
         assertTrue(coordinator.activeReservations().isEmpty())
     }
+
+    @Test
+    fun `explicit recovery may reserve its own blocked regions but not overlap another recovery`() {
+        val region = RegionId(UUID.randomUUID())
+        val jobId = UUID.randomUUID()
+        val record = PlotMutationJobRecord(
+            id = jobId, correlationId = CorrelationId.newId(), operation = "SWAP", worldId = null,
+            areaId = AreaId(UUID.randomUUID()), worldName = "display", regionIds = listOf(region),
+            backend = "paper", status = PlotMutationJobStatus.RECOVERY_REQUIRED
+        )
+        val store = object : PlotMutationJobStore {
+            override fun create(record: PlotMutationJobRecord) = Unit
+            override fun markRunning(id: UUID) = Unit
+            override fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int) = Unit
+            override fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String?) = Unit
+            override fun markInterruptedAsRecoveryRequired() = 0
+            override fun findById(id: UUID) = record.takeIf { it.id == id }
+            override fun findRecoveryRequired(limit: Int) = listOf(record)
+        }
+        val coordinator = RegionMutationConflictCoordinator(store)
+        val actor = systems.diath.homeclaim.core.policy.ActionActor.System()
+        val recovery = assertInstanceOf(ReservationAttempt.Acquired::class.java,
+            coordinator.reserveRecovery(jobId, listOf(region), actor, record.correlationId))
+        assertInstanceOf(ReservationAttempt.Conflict::class.java,
+            coordinator.reserve(RegionMutationOperation.RESET, listOf(region)))
+        recovery.lease.close()
+        assertInstanceOf(ReservationAttempt.Acquired::class.java,
+            coordinator.reserveRecovery(jobId, listOf(region), actor, record.correlationId))
+    }
+
+    @Test
+    fun `recovery jobs created by a recovery action do not deadlock their parent lineage`() {
+        val region = RegionId(UUID.randomUUID())
+        val parentId = UUID.randomUUID()
+        val childId = UUID.randomUUID()
+        val parent = PlotMutationJobRecord(parentId, CorrelationId.newId(), "COPY", null,
+            AreaId(UUID.randomUUID()), "display", listOf(region), "paper", PlotMutationJobStatus.RECOVERY_REQUIRED)
+        val child = PlotMutationJobRecord(childId, CorrelationId.newId(), "RESTORE", null,
+            parent.areaId, "display", listOf(region), "paper", PlotMutationJobStatus.RECOVERY_REQUIRED,
+            details = "recoveryOfJobId=$parentId")
+        val store = object : PlotMutationJobStore {
+            override fun create(record: PlotMutationJobRecord) = Unit
+            override fun markRunning(id: UUID) = Unit
+            override fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int) = Unit
+            override fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String?) = Unit
+            override fun markInterruptedAsRecoveryRequired() = 0
+            override fun findById(id: UUID) = listOf(parent, child).firstOrNull { it.id == id }
+            override fun findRecoveryRequired(limit: Int) = listOf(parent, child)
+            override fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>) = listOf(parent, child)
+        }
+        val coordinator = RegionMutationConflictCoordinator(store)
+        val recovery = assertInstanceOf(ReservationAttempt.Acquired::class.java,
+            coordinator.reserveRecovery(childId, listOf(region), systems.diath.homeclaim.core.policy.ActionActor.System(), child.correlationId))
+        recovery.lease.close()
+    }
 }

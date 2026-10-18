@@ -240,7 +240,7 @@ class PlotCommandTest {
             .execute(player, arrayOf("jobs", "inspect", record.id.toString()))
 
         verify(player, atLeastOnce()).sendMessage(contains(record.correlationId.toString()))
-        verify(player, atLeastOnce()).sendMessage(contains("Diagnostic only"))
+        verify(player, atLeastOnce()).sendMessage(contains("No operation resumes automatically"))
         verify(jobStore).findById(record.id)
     }
 
@@ -376,7 +376,10 @@ class PlotCommandTest {
     fun `merge journal startup failure closes queued job and releases reservation`() {
         val ownerId = UUID.randomUUID()
         val regions = mergedPair(ownerId)
-        val player = mergePlayer(mock(World::class.java), ownerId)
+        val world = mock(World::class.java)
+        doReturn(UUID.randomUUID()).`when`(world).uid
+        val player = mergePlayer(world, ownerId)
+        doReturn(world).`when`(player).world
         val failMarkRunningOnce = AtomicBoolean(true)
         val jobs = mutableMapOf<UUID, PlotMutationJobRecord>()
         val finishedJobs = mutableListOf<Pair<UUID, PlotMutationJobStatus>>()
@@ -426,7 +429,8 @@ class PlotCommandTest {
         assertEquals(0, mutationCalls.get())
         assertEquals(1, finishedJobs.size)
         assertEquals(PlotMutationJobStatus.FAILED, finishedJobs.single().second)
-        assertTrue(jobs.values.single().error?.contains("journal startup failure") == true)
+        assertEquals(1, jobs.size, "journal create should persist the job before markRunning; finished=$finishedJobs")
+        assertTrue(jobs.getValue(finishedJobs.single().first).error?.contains("journal startup failure") == true)
 
         command.execute(player, arrayOf("merge"))
 

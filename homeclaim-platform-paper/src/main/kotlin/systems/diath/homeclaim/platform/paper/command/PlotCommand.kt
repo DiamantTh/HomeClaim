@@ -67,6 +67,9 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupServi
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferOperation
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryAction
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryPlanner
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryPlanResult
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanResult
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanner
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferResult
@@ -206,7 +209,10 @@ class PlotCommand(
                 handleReset(sender, args.getOrNull(1) == "confirm")
             }
             "jobs", "job" -> {
-                if (!Permissions.checkWithMessage(sender, Permissions.PLOT_JOBS)) return true
+                if (!Permissions.hasAny(sender, Permissions.PLOT_JOBS, Permissions.ADMIN_JOBS_INSPECT,
+                        Permissions.ADMIN_JOBS_RECOVER, Permissions.ADMIN_JOBS_RESOLVE)) {
+                    sender.sendMessage(i18n.msg("permission.denied")); return true
+                }
                 handleJobs(sender, args)
             }
             "alias" -> {
@@ -473,6 +479,8 @@ class PlotCommand(
             HomeClaimOperationActions.REGION_COPY,
             HomeClaimOperationActions.REGION_MOVE,
             HomeClaimOperationActions.REGION_SWAP -> confirmTransfer(player, actor, pending)
+            HomeClaimOperationActions.REGION_RECOVERY,
+            HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE -> confirmJobRecovery(player, actor, pending)
             else -> player.sendMessage("§eThe pending operation cannot be confirmed here.")
         }
     }
@@ -766,7 +774,7 @@ class PlotCommand(
             player
         ) ?: return
         player.sendMessage("§7Changing the biome for ${plan.regions.size} plot region(s)…")
-        mutation.apply(plan.regions, biome, plan.request.correlationId).whenComplete { _, failure ->
+        mutation.apply(plan.regions, biome, plan.request.correlationId, plan.request.actor).whenComplete { _, failure ->
             onPaperThread(player, "plot-biome-completion") {
                 try {
                     if (failure == null) {
@@ -1131,6 +1139,7 @@ class PlotCommand(
             it.copy(mergeGroupId = prospectiveGroup, home = if (it.id == region.id) mergedHome else null)
         }
         val jobId = UUID.randomUUID()
+        var jobCreated = false
         try {
             mutationJobStore?.create(
                 PlotMutationJobRecord(
@@ -1143,14 +1152,18 @@ class PlotCommand(
                     regionIds = originalRegions.map { it.id },
                     backend = mutationBackend?.backendId ?: "paper-plot-mutation",
                     status = PlotMutationJobStatus.QUEUED,
-                    totalUnits = originalRegions.size
+                    totalUnits = originalRegions.size,
+                    details = "format=homeclaim-merge-v1\nphase=REGION_STATE_AND_WORLD_MUTATION\n" +
+                        "paperWorldId=${player.world.uid}\nmergeGroupId=${prospectiveGroup.value}\n" +
+                        "actorKind=PLAYER\nactorRef=${player.uniqueId}"
                 )
             )
+            jobCreated = mutationJobStore != null
             mutationJobStore?.markRunning(jobId)
         } catch (journalError: Throwable) {
             val detail = "Could not persist merge operation before mutation: ${journalError.message ?: journalError.javaClass.simpleName}"
             try {
-                runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.FAILED, 0, originalRegions.size, detail) }
+                if (jobCreated) runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.FAILED, 0, originalRegions.size, detail) }
                     .onFailure { stateError -> java.util.logging.Logger.getLogger(PlotCommand::class.java.name)
                         .severe("Could not close failed merge job $jobId: ${stateError.message}") }
                 runCatching { auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size) }
@@ -1272,12 +1285,14 @@ class PlotCommand(
     private fun MutationConflict.detailCode(): String = when (this) {
         is MutationConflict.Active -> "MUTATION_CONFLICT_ACTIVE_${operation.name}"
         is MutationConflict.RecoveryRequired -> "MUTATION_RECOVERY_REQUIRED:$jobId"
+        is MutationConflict.RecoveryJobUnavailable -> "MUTATION_RECOVERY_JOB_UNAVAILABLE:${jobId}"
         is MutationConflict.RecoveryLookupFailed -> "MUTATION_RECOVERY_LOOKUP_FAILED"
     }
 
     private fun MutationConflict.playerMessage(): String = when (this) {
         is MutationConflict.Active -> "§cA ${operation.name.lowercase()} operation already affects this plot. Please wait for it to finish."
         is MutationConflict.RecoveryRequired -> "§cThis plot has a recovery-required ${operation.lowercase()} job ($jobId). Inspect /plot jobs inspect $jobId before starting another mutation."
+        is MutationConflict.RecoveryJobUnavailable -> "§cThe requested recovery job is no longer blocking these plots. Inspect the job and try again."
         is MutationConflict.RecoveryLookupFailed -> "§cPlot mutation recovery status is unavailable; no destructive operation was started."
     }
 
@@ -1360,7 +1375,10 @@ class PlotCommand(
                     regionIds = originalRegions.map { it.id },
                     backend = mutationBackend?.backendId ?: "paper-plot-mutation",
                     status = PlotMutationJobStatus.QUEUED,
-                    totalUnits = originalRegions.size
+                    totalUnits = originalRegions.size,
+                    details = "format=homeclaim-unlink-v1\nphase=REGION_STATE_AND_WORLD_MUTATION\n" +
+                        "paperWorldId=${player.world.uid}\nmergeGroupId=${region.mergeGroupId?.value ?: ""}\n" +
+                        "actorKind=PLAYER\nactorRef=${player.uniqueId}"
                 )
             )
             mutationJobStore?.markRunning(jobId)
@@ -1575,6 +1593,9 @@ class PlotCommand(
         val action = args.getOrNull(1)?.lowercase()
         when (action) {
             "inspect" -> {
+                if (!Permissions.hasAny(player, Permissions.PLOT_JOBS, Permissions.ADMIN_JOBS_INSPECT)) {
+                    player.sendMessage(i18n.msg("permission.denied")); return
+                }
                 val jobId = args.getOrNull(2)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                 if (jobId == null) {
                     player.sendMessage("§cUsage: /plot jobs inspect <job-id>")
@@ -1600,13 +1621,20 @@ class PlotCommand(
                 record.error?.let { player.sendMessage("§cError: §f$it") }
                 if (record.status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
                     player.sendMessage("§eMutation side: §f${record.recoverySideDescription()}")
-                    player.sendMessage("§eDiagnostic only: inspect the plot and start a new explicit operation if recovery is safe. HomeClaim does not resume this job automatically.")
+                    player.sendMessage("§eNo operation resumes automatically. Use /plot jobs recover only for a listed safe action, or resolve acknowledge after manual repair.")
+                } else if (record.status == PlotMutationJobStatus.RECOVERY_IN_PROGRESS) {
+                    player.sendMessage("§cAn operator recovery is in progress. Destructive mutations remain blocked.")
+                } else if (record.status == PlotMutationJobStatus.RECOVERED) {
+                    player.sendMessage("§aRecovery action completed; original mutation history is retained.")
+                } else if (record.status == PlotMutationJobStatus.ACKNOWLEDGED) {
+                    player.sendMessage("§eAcknowledged after manual inspection. HomeClaim did not verify or repair the world state.")
                 } else {
                     player.sendMessage("§7This is a historical job record. Inspection does not change its state.")
                 }
                 player.sendMessage("§6§m───────────§r")
             }
             "cancel", "stop" -> {
+                if (!Permissions.checkWithMessage(player, Permissions.PLOT_JOBS)) return
                 val worldName = args.getOrNull(2)
                 val cancelled = plotMutationService.cancelPendingJobs(worldName) +
                     plotResetService.cancelPendingJobs(worldName)
@@ -1617,6 +1645,7 @@ class PlotCommand(
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
             "status" -> {
+                if (!Permissions.checkWithMessage(player, Permissions.PLOT_JOBS)) return
                 val worldName = args.getOrNull(2)
                 val scope = worldName ?: "all worlds"
                 val diagnostics = buildList {
@@ -1636,7 +1665,16 @@ class PlotCommand(
                 }
                 player.sendMessage("\u00a76\u00a7m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u00a7r")
             }
+            "recover" -> {
+                if (!Permissions.checkWithMessage(player, Permissions.ADMIN_JOBS_RECOVER)) return
+                requestJobRecovery(player, args.getOrNull(2), args.getOrNull(3), resolveAcknowledgement = false)
+            }
+            "resolve" -> {
+                if (!Permissions.checkWithMessage(player, Permissions.ADMIN_JOBS_RESOLVE)) return
+                requestJobRecovery(player, args.getOrNull(2), args.getOrNull(3), resolveAcknowledgement = true)
+            }
             else -> {
+                if (!Permissions.checkWithMessage(player, Permissions.PLOT_JOBS)) return
                 val backendLine = mutationBackend?.let { b ->
                     val caps = b.capabilities()
                     val flags = buildList {
@@ -1653,6 +1691,8 @@ class PlotCommand(
                 player.sendMessage("\u00a7f  /plot jobs status [world]\u00a77 - Show active queued jobs")
                 player.sendMessage("\u00a7f  /plot jobs cancel [world]\u00a77 - Cancel queued jobs")
                 player.sendMessage("\u00a7f  /plot jobs inspect <job-id>\u00a77 - Inspect recovery-required job details")
+                player.sendMessage("\u00a7f  /plot jobs recover <job-id> restore-target|restore-both\u00a77 - Request a confirmed backup recovery")
+                player.sendMessage("\u00a7f  /plot jobs resolve <job-id> acknowledge\u00a77 - Confirm a manual repair acknowledgement")
                 player.sendMessage("\u00a79API:")
                 player.sendMessage("\u00a7f  GET /api/v1/metrics\u00a77 - Full server metrics")
                 player.sendMessage("\u00a7f  GET /api/v1/metrics/plots\u00a77 - Plot-specific metrics")
@@ -1666,8 +1706,234 @@ class PlotCommand(
         operation.startsWith("RESET") || operation == "BIOME" -> "world may be partially changed; database ownership was not changed by this job"
         operation == "MERGE" -> "world and merge persistence may have diverged"
         operation == "UNLINK" -> "world and merge persistence may have diverged despite compensation"
+        operation == "COPY" -> "target may be partially changed; source should remain unchanged"
+        operation == "MOVE" -> "target may be written and source cleanup may be partial; inspect both recorded sides"
+        operation == "SWAP" -> "one or both recorded sides may have changed; original backups are retained"
+        operation == "RESTORE" -> "target may be partially restored from the recorded backup; no pre-restore safety snapshot is implied"
         else -> "unknown; inspect the region and correlated audit records"
     }
+
+    private data class RecoveryTarget(val region: Region, val backupId: UUID)
+
+    private fun requestJobRecovery(player: Player, rawId: String?, rawAction: String?, resolveAcknowledgement: Boolean) {
+        val store = mutationJobStore ?: run { player.sendMessage("§cPersistent mutation-job storage is unavailable."); return }
+        val id = rawId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val action = rawAction?.lowercase()?.replace('-', '_')?.let { runCatching { PlotMutationRecoveryAction.valueOf(it.uppercase()) }.getOrNull() }
+        val job = id?.let { store.findById(it) }
+        if (job == null || job.status != PlotMutationJobStatus.RECOVERY_REQUIRED || action == null ||
+            (resolveAcknowledgement && action != PlotMutationRecoveryAction.ACKNOWLEDGE) ||
+            (!resolveAcknowledgement && action == PlotMutationRecoveryAction.ACKNOWLEDGE)) {
+            player.sendMessage("§cThat recovery action is unavailable for this job. Inspect it and choose a supported action.")
+            return
+        }
+        if (action != PlotMutationRecoveryAction.ACKNOWLEDGE && recoveryTargets(job, action).isNullOrEmpty()) {
+            player.sendMessage("§cThis job has no safe recorded backup for that recovery action.")
+            return
+        }
+        val actor = ActionActor.Player(player.uniqueId)
+        val operationKey = if (action == PlotMutationRecoveryAction.ACKNOWLEDGE)
+            HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE else HomeClaimOperationActions.REGION_RECOVERY
+        val target = "job:${job.id}:${action.name}"
+        val correlation = CorrelationId.newId()
+        pendingConfirmations.create(actor, operationKey, target, recoveryStateSignature(job), correlationId = correlation)
+        if (action == PlotMutationRecoveryAction.ACKNOWLEDGE) {
+            player.sendMessage("§cThis only acknowledges manual repair. HomeClaim will not verify or change the world.")
+        } else {
+            player.sendMessage("§cThis will restore ${recoveryTargets(job, action)!!.size} region(s) from the job's validated original backup(s).")
+        }
+        player.sendMessage("§7Job ${job.id} (${job.operation}); affected region(s): ${job.regionIds.joinToString()}.")
+        player.sendMessage("§6Confirm with /plot confirm within 30 seconds.")
+    }
+
+    private fun confirmJobRecovery(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
+        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
+        val jobId = match?.groupValues?.get(1)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val action = match?.groupValues?.get(2)?.let { runCatching { PlotMutationRecoveryAction.valueOf(it) }.getOrNull() }
+        val store = mutationJobStore ?: run { pendingConfirmations.invalidate(actor); player.sendMessage("§cPersistent mutation-job storage is unavailable."); return }
+        val job = jobId?.let { store.findById(it) }
+        if (job == null || action == null || job.status != PlotMutationJobStatus.RECOVERY_REQUIRED ||
+            recoveryStateSignature(job) != pending.stateSignature) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe recovery job changed or is no longer unresolved. Inspect it and request recovery again.")
+            return
+        }
+        val acknowledgement = action == PlotMutationRecoveryAction.ACKNOWLEDGE
+        val expectedOperation = if (acknowledgement) HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE
+            else HomeClaimOperationActions.REGION_RECOVERY
+        if (pending.operation != expectedOperation) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§eThe pending confirmation does not match this recovery action.")
+            return
+        }
+        if (!Permissions.checkWithMessage(player, if (acknowledgement) Permissions.ADMIN_JOBS_RESOLVE else Permissions.ADMIN_JOBS_RECOVER)) return
+        val targets = if (acknowledgement) emptyList() else recoveryTargets(job, action).orEmpty()
+        if (!acknowledgement && targets.isEmpty()) {
+            pendingConfirmations.invalidate(actor)
+            player.sendMessage("§cA safe backup mapping is no longer available for this action.")
+            return
+        }
+        val lease = if (acknowledgement) {
+            if (job.regionIds.isEmpty()) { player.sendMessage("§cJob has no region scope."); return }
+            when (val attempt = mutationConflicts.reserveRecovery(job.id, job.regionIds, actor, pending.correlationId)) {
+                is ReservationAttempt.Acquired -> attempt.lease
+                is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
+            }
+        } else {
+            when (val attempt = mutationConflicts.reserveRecovery(job.id, targets.map { it.region.id }, actor, pending.correlationId)) {
+                is ReservationAttempt.Acquired -> attempt.lease
+                is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
+            }
+        }
+        if (pendingConfirmations.consume(actor, pending.operation, pending.targetSignature, pending.stateSignature) == null) {
+            lease.close(); player.sendMessage("§eThe confirmation expired. Request recovery again."); return
+        }
+        val actionKey = if (acknowledgement) HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE else HomeClaimOperationActions.REGION_RECOVERY
+        val firstRegion = targets.firstOrNull()?.region ?: job.regionIds.firstOrNull()?.let(regionService::getRegionById)
+        if (firstRegion == null) {
+            lease.close(); player.sendMessage("§cThe job's region no longer exists; recovery cannot be resolved safely."); return
+        }
+        val request = operationRequest(player, actionKey, firstRegion, "plot_job_recovery",
+            correlationId = pending.correlationId,
+            attributes = mapOf(
+                "jobId" to job.id.toString(), "originalCorrelationId" to job.correlationId.toString(),
+                "recoveryAction" to action.name,
+                "backupIds" to targets.joinToString(",") { it.backupId.toString() },
+                "regions" to (if (targets.isEmpty()) job.regionIds else targets.map { it.region.id }).joinToString(",") { it.value.toString() }
+            ))
+        val startedDetails = recoveryDetails(job, action, actor, pending.correlationId, "IN_PROGRESS")
+        val recoveryStarted = runCatching { store.beginRecovery(job.id, startedDetails) }.getOrElse { error ->
+            lease.close()
+            player.sendMessage("§cRecovery could not be journaled: ${error.message ?: error.javaClass.simpleName}. The region remains blocked.")
+            return
+        }
+        if (!recoveryStarted) {
+            lease.close(); player.sendMessage("§eAnother operator changed this recovery job. Inspect it again."); return
+        }
+        val auditStartFailure = runCatching {
+            auditOperation(request, AuditStatus.ATTEMPTED, "originalJobId=${job.id}; recoveryAction=${action.name}", targets.size.coerceAtLeast(1))
+        }.exceptionOrNull()
+        if (auditStartFailure != null) {
+            runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                recoveryDetails(job, action, actor, pending.correlationId, "AUDIT_START_FAILED"),
+                "Recovery was not started because ATTEMPTED audit failed: ${auditStartFailure.message}") }
+            lease.close()
+            player.sendMessage("§cRecovery was not started because its audit could not be recorded; the plot remains blocked.")
+            return
+        }
+        if (acknowledgement) {
+            val persisted = runCatching {
+                store.finishRecovery(job.id, PlotMutationJobStatus.ACKNOWLEDGED,
+                    recoveryDetails(job, action, actor, pending.correlationId, "ACKNOWLEDGED"),
+                    "Operator acknowledged manual repair; HomeClaim did not verify or modify world state")
+            }.getOrDefault(false)
+            if (persisted) {
+                runCatching { auditOperation(request, AuditStatus.ACKNOWLEDGED, "Manual repair acknowledged; world state not verified", job.regionIds.size.coerceAtLeast(1)) }
+                    .onFailure { org.bukkit.Bukkit.getLogger().warning("Recovery acknowledgement ${job.id} persisted but audit append failed: ${it.message}") }
+                player.sendMessage("§eJob acknowledged. HomeClaim did not verify or repair the world; the recovery block is cleared.")
+            } else {
+                runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                    recoveryDetails(job, action, actor, pending.correlationId, "FAILED"), "Could not persist acknowledgement") }
+                runCatching { auditOperation(request, AuditStatus.FAILED, "Could not persist manual acknowledgement", job.regionIds.size.coerceAtLeast(1)) }
+                player.sendMessage("§cAcknowledgement could not be saved; the region remains blocked.")
+            }
+            lease.close()
+            return
+        }
+        val service = backupService
+        if (service == null) {
+            runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                recoveryDetails(job, action, actor, pending.correlationId, "FAILED"), "Backup service unavailable") }
+            runCatching { auditOperation(request, AuditStatus.FAILED, "Backup service unavailable", targets.size) }
+            lease.close(); player.sendMessage("§cBackup recovery service is unavailable; the region remains blocked."); return
+        }
+        val worlds = targets.map { target -> target to resolvePaperWorld(target.region) }
+        if (worlds.any { it.second?.uid != recoveryPaperWorldId(job) }) {
+            runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                recoveryDetails(job, action, actor, pending.correlationId, "FAILED"), "Original Paper world binding is unavailable") }
+            runCatching { auditOperation(request, AuditStatus.FAILED, "Original Paper world binding is unavailable", targets.size) }
+            lease.close(); player.sendMessage("§cThe original world binding is unavailable; the region remains blocked."); return
+        }
+        player.sendMessage("§7Validating original backup(s) and restoring the affected plot state…")
+        var restore = java.util.concurrent.CompletableFuture.completedFuture(0)
+        worlds.forEach { (target, world) ->
+            restore = restore.thenCompose { count ->
+                service.restore(target.backupId, target.region, requireNotNull(world), actor, pending.correlationId,
+                    lease, recoveryParentJobId = job.id)
+                    .thenApply { count + it.restoredBlocks }
+            }
+        }
+        restore.whenComplete { restoredBlocks, failure ->
+            val completeRecovery = Runnable {
+                val success = failure == null
+                val outcome = if (success) PlotMutationJobStatus.RECOVERED else PlotMutationJobStatus.RECOVERY_REQUIRED
+                val message = failure?.let { it.cause?.message ?: it.message ?: it.javaClass.simpleName }
+                val saved = runCatching {
+                    store.finishRecovery(job.id, outcome,
+                        recoveryDetails(job, action, actor, pending.correlationId, outcome.name), message)
+                }.getOrDefault(false)
+                if (!saved) {
+                    runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                        recoveryDetails(job, action, actor, pending.correlationId, "FINALIZATION_FAILED"),
+                        "Recovery world writes completed=$success, but original job finalization failed") }
+                }
+                try {
+                    if (success && saved) {
+                        runCatching { auditOperation(request, AuditStatus.COMPLETED, "originalJobId=${job.id}; action=${action.name}; restoredBlocks=$restoredBlocks", targets.size) }
+                            .onFailure { org.bukkit.Bukkit.getLogger().warning("Recovery ${job.id} finalized but audit append failed: ${it.message}") }
+                        if (player.isOnline) player.sendMessage("§aRecovery completed for job ${job.id}; restored $restoredBlocks blocks. Original job history is retained.")
+                    } else {
+                        val detail = if (success) "World restore ran but the original recovery journal could not be finalized" else "Recovery incomplete: $message"
+                        runCatching { auditOperation(request, AuditStatus.FAILED, detail, targets.size) }
+                        if (player.isOnline) player.sendMessage("§c$detail. Job ${job.id} remains blocked for inspection.")
+                    }
+                } finally {
+                    lease.close()
+                }
+            }
+            runCatching {
+                if (org.bukkit.Bukkit.isPrimaryThread()) completeRecovery.run()
+                else org.bukkit.Bukkit.getScheduler().runTask(
+                    org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), completeRecovery
+                )
+            }.onFailure { schedulingError ->
+                runCatching {
+                    store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                        recoveryDetails(job, action, actor, pending.correlationId, "COMPLETION_CALLBACK_UNAVAILABLE"),
+                        "World restore completion could not be finalized on the Paper thread: ${schedulingError.message}")
+                }.onFailure { persistenceError -> schedulingError.addSuppressed(persistenceError) }
+                lease.close()
+                org.bukkit.Bukkit.getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Could not finalize recovery job ${job.id} on the Paper thread; its persistent recovery state remains blocked",
+                    schedulingError
+                )
+            }
+        }
+    }
+
+    private fun recoveryTargets(job: PlotMutationJobRecord, action: PlotMutationRecoveryAction): List<RecoveryTarget>? {
+        val plan = when (val result = PlotMutationRecoveryPlanner.plan(job, action)) {
+            is PlotMutationRecoveryPlanResult.Ready -> result.targets
+            is PlotMutationRecoveryPlanResult.Rejected -> return null
+        }
+        val resolved = plan.map { target -> regionService.getRegionById(target.regionId)?.let { RecoveryTarget(it, target.backupId) } }
+        return resolved.takeIf { it.all { target -> target != null } }?.filterNotNull()
+    }
+
+    private fun recoveryPaperWorldId(job: PlotMutationJobRecord): UUID? = job.details.orEmpty().lineSequence()
+        .firstOrNull { it.startsWith("paperWorldId=") }?.substringAfter('=')?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+
+    private fun recoveryStateSignature(job: PlotMutationJobRecord): String =
+        listOf(job.id, job.operation, job.status, job.updatedAt, job.regionIds, job.areaId, job.worldId,
+            job.details.orEmpty(), job.error.orEmpty()).joinToString("|")
+
+    private fun recoveryDetails(job: PlotMutationJobRecord, action: PlotMutationRecoveryAction, actor: ActionActor,
+                                correlationId: CorrelationId, phase: String): String =
+        listOfNotNull(job.details?.takeIf(String::isNotBlank),
+            "originalFailure=${job.error.orEmpty().replace('\n', ' ').take(1200)}",
+            "recoveryAction=${action.name}", "recoveryActorKind=${actor.kind}",
+            "recoveryActorRef=${actor.stableId ?: ""}", "recoveryCorrelationId=$correlationId",
+            "recoveryAt=${java.time.Instant.now()}", "recoveryPhase=$phase").joinToString("\n").take(8192)
 
     private fun handleAlias(player: Player, args: Array<out String>) {
         val region = currentRegion(player) ?: run {

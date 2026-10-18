@@ -16,7 +16,10 @@ enum class PlotMutationJobStatus {
     ROLLED_BACK,
     FAILED,
     CANCELLED,
-    RECOVERY_REQUIRED
+    RECOVERY_REQUIRED,
+    RECOVERY_IN_PROGRESS,
+    RECOVERED,
+    ACKNOWLEDGED
 }
 
 data class PlotMutationJobRecord(
@@ -53,6 +56,16 @@ interface PlotMutationJobStore {
      */
     fun findById(id: UUID): PlotMutationJobRecord?
     fun findRecoveryRequired(limit: Int = 100): List<PlotMutationJobRecord>
+    fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>): List<PlotMutationJobRecord> {
+        val targets = regionIds.toSet()
+        return if (targets.isEmpty()) emptyList() else findRecoveryRequired(500).filter { job -> job.regionIds.any(targets::contains) }
+    }
+
+    /** Atomically claims an explicitly confirmed operator recovery. */
+    fun beginRecovery(id: UUID, recoveryDetails: String): Boolean = false
+
+    /** Persists the recovery outcome while retaining the original mutation job. */
+    fun finishRecovery(id: UUID, status: PlotMutationJobStatus, recoveryDetails: String, error: String? = null): Boolean = false
 }
 
 class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutationJobStore {
@@ -138,16 +151,86 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
     }
 
     override fun markInterruptedAsRecoveryRequired(): Int = dataSource.connection.use { connection ->
-        connection.prepareStatement("""
-            UPDATE plot_mutation_jobs
-            SET status = ?, error = 'Interrupted by server restart; inspect and recover manually',
-                updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
-            WHERE status IN (?, ?)
-        """.trimIndent()).use { statement ->
-            statement.setString(1, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
-            statement.setString(2, PlotMutationJobStatus.QUEUED.name)
-            statement.setString(3, PlotMutationJobStatus.RUNNING.name)
-            statement.executeUpdate()
+        connection.autoCommit = false
+        try {
+            val interrupted = connection.prepareStatement("""
+                SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
+                       world_id, status, completed_units, total_units, error, created_at, started_at,
+                       updated_at, completed_at, details
+                FROM plot_mutation_jobs WHERE status IN (?, ?, ?) ORDER BY created_at, id
+            """.trimIndent()).use { statement ->
+                statement.setString(1, PlotMutationJobStatus.QUEUED.name)
+                statement.setString(2, PlotMutationJobStatus.RUNNING.name)
+                statement.setString(3, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                statement.executeQuery().use { result ->
+                    buildList { while (result.next()) result.toRecordOrNull()?.let(::add) }
+                }
+            }
+            var changed = 0
+            for (record in interrupted) {
+                val classification = PlotMutationRestartClassifier.classify(record)
+                val detail = appendDetail(record.details, "restartClassification=${classification.reason}")
+                connection.prepareStatement("""
+                    UPDATE plot_mutation_jobs
+                    SET status = ?, details = ?, error = ?, updated_at = CURRENT_TIMESTAMP,
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status IN (?, ?, ?)
+                """.trimIndent()).use { statement ->
+                    statement.setString(1, classification.status.name)
+                    statement.setString(2, detail)
+                    statement.setString(3, classification.message)
+                    statement.setObject(4, record.id)
+                    statement.setString(5, PlotMutationJobStatus.QUEUED.name)
+                    statement.setString(6, PlotMutationJobStatus.RUNNING.name)
+                    statement.setString(7, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                    changed += statement.executeUpdate()
+                }
+            }
+            connection.commit()
+            changed
+        } catch (failure: Throwable) {
+            runCatching { connection.rollback() }
+            throw failure
+        } finally {
+            connection.autoCommit = true
+        }
+    }
+
+    override fun beginRecovery(id: UUID, recoveryDetails: String): Boolean {
+        require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
+        return dataSource.connection.use { connection ->
+            connection.prepareStatement("""
+                UPDATE plot_mutation_jobs SET status = ?, details = ?, updated_at = CURRENT_TIMESTAMP,
+                    completed_at = NULL
+                WHERE id = ? AND status = ?
+            """.trimIndent()).use { statement ->
+                statement.setString(1, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                statement.setString(2, recoveryDetails)
+                statement.setObject(3, id)
+                statement.setString(4, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
+                statement.executeUpdate() == 1
+            }
+        }
+    }
+
+    override fun finishRecovery(id: UUID, status: PlotMutationJobStatus, recoveryDetails: String, error: String?): Boolean {
+        require(status in setOf(PlotMutationJobStatus.RECOVERED, PlotMutationJobStatus.ACKNOWLEDGED, PlotMutationJobStatus.RECOVERY_REQUIRED))
+        require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
+        return dataSource.connection.use { connection ->
+            connection.prepareStatement("""
+                UPDATE plot_mutation_jobs SET status = ?, details = ?, error = ?, updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CASE WHEN ? = ? THEN NULL ELSE CURRENT_TIMESTAMP END
+                WHERE id = ? AND status = ?
+            """.trimIndent()).use { statement ->
+                statement.setString(1, status.name)
+                statement.setString(2, recoveryDetails)
+                statement.setString(3, error)
+                statement.setString(4, status.name)
+                statement.setString(5, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
+                statement.setObject(6, id)
+                statement.setString(7, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                statement.executeUpdate() == 1
+            }
         }
     }
 
@@ -175,18 +258,48 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                        status, completed_units, total_units, error, created_at, started_at,
                        updated_at, completed_at, details
                 FROM plot_mutation_jobs
-                WHERE status = ?
+                WHERE status IN (?, ?)
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
             """.trimIndent()).use { statement ->
                 statement.setString(1, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
-                statement.setInt(2, limit)
+                statement.setString(2, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                statement.setInt(3, limit)
                 statement.executeQuery().use { result ->
                     buildList {
                         while (result.next()) {
                             result.toRecordOrNull()?.let(::add)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    override fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>): List<PlotMutationJobRecord> {
+        val targets = regionIds.map { it.value.toString() }.distinct()
+        if (targets.isEmpty()) return emptyList()
+        val tokenClauses = targets.joinToString(" OR ") { "(region_ids = ? OR region_ids LIKE ? OR region_ids LIKE ? OR region_ids LIKE ?)" }
+        val sql = """
+            SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend, world_id,
+                   status, completed_units, total_units, error, created_at, started_at, updated_at, completed_at, details
+            FROM plot_mutation_jobs
+            WHERE status IN (?, ?) AND ($tokenClauses)
+            ORDER BY created_at DESC, id DESC
+        """.trimIndent()
+        return dataSource.connection.use { connection ->
+            connection.prepareStatement(sql).use { statement ->
+                statement.setString(1, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
+                statement.setString(2, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                var index = 3
+                targets.forEach { id ->
+                    statement.setString(index++, id)
+                    statement.setString(index++, "$id,%")
+                    statement.setString(index++, "%,$id,%")
+                    statement.setString(index++, "%,$id")
+                }
+                statement.executeQuery().use { result ->
+                    buildList { while (result.next()) result.toRecordOrNull()?.let(::add) }
                 }
             }
         }
@@ -229,5 +342,62 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
 
     private companion object {
         const val MAX_DETAILS_LENGTH = 8192
+    }
+
+    private fun appendDetail(details: String?, value: String): String {
+        val result = listOfNotNull(details?.takeIf(String::isNotBlank), value).joinToString("\n")
+        // Status and error carry the classification even for a legacy row whose
+        // diagnostic payload already occupies the entire bounded details column.
+        return result.takeIf { it.length <= MAX_DETAILS_LENGTH } ?: details.orEmpty()
+    }
+}
+
+data class PlotMutationRestartClassification(
+    val status: PlotMutationJobStatus,
+    val reason: String,
+    val message: String
+)
+
+/** Conservative startup classification: only durable pre-world phases are cleanly failed. */
+object PlotMutationRestartClassifier {
+    fun classify(record: PlotMutationJobRecord): PlotMutationRestartClassification {
+        if (record.status == PlotMutationJobStatus.RECOVERY_IN_PROGRESS) {
+            return PlotMutationRestartClassification(
+                PlotMutationJobStatus.RECOVERY_REQUIRED,
+                "operator_recovery_interrupted",
+                "An operator recovery was interrupted by server restart; inspect and request a new explicit recovery"
+            )
+        }
+        if (record.status == PlotMutationJobStatus.QUEUED) {
+            return PlotMutationRestartClassification(
+                PlotMutationJobStatus.FAILED,
+                "queued_before_execution",
+                "Interrupted before the mutation job entered RUNNING; no world mutation was started"
+            )
+        }
+        val values = record.details.orEmpty().lineSequence().mapNotNull { line ->
+            val index = line.indexOf('=')
+            if (index <= 0) null else line.substring(0, index) to line.substring(index + 1)
+        }.toMap()
+        val phase = values["phase"]?.uppercase()
+        val safelyBeforeWorldWrite = when {
+            record.operation in setOf("COPY", "MOVE", "SWAP") -> phase in setOf("VALIDATING", "BACKING_UP")
+            record.operation.startsWith("RESET_") -> phase in setOf("BACKING_UP", "VALIDATING")
+            record.operation == "RESTORE" -> phase == "VALIDATING"
+            else -> false
+        }
+        return if (safelyBeforeWorldWrite) {
+            PlotMutationRestartClassification(
+                PlotMutationJobStatus.FAILED,
+                "interrupted_before_world_write",
+                "Interrupted before the durable phase that begins world mutation"
+            )
+        } else {
+            PlotMutationRestartClassification(
+                PlotMutationJobStatus.RECOVERY_REQUIRED,
+                "world_mutation_phase_uncertain",
+                "Interrupted during or after a world mutation phase; inspect and explicitly recover"
+            )
+        }
     }
 }

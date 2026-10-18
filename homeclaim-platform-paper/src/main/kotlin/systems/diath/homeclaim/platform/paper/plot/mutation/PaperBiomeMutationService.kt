@@ -7,6 +7,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitTask
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.policy.CorrelationId
+import systems.diath.homeclaim.core.policy.ActionActor
 import systems.diath.homeclaim.core.service.WorldAreaService
 import java.util.UUID
 import java.util.concurrent.CancellationException
@@ -30,9 +31,12 @@ class PaperBiomeMutationService(
     init { require(columnsPerTick > 0) }
 
     fun apply(regions: Collection<Region>, biome: Biome): CompletableFuture<Unit> =
-        apply(regions, biome, CorrelationId.newId())
+        apply(regions, biome, CorrelationId.newId(), null)
 
-    fun apply(regions: Collection<Region>, biome: Biome, correlationId: CorrelationId): CompletableFuture<Unit> {
+    fun apply(regions: Collection<Region>, biome: Biome, correlationId: CorrelationId): CompletableFuture<Unit> =
+        apply(regions, biome, correlationId, null)
+
+    fun apply(regions: Collection<Region>, biome: Biome, correlationId: CorrelationId, actor: ActionActor?): CompletableFuture<Unit> {
         if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
         val first = regions.first()
         val world = resolveWorld(first)
@@ -54,7 +58,9 @@ class PaperBiomeMutationService(
             regionIds = regions.map { it.id },
             backend = "paper-biome-batch",
             status = PlotMutationJobStatus.QUEUED,
-            totalUnits = totalColumns
+            totalUnits = totalColumns,
+            details = "format=homeclaim-biome-v1\nphase=APPLYING_BIOME\n" +
+                "paperWorldId=${world.uid}\nactorKind=${actor?.kind ?: "UNKNOWN"}\nactorRef=${actor?.stableId ?: ""}"
         )
         try {
             jobStore?.create(journal)

@@ -48,6 +48,8 @@ object HomeClaimOperationActions {
     val REGION_COPY = ActionKey("homeclaim:region_copy")
     val REGION_MOVE = ActionKey("homeclaim:region_move")
     val REGION_SWAP = ActionKey("homeclaim:region_swap")
+    val REGION_RECOVERY = ActionKey("homeclaim:region_recovery")
+    val REGION_RECOVERY_ACKNOWLEDGE = ActionKey("homeclaim:region_recovery_acknowledge")
     val REGION_HOME_SET = ActionKey("homeclaim:region_home_set")
     val REGION_UNCLAIM = ActionKey("homeclaim:region_unclaim")
     val REGION_BIOME_CHANGE = ActionKey("homeclaim:region_biome_change")

@@ -645,6 +645,12 @@ class ActionRequestTest {
         assertEquals(1, audit.targetCount)
         assertTrue(AuditPolicy.shouldPersist(audit))
         assertTrue(AuditPolicy.shouldPersist(AuditEntries.operationResult(request, AuditStatus.ALLOWED)))
+        val recovery = AuditEntries.operationResult(
+            request.copy(actionKey = HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE),
+            AuditStatus.ACKNOWLEDGED,
+            "manual repair accepted; world not verified"
+        )
+        assertTrue(AuditPolicy.shouldPersist(recovery))
     }
 
     @Test
