@@ -10,6 +10,9 @@
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
+  "overrides": {
+    "cookie": "0.7.2"
+  },
   "devDependencies": {
     "@bokuweb/zstd-wasm": "0.0.27",
     "@sveltejs/adapter-static": "^3.0.8",
