@@ -9,6 +9,9 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.serialization.jackson.*
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.ktor.http.*
 import io.ktor.http.content.OutgoingContent
 import io.ktor.server.request.*
@@ -25,6 +28,12 @@ import java.io.StringWriter
 import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+import java.util.UUID
+import systems.diath.homeclaim.core.service.AuditService
+import systems.diath.homeclaim.core.service.AuditEntry
+import systems.diath.homeclaim.core.service.AuditStatus
+import systems.diath.homeclaim.core.policy.ActionKey
+import systems.diath.homeclaim.core.policy.CorrelationId
 
 /**
  * WebUX Server Module
@@ -34,11 +43,24 @@ import java.time.format.DateTimeFormatter
  */
 class HomeClaimWebUxServer(
     private val port: Int = 8081,
-    private val host: String = "0.0.0.0"
+    private val host: String = "127.0.0.1",
+    private val allowRemote: Boolean = false,
+    private val secureCookies: Boolean = false,
+    private val allowedHosts: Set<String> = emptySet(),
+    private val allowedOrigins: Set<String> = emptySet(),
+    private val auditService: AuditService? = null,
+    internal val authStore: WebUxAuthStore = WebUxAuthStore()
 ) {
-    fun start(): ApplicationEngine = embeddedServer(Netty, host = host, port = port) {
-        module()
-    }.start(wait = false)
+    fun start(): ApplicationEngine {
+        val loopback = host.equals("localhost", true) || host == "127.0.0.1" || host == "::1"
+        require(loopback || allowRemote) { "Remote WebUX bind requires homeclaim.webux.allowRemote=true" }
+        require(!(allowRemote || !loopback) || (secureCookies && allowedHosts.isNotEmpty() && allowedOrigins.isNotEmpty())) {
+            "Remote WebUX requires Secure cookies, allowedHosts, and allowedOrigins"
+        }
+        return embeddedServer(Netty, host = host, port = port) { module() }.start(wait = false)
+    }
+
+    fun issuePairing(playerId: UUID, username: String): String = authStore.issuePairing(playerId, username)
 
     private val pebble: PebbleEngine = PebbleEngine.Builder()
         .loader(ClasspathLoader().apply {
@@ -48,45 +70,130 @@ class HomeClaimWebUxServer(
         .autoEscaping(true)
         .build()
 
-    private val wsConnections = mutableSetOf<WebSocketSession>()
-    private val userSessions = mutableMapOf<String, MutableSet<WebSocketSession>>()
+    private val wsConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<WebSocketSession>()
+    private val userSessions = java.util.concurrent.ConcurrentHashMap<String, MutableSet<WebSocketSession>>()
+    private val json = ObjectMapper()
 
     /**
      * Configure Ktor application
      */
     fun Application.module() {
+        install(ContentNegotiation) { jackson() }
+        intercept(ApplicationCallPipeline.Call) {
+            if (!validHost(call)) {
+                call.respond(HttpStatusCode.Forbidden)
+                finish()
+                return@intercept
+            }
+            if (call.request.path() == "/ws") {
+                if (currentSession(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    finish()
+                    return@intercept
+                }
+                if (!validOrigin(call)) {
+                    call.respond(HttpStatusCode.Forbidden)
+                    finish()
+                    return@intercept
+                }
+            }
+            call.response.headers.append("X-Content-Type-Options", "nosniff", safeOnly = true)
+            call.response.headers.append("Referrer-Policy", "strict-origin-when-cross-origin", safeOnly = true)
+            call.response.headers.append("Permissions-Policy", "camera=(), microphone=(), geolocation=()", safeOnly = true)
+            call.response.headers.append("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'", safeOnly = true)
+            proceed()
+        }
         // WebSocket support
         install(WebSockets) {
             pingPeriod = Duration.ofSeconds(15)
             timeout = Duration.ofSeconds(15)
-            maxFrameSize = Long.MAX_VALUE
+            maxFrameSize = 16 * 1024L
             masking = false
         }
 
         routing {
             get("/static/{path...}") { serveStatic(call, "static", call.parameters.getAll("path")) }
-            get("/app") { respondSvelteApp(call) }
+            post("/auth/pair") {
+                if (!validOrigin(call)) {
+                    call.respond(HttpStatusCode.Forbidden, mapOf("error" to "origin_rejected")); return@post
+                }
+                val request = runCatching { call.receive<PairRequest>() }.getOrNull()
+                val remote = call.request.local.remoteHost
+                val exchanged = request?.code?.let { authStore.consumePairing(it, remote) }
+                if (exchanged == null) {
+                    if (authStore.shouldAuditFailedLogin()) auditFailedLogin()
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid_or_expired_code")); return@post
+                }
+                val (session, token) = exchanged
+                auditAuthEvent(session.identity, "LOGIN_SUCCESS")
+                call.response.headers.append(HttpHeaders.SetCookie, sessionCookie(token, session.expiresAt), safeOnly = false)
+                call.response.header(HttpHeaders.CacheControl, "no-store")
+                call.respond(mapOf("authenticated" to true, "playerId" to session.identity.playerId.toString(), "username" to session.identity.username))
+            }
+            get("/auth/session") {
+                val session = currentSession(call)
+                call.response.header(HttpHeaders.CacheControl, "no-store")
+                if (session == null) call.respond(HttpStatusCode.Unauthorized, mapOf("authenticated" to false))
+                else call.respond(mapOf("authenticated" to true, "playerId" to session.identity.playerId.toString(), "username" to session.identity.username, "expiresAt" to session.expiresAt.toString(), "csrfToken" to session.csrfToken))
+            }
+            post("/auth/logout") {
+                val session = currentSession(call)
+                if (session != null && (!validOrigin(call) || !validCsrf(call, session))) {
+                    call.respond(HttpStatusCode.Forbidden, mapOf("error" to "csrf_rejected")); return@post
+                }
+                authStore.revoke(cookieToken(call))
+                session?.identity?.let {
+                    auditAuthEvent(it, "LOGOUT")
+                    closeUserConnections(it.playerId.toString())
+                }
+                call.response.headers.append(HttpHeaders.SetCookie, clearSessionCookie(), safeOnly = false)
+                call.respond(mapOf("loggedOut" to true))
+            }
+            get("/app") {
+                if (currentSession(call) == null) { call.respondRedirect("/app/login"); return@get }
+                respondSvelteApp(call)
+            }
             get("/app/{path...}") {
                 val path = call.parameters.getAll("path")
                 val assetPath = path?.joinToString("/")
-                if (assetPath == null || !serveSpaResourceIfPresent(call, assetPath)) respondSvelteApp(call)
+                if (assetPath == "admin" || assetPath?.startsWith("admin/") == true) {
+                    call.respond(HttpStatusCode.Forbidden)
+                    return@get
+                }
+                if (assetPath == "login" || assetPath?.startsWith("_app/") == true && assetPath.substringAfterLast('/').contains('.')) {
+                    if (assetPath == "login") respondSvelteApp(call)
+                    else if (!serveSpaResourceIfPresent(call, assetPath)) call.respond(HttpStatusCode.NotFound)
+                } else if (assetPath != null && assetPath.substringAfterLast('/').contains('.') && serveSpaResourceIfPresent(call, assetPath)) {
+                    Unit
+                } else if (currentSession(call) == null) call.respondRedirect("/app/login")
+                else respondSvelteApp(call)
             }
 
             // WebSocket endpoint
             webSocket("/ws") {
+                val session = currentSession(call)
+                if (session == null || !validOrigin(call)) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Authentication required"))
+                    return@webSocket
+                }
                 wsConnections += this
+                val userId = session.identity.playerId.toString()
+                registerUserSession(userId, this)
                 try {
                     for (frame in incoming) {
                         if (frame is Frame.Text) {
-                            val message = frame.readText()
-                            // Handle incoming WebSocket messages
-                            handleWsMessage(message)
+                            if (authStore.resolve(cookieToken(call))?.id != session.id) {
+                                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Session expired"))
+                                break
+                            }
+                            handleWsMessage(frame.readText(), this)
                         }
                     }
                 } catch (e: ClosedReceiveChannelException) {
                     println("[WS] Connection closed: ${closeReason.await()}")
                 } finally {
                     wsConnections -= this
+                    unregisterUserSession(userId, this)
                 }
             }
 
@@ -194,39 +301,15 @@ class HomeClaimWebUxServer(
             }
 
             get("/admin/plots") {
-                if (hasSvelteKitBuild()) {
-                    call.respondRedirect("/app/admin/plots")
-                    return@get
-                }
-
-                renderTemplate(call, "admin-plots", mapOf(
-                    "title" to "Admin - Plots",
-                    "user" to getCurrentUser(call)
-                ))
+                call.respond(HttpStatusCode.Forbidden)
             }
 
             get("/admin/users") {
-                if (hasSvelteKitBuild()) {
-                    call.respondRedirect("/app/admin/users")
-                    return@get
-                }
-
-                renderTemplate(call, "admin-users", mapOf(
-                    "title" to "Admin - Benutzer",
-                    "user" to getCurrentUser(call)
-                ))
+                call.respond(HttpStatusCode.Forbidden)
             }
 
             get("/admin/notifications") {
-                if (hasSvelteKitBuild()) {
-                    call.respondRedirect("/app/admin/notifications")
-                    return@get
-                }
-
-                renderTemplate(call, "admin-notifications", mapOf(
-                    "title" to "Admin - Benachrichtigungen",
-                    "user" to getCurrentUser(call)
-                ))
+                call.respond(HttpStatusCode.Forbidden)
             }
         }
     }
@@ -356,12 +439,15 @@ class HomeClaimWebUxServer(
         templateName: String,
         context: Map<String, Any?>
     ) {
+        val session = currentSession(call)
+        if (session == null) {
+            call.respondRedirect("/app/login")
+            return
+        }
         val writer = StringWriter()
         val template = pebble.getTemplate(templateName)
         
-        template.evaluate(writer, context + mapOf(
-            "version" to "1.0.0-SNAPSHOT"
-        ))
+        template.evaluate(writer, context + mapOf("version" to "1.0.0-SNAPSHOT"))
         
         call.respondText(writer.toString(), io.ktor.http.ContentType.Text.Html)
     }
@@ -369,57 +455,100 @@ class HomeClaimWebUxServer(
     /**
      * Get current user from session/JWT
      */
-    private fun getCurrentUser(call: ApplicationCall): Map<String, Any>? {
-        // Extract Bearer token from Authorization header
-        val authHeader = call.request.headers["Authorization"] ?: return null
-        if (!authHeader.startsWith("Bearer ", ignoreCase = true)) return null
-        
-        val token = authHeader.substring(7)
-        
-        // TODO: In production, inject AccountService and validate token
-        // For now, return authenticated user data
-        // Example: val session = accountService.validateToken(token) ?: return null
-        // return mapOf("id" to session.accountId, "username" to session.userName, ...)
-        
-        return mapOf(
-            "id" to "550e8400-e29b-41d4-a716-446655440000",
-            "username" to "TestUser",
-            "avatarUrl" to "https://api.dicebear.com/7.x/avataaars/svg?seed=TestUser",
-            "hasPermission" to { _: String -> false }
-        )
+    private fun getCurrentUser(call: ApplicationCall): Map<String, Any>? = currentSession(call)?.identity?.let {
+        mapOf("id" to it.playerId.toString(), "username" to it.username, "hasPermission" to { _: String -> false })
+    }
+
+    private fun cookieToken(call: ApplicationCall): String? = call.request.cookies[SESSION_COOKIE]
+
+    private fun currentSession(call: ApplicationCall): WebUxAuthStore.Session? = authStore.resolve(cookieToken(call))
+
+    private fun validHost(call: ApplicationCall): Boolean {
+        val hostHeader = call.request.headers[HttpHeaders.Host] ?: return false
+        val uri = runCatching { java.net.URI("http://$hostHeader") }.getOrNull() ?: return false
+        if (uri.rawUserInfo != null || uri.rawPath.orEmpty().isNotEmpty() || uri.rawQuery != null || uri.rawFragment != null) return false
+        val parsed = uri.host?.lowercase() ?: return false
+        return if (allowedHosts.isNotEmpty()) allowedHosts.any { it.trim().lowercase() == parsed }
+        else parsed in setOf("localhost", "127.0.0.1", "::1")
+    }
+
+    private fun validOrigin(call: ApplicationCall): Boolean {
+        val rawOrigin = call.request.headers[HttpHeaders.Origin]?.trim() ?: return false
+        val parsedOrigin = runCatching { java.net.URI(rawOrigin) }.getOrNull() ?: return false
+        if (parsedOrigin.scheme !in setOf("http", "https") || parsedOrigin.host.isNullOrBlank() ||
+            parsedOrigin.rawUserInfo != null || parsedOrigin.rawPath.orEmpty().isNotEmpty() ||
+            parsedOrigin.rawQuery != null || parsedOrigin.rawFragment != null) return false
+        if (allowedOrigins.any { configured ->
+                configured.trim().trimEnd('/').equals(rawOrigin.trimEnd('/'), ignoreCase = true)
+            }) return true
+        if (allowRemote) return false
+        val hostHeader = call.request.headers[HttpHeaders.Host]?.trim() ?: return false
+        val parsedHost = runCatching { java.net.URI("http://$hostHeader") }.getOrNull() ?: return false
+        val scheme = call.request.local.scheme.lowercase()
+        val expectedPort = when (scheme) { "https" -> 443; else -> 80 }
+        val originPort = parsedOrigin.port.takeIf { it >= 0 } ?: expectedPort
+        val hostPort = parsedHost.port.takeIf { it >= 0 } ?: expectedPort
+        return parsedOrigin.scheme.equals(scheme, ignoreCase = true) &&
+            parsedOrigin.host.equals(parsedHost.host, ignoreCase = true) && originPort == hostPort
+    }
+
+    private fun validCsrf(call: ApplicationCall, session: WebUxAuthStore.Session): Boolean {
+        val supplied = call.request.headers[CSRF_HEADER] ?: return false
+        return MessageDigest.isEqual(supplied.toByteArray(), session.csrfToken.toByteArray())
+    }
+
+    private fun sessionCookie(token: String, expiresAt: Instant): String = buildString {
+        append("$SESSION_COOKIE=$token; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Duration.between(Instant.now(), expiresAt).seconds.coerceAtLeast(0)}")
+        if (secureCookies) append("; Secure")
+    }
+
+    private fun clearSessionCookie(): String = buildString {
+        append("$SESSION_COOKIE=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        if (secureCookies) append("; Secure")
+    }
+
+    private fun auditAuthEvent(identity: WebUxAuthStore.Identity, action: String) {
+        runCatching {
+            auditService?.append(AuditEntry(
+                actorId = identity.playerId,
+                targetId = null,
+                category = "WEB_AUTH",
+                action = action,
+                payload = mapOf("method" to "INGAME_PAIRING"),
+                correlationId = CorrelationId(UUID.randomUUID()),
+                actorKind = "PLAYER",
+                actorRef = identity.playerId.toString(),
+                actionKey = ActionKey("homeclaim:web_${action.lowercase()}"),
+                status = AuditStatus.COMPLETED
+            ))
+        }.onFailure { /* Authentication remains available if the bounded audit sink is closing. */ }
+    }
+
+    private fun auditFailedLogin() {
+        runCatching {
+            auditService?.append(AuditEntry(
+                actorId = null,
+                targetId = null,
+                category = "WEB_AUTH",
+                action = "LOGIN_FAILED",
+                payload = mapOf("method" to "INGAME_PAIRING", "reason" to "INVALID_OR_EXPIRED_CODE", "sampled" to true),
+                correlationId = CorrelationId(UUID.randomUUID()),
+                actorKind = "EXTERNAL",
+                actorRef = null,
+                actionKey = ActionKey("homeclaim:web_login_failed"),
+                status = AuditStatus.FAILED
+            ))
+        }.onFailure { /* Authentication remains available if the bounded audit sink is closing. */ }
     }
 
     /**
      * Handle incoming WebSocket messages
      */
-    private suspend fun handleWsMessage(message: String) {
-        try {
-            // Simple JSON parsing for message routing
-            val msgStart = message.indexOf("\"type\"") + 8
-            val msgEnd = message.indexOf("\"", msgStart)
-            if (msgStart < 8 || msgEnd < 0) return
-            
-            val messageType = message.substring(msgStart, msgEnd)
-            
-            when (messageType) {
-                "ping" -> {
-                    // Keep-alive message
-                    println("[WS] Ping received")
-                }
-                "plot_command" -> {
-                    // TODO: Parse plotId and command, route to PlotService
-                    println("[WS] Plot command: $message")
-                }
-                "notification_ack" -> {
-                    // TODO: Handle notification acknowledgment
-                    println("[WS] Notification ack: $message")
-                }
-                else -> {
-                    println("[WS] Unknown message type: $messageType")
-                }
-            }
-        } catch (e: Exception) {
-            println("[WS] Error handling message: ${e.message}")
+    private suspend fun handleWsMessage(message: String, session: WebSocketSession) {
+        val type = runCatching { json.readTree(message).path("type").asText("") }.getOrDefault("")
+        when (type) {
+            "ping" -> session.send(Frame.Text("{\"type\":\"pong\"}"))
+            else -> session.send(Frame.Text("{\"type\":\"error\",\"error\":\"unsupported_message\"}"))
         }
     }
 
@@ -479,16 +608,29 @@ class HomeClaimWebUxServer(
      * Register user session for filtering notifications
      */
     fun registerUserSession(userId: String, session: WebSocketSession) {
-        userSessions.computeIfAbsent(userId) { mutableSetOf() }.add(session)
+        userSessions.computeIfAbsent(userId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(session)
     }
 
     /**
      * Unregister user session on disconnect
      */
     fun unregisterUserSession(userId: String, session: WebSocketSession) {
-        userSessions[userId]?.remove(session)
-        if (userSessions[userId]?.isEmpty() == true) {
-            userSessions.remove(userId)
+        userSessions.computeIfPresent(userId) { _, sessions ->
+            sessions.remove(session)
+            sessions.takeIf { it.isNotEmpty() }
         }
+    }
+
+    private suspend fun closeUserConnections(userId: String) {
+        userSessions[userId]?.toList()?.forEach { socket ->
+            runCatching { socket.close(CloseReason(CloseReason.Codes.NORMAL, "Logged out")) }
+        }
+    }
+
+    data class PairRequest(val code: String)
+
+    companion object {
+        const val SESSION_COOKIE = "hc_session"
+        const val CSRF_HEADER = "X-CSRF-Token"
     }
 }

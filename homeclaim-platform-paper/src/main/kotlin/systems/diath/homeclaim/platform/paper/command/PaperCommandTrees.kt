@@ -18,6 +18,8 @@ internal object PaperCommandTrees {
             .executes { context -> dispatch(context.source.sender, "homeclaim", emptyList()) }
             .then(Commands.literal("reload").executes { context -> dispatch(context.source.sender, "homeclaim", listOf("reload")) })
             .then(Commands.literal("migrate").executes { context -> dispatch(context.source.sender, "homeclaim", listOf("migrate")) })
+            .then(Commands.literal("web").then(Commands.literal("login")
+                .executes { context -> dispatch(context.source.sender, "homeclaim", listOf("web", "login")) }))
             .then(greedy("setup") { source, args -> dispatch(source, "homeclaim", args) })
             .then(greedy("plot") { source, args -> dispatch(source, "homeclaim", args) })
             .then(greedy("entryforce") { source, args -> dispatch(source, "homeclaim", args) })

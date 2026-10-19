@@ -30,6 +30,7 @@ import io.ktor.server.routing.*
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.time.Instant
+import java.security.MessageDigest
 
 /**
  * Enhanced REST API Server with OpenAPI documentation.
@@ -98,6 +99,10 @@ class PlotRestServer(
     private val allowedHosts: Set<String> = emptySet(),
     private val allowLocalhost: Boolean = true,
     private val enableCors: Boolean = false,
+    private val bindHost: String = "127.0.0.1",
+    private val allowRemote: Boolean = false,
+    private val allowedHostHeaders: Set<String> = emptySet(),
+    private val allowedCorsOrigins: Set<String> = emptySet(),
     private val entryDenyCreatedHandler: ((EntryDenyRule) -> Unit)? = null,
     private val entryForceHandler: ((RegionId, PlayerId, String, Long) -> EntryForceGrantDto)? = null,
     private val policyService: PolicyService? = null,
@@ -105,7 +110,12 @@ class PlotRestServer(
     private val entryDenyOperationService: EntryDenyOperationService? = null
 ) {
     fun start(): ApplicationEngine {
-        val engine = embeddedServer(Netty, port = port) {
+        val loopback = bindHost.equals("localhost", true) || bindHost == "127.0.0.1" || bindHost == "::1"
+        require(loopback || allowRemote) { "Remote REST bind requires explicit allowRemote=true" }
+        require(!(allowRemote || !loopback) || (authToken.length >= 32 && allowedHosts.isNotEmpty() && allowedHostHeaders.isNotEmpty())) {
+            "Remote REST requires a 32+ character token plus source and Host allowlists"
+        }
+        val engine = embeddedServer(Netty, host = bindHost, port = port) {
             configurePlugins()
             configureRoutes()
         }
@@ -142,9 +152,19 @@ class PlotRestServer(
         
         if (enableCors) {
             install(CORS) {
-                anyHost()
+                require(allowedCorsOrigins.isNotEmpty()) { "CORS requires an explicit origin allowlist" }
+                allowedCorsOrigins.forEach { origin ->
+                    val parsed = java.net.URI(origin)
+                    require(parsed.scheme in setOf("http", "https") && !parsed.host.isNullOrBlank() &&
+                        parsed.rawPath.orEmpty() in setOf("", "/") && parsed.rawQuery == null && parsed.rawFragment == null) {
+                        "Invalid CORS origin"
+                    }
+                    val authority = parsed.rawAuthority ?: error("Invalid CORS origin")
+                    allowHost(authority, schemes = listOf(parsed.scheme))
+                }
                 allowHeader(HttpHeaders.ContentType)
                 allowHeader("X-Admin-Token")
+                allowCredentials = false
                 allowMethod(HttpMethod.Get)
                 allowMethod(HttpMethod.Post)
                 allowMethod(HttpMethod.Put)
@@ -155,7 +175,7 @@ class PlotRestServer(
     
     private fun Application.configureRoutes() {
         val rateLimiter = RateLimiter(rateLimitPerMinute)
-        val auth = AuthMiddleware(authToken, rateLimiter, allowedHosts, allowLocalhost)
+        val auth = AuthMiddleware(authToken, rateLimiter, allowedHosts, allowLocalhost, allowedHostHeaders)
         
         // Request/Response Logging Interceptor
         intercept(ApplicationCallPipeline.Monitoring) {
@@ -181,11 +201,13 @@ class PlotRestServer(
         routing {
             // OpenAPI documentation endpoint
             get("/api/openapi.json") {
+                if (!auth.check(call)) return@get
                 call.respond(openApiSpec())
             }
             
             // API documentation HTML
             get("/api/docs") {
+                if (!auth.check(call)) return@get
                 call.respondText(swaggerUiHtml(), ContentType.Text.Html)
             }
             
@@ -1732,15 +1754,22 @@ private fun calculateProjectScore(licenses: List<SpdxLicense>): ProjectLicenseSc
 // Auth Middleware
 // ============================================
 
-private class AuthMiddleware(
+internal class AuthMiddleware(
     private val token: String,
     private val rateLimiter: RateLimiter,
     private val allowedHosts: Set<String>,
-    private val allowLocalhost: Boolean
+    private val allowLocalhost: Boolean,
+    private val allowedHostHeaders: Set<String>
 ) {
     suspend fun check(call: ApplicationCall): Boolean {
         val clientHost = call.request.local.remoteHost
         
+        // Rate-limit by source address before token validation, so invalid guesses count too.
+        if (!rateLimiter.tryAcquire(clientHost)) {
+            call.respond(HttpStatusCode.TooManyRequests, ApiError("rate_limited", "Too many requests"))
+            return false
+        }
+
         // Host check
         if (allowedHosts.isNotEmpty() || allowLocalhost) {
             val isLocal = clientHost in listOf("127.0.0.1", "::1", "localhost")
@@ -1749,17 +1778,25 @@ private class AuthMiddleware(
                 return false
             }
         }
-        
-        // Token check
-        val providedToken = call.request.headers["X-Admin-Token"]
-        if (providedToken != token) {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("unauthorized", "Invalid or missing token"))
+
+        val hostHeader = call.request.headers[HttpHeaders.Host]
+        val hostname = hostHeader?.let { raw ->
+            runCatching { java.net.URI("http://$raw") }.getOrNull()?.takeIf {
+                it.rawUserInfo == null && it.rawPath.orEmpty().isEmpty() && it.rawQuery == null && it.rawFragment == null
+            }?.host
+        }
+        val hostAllowed = if (allowedHostHeaders.isNotEmpty()) {
+            hostname != null && allowedHostHeaders.any { it.equals(hostname, ignoreCase = true) }
+        } else hostname?.lowercase() in setOf("localhost", "127.0.0.1", "::1")
+        if (!hostAllowed) {
+            call.respond(HttpStatusCode.Forbidden, ApiError("forbidden", "Host not allowed"))
             return false
         }
         
-        // Rate limit
-        if (!rateLimiter.tryAcquire(providedToken)) {
-            call.respond(HttpStatusCode.TooManyRequests, ApiError("rate_limited", "Too many requests"))
+        // Token check
+        val providedToken = call.request.headers["X-Admin-Token"]
+        if (providedToken == null || !MessageDigest.isEqual(providedToken.toByteArray(Charsets.UTF_8), token.toByteArray(Charsets.UTF_8))) {
+            call.respond(HttpStatusCode.Unauthorized, ApiError("unauthorized", "Invalid or missing token"))
             return false
         }
         
@@ -1780,13 +1817,21 @@ private class AuthMiddleware(
 // Rate Limiter
 // ============================================
 
-private class RateLimiter(private val perMinute: Int) {
+internal class RateLimiter(private val perMinute: Int) {
     private val windowMs = 60_000L
     private val hits = ConcurrentHashMap<String, ArrayDeque<Long>>()
     
     fun tryAcquire(key: String): Boolean {
         if (perMinute <= 0) return true
         val now = System.currentTimeMillis()
+        if (!hits.containsKey(key) && hits.size >= MAX_KEYS) {
+            val cutoff = now - windowMs
+            hits.entries.removeIf { entry -> synchronized(entry.value) {
+                while (entry.value.isNotEmpty() && entry.value.first() < cutoff) entry.value.removeFirst()
+                entry.value.isEmpty()
+            } }
+            if (hits.size >= MAX_KEYS) return false
+        }
         val deque = hits.computeIfAbsent(key) { ArrayDeque() }
         synchronized(deque) {
             val cutoff = now - windowMs
@@ -1796,6 +1841,8 @@ private class RateLimiter(private val perMinute: Int) {
             return true
         }
     }
+
+    companion object { private const val MAX_KEYS = 4096 }
 }
 
 // ============================================

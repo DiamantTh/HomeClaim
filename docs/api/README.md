@@ -32,6 +32,8 @@ rest:
 
 All API requests require the `X-Admin-Token` header:
 
+The Paper configuration leaves REST disabled by default and binds it to loopback. Remote binding requires explicit opt-in, a high-entropy token of at least 32 characters, source-IP and Host-header allowlists, and should sit behind HTTPS. Supply tokens through protected configuration, an environment variable, or a protected token file; never put them in URLs or browser storage. CORS remains disabled unless concrete origins are configured.
+
 ```bash
 curl -H "X-Admin-Token: your-token" http://localhost:8080/api/v1/health
 ```

@@ -77,4 +77,17 @@ class PaperCommandTreesTest {
 
         assertEquals(listOf("setup", "start", "example", "plots"), routed)
     }
+
+    @Test
+    fun homeclaimWebLoginCommandUsesLifecycleTree() {
+        val sender = mock(CommandSender::class.java)
+        val source = mock(CommandSourceStack::class.java)
+        Mockito.`when`(source.sender).thenReturn(sender)
+        var routed: List<String>? = null
+        val dispatcher = CommandDispatcher<CommandSourceStack>()
+        dispatcher.root.addChild(PaperCommandTrees.homeClaim { _, _, args -> routed = args; 1 })
+
+        assertEquals(1, dispatcher.execute("homeclaim web login", source))
+        assertEquals(listOf("web", "login"), routed)
+    }
 }

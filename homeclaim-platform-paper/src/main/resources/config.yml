@@ -20,10 +20,24 @@ homeclaim:
   rest:
     enabled: false
     port: 8080
+    bindHost: "127.0.0.1"
+    allowRemote: false
     token: ""
     tokenEnv: ""
     tokenFile: ""
     rateLimitPerMinute: 0
     allowLocalhost: false
     allowedHosts: []
+    allowedHostHeaders: []
+    cors:
+      enabled: false
+      allowedOrigins: []
+  webux:
+    enabled: false
+    host: "127.0.0.1"
+    port: 8081
+    allowRemote: false
+    secureCookies: false
+    allowedHosts: []
+    allowedOrigins: []
   plotWorlds: {}

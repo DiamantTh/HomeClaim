@@ -89,17 +89,28 @@ maximumPoolSize = 10
 [homeclaim.rest]
 enabled = false
 port = 8080
+bindHost = "127.0.0.1"
+allowRemote = false
 token = ""
 tokenEnv = ""
 tokenFile = ""
 rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
+allowedHostHeaders = []
+
+[homeclaim.rest.cors]
+enabled = false
+allowedOrigins = []
 
 [homeclaim.webux]
 enabled = false
 port = 8081
-host = "0.0.0.0"
+host = "127.0.0.1"
+allowRemote = false
+secureCookies = false
+allowedHosts = []
+allowedOrigins = []
 
 [homeclaim.limits]
 maxPlotsPerPlayer = -1

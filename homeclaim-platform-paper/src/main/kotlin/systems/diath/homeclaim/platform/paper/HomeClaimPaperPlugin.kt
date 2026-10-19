@@ -53,6 +53,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var econService: systems.diath.homeclaim.core.economy.SimpleEconService? = null
     private var restServer: io.ktor.server.engine.ApplicationEngine? = null
     private var webUxServer: io.ktor.server.engine.ApplicationEngine? = null
+    private var webUxAuthStore: systems.diath.homeclaim.webux.WebUxAuthStore? = null
     private var services: PlatformServices? = null
     private var guiManager: systems.diath.homeclaim.platform.paper.gui.GuiManager? = null
     private var plotCommand: systems.diath.homeclaim.platform.paper.command.PlotCommand? = null
@@ -480,6 +481,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
         ShutdownManager.registerHook("WebUxServer", priority = 100) {
             webUxServer?.stop(500, 1000)
+            webUxAuthStore?.revokeAll()
+            webUxAuthStore = null
         }
 
         ShutdownManager.registerHook("AuditWriter", priority = 800) {
@@ -553,6 +556,27 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private fun handleHomeClaimCommand(sender: CommandSender, args: Array<out String>): Boolean {
         val sub = args.getOrNull(0)?.lowercase()
         when (sub) {
+            "web" -> {
+                if (args.getOrNull(1)?.lowercase() != "login") {
+                    sender.sendMessage("§eVerwendung: /homeclaim web login")
+                    return true
+                }
+                val player = sender as? Player ?: run {
+                    sender.sendMessage("§cDieser Befehl ist nur im Spiel verfügbar.")
+                    return true
+                }
+                if (webUxServer == null || webUxAuthStore == null) {
+                    sender.sendMessage("§cDie WebUX ist nicht aktiviert.")
+                    return true
+                }
+                val code = runCatching { webUxAuthStore!!.issuePairing(player.uniqueId, player.name) }.getOrElse {
+                    sender.sendMessage("§cEs konnte kein Web-Login-Code erstellt werden. Bitte später erneut versuchen.")
+                    return true
+                }
+                player.sendMessage("§aWeb-Login-Code (2 Minuten gültig, einmal verwendbar): §f$code")
+                player.sendMessage("§7Öffne die HomeClaim-Weboberfläche und gib diesen Code ein. Teile ihn mit niemandem.")
+                return true
+            }
             "reload" -> {
                 if (!sender.hasPermission("homeclaim.admin.reload")) {
                     sender.sendMessage(i18n.msg("cmd.no.perm"))
@@ -574,6 +598,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     restServer = null
                     webUxServer?.stop(500, 1000)
                     webUxServer = null
+                    webUxAuthStore?.revokeAll()
+                    webUxAuthStore = null
                     guiManager?.closeAll()
                     plotResetService.shutdown()
                     biomeMutationService?.shutdown()
@@ -597,6 +623,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
                     restServer = null
                     webUxServer?.stop(500, 1000)
                     webUxServer = null
+                    webUxAuthStore?.revokeAll()
+                    webUxAuthStore = null
                     val svc = services
                     if (svc != null) {
                         val jdbc = svc.flagProfileService as? JdbcFlagProfileService
@@ -1079,6 +1107,8 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         val enabled = homeClaimConfig.getBoolean("homeclaim.rest.enabled", false)
         if (!enabled) return
         val port = homeClaimConfig.getInt("homeclaim.rest.port", 8080)
+        val bindHost = homeClaimConfig.getString("homeclaim.rest.bindHost", "127.0.0.1").ifBlank { "127.0.0.1" }
+        val allowRemote = homeClaimConfig.getBoolean("homeclaim.rest.allowRemote", false)
         val token = homeClaimConfig.getString("homeclaim.rest.token", "").takeIf { it.isNotBlank() }
         val rateLimit = homeClaimConfig.getInt("homeclaim.rest.rateLimitPerMinute", 0).takeIf { it > 0 }
         val tokenEnvKey = homeClaimConfig.getString("homeclaim.rest.tokenEnv", "").ifBlank { null }
@@ -1088,6 +1118,10 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .toSet()
+        val allowedHostHeaders = homeClaimConfig.getStringList("homeclaim.rest.allowedHostHeaders")
+            .map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val corsOrigins = homeClaimConfig.getStringList("homeclaim.rest.cors.allowedOrigins")
+            .map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         val resolvedToken = resolveToken(token, tokenEnvKey, tokenFilePath)
         val adminService = services.adminService
         if (adminService == null) {
@@ -1096,6 +1130,15 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         }
         if (resolvedToken.isNullOrBlank()) {
             logger.warning(i18n.msg("rest.missing.token"))
+            return
+        }
+        val loopback = bindHost.equals("localhost", true) || bindHost == "127.0.0.1" || bindHost == "::1"
+        if (!loopback && !allowRemote) {
+            logger.warning("REST remote bind refused: set homeclaim.rest.allowRemote=true only after configuring authentication and network restrictions")
+            return
+        }
+        if ((allowRemote || !loopback) && (resolvedToken.length < 32 || allowedHosts.isEmpty() || allowedHostHeaders.isEmpty())) {
+            logger.warning("REST remote bind refused: use a 32+ character token plus allowedHosts and allowedHostHeaders")
             return
         }
         val healthInfo = HealthInfo(
@@ -1126,6 +1169,10 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             allowedHosts = allowedHosts,
             allowLocalhost = allowLocalhost,
             enableCors = homeClaimConfig.getBoolean("homeclaim.rest.cors.enabled", false),
+            bindHost = bindHost,
+            allowRemote = allowRemote,
+            allowedHostHeaders = allowedHostHeaders,
+            allowedCorsOrigins = corsOrigins,
             entryDenyCreatedHandler = { rule -> kickPlayersDeniedByEntryRule(services, rule) },
             policyService = services.policyService,
             entryForceHandler = { regionId, playerId, reason, ttlSeconds ->
@@ -1168,12 +1215,33 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private fun maybeStartWebUx() {
         if (!homeClaimConfig.getBoolean("homeclaim.webux.enabled", false)) return
         val port = homeClaimConfig.getInt("homeclaim.webux.port", 8081)
-        val host = homeClaimConfig.getString("homeclaim.webux.host", "0.0.0.0").ifBlank { "0.0.0.0" }
+        val host = homeClaimConfig.getString("homeclaim.webux.host", "127.0.0.1").ifBlank { "127.0.0.1" }
+        val allowRemote = homeClaimConfig.getBoolean("homeclaim.webux.allowRemote", false)
+        val secureCookies = homeClaimConfig.getBoolean("homeclaim.webux.secureCookies", false)
+        val allowedHosts = homeClaimConfig.getStringList("homeclaim.webux.allowedHosts").map { it.trim() }.filter(String::isNotEmpty).toSet()
+        val allowedOrigins = homeClaimConfig.getStringList("homeclaim.webux.allowedOrigins").map { it.trim() }.filter(String::isNotEmpty).toSet()
+        val authStore = systems.diath.homeclaim.webux.WebUxAuthStore()
+        val loopback = host.equals("localhost", true) || host == "127.0.0.1" || host == "::1"
+        if ((!loopback && !allowRemote) || ((allowRemote || !loopback) && (!secureCookies || allowedHosts.isEmpty() || allowedOrigins.isEmpty()))) {
+            logger.warning("WebUX remote bind refused: require allowRemote, secureCookies, allowedHosts, and allowedOrigins")
+            return
+        }
         try {
-            webUxServer = systems.diath.homeclaim.webux.HomeClaimWebUxServer(port, host).start()
+            webUxServer = systems.diath.homeclaim.webux.HomeClaimWebUxServer(
+                port = port,
+                host = host,
+                allowRemote = allowRemote,
+                secureCookies = secureCookies,
+                allowedHosts = allowedHosts,
+                allowedOrigins = allowedOrigins,
+                auditService = services?.auditService,
+                authStore = authStore
+            ).start()
+            webUxAuthStore = authStore
             logger.info("HomeClaim WebUX started on $host:$port")
         } catch (failure: Exception) {
             webUxServer = null
+            webUxAuthStore = null
             logger.severe("HomeClaim WebUX failed to start: ${failure.message ?: failure.javaClass.simpleName}")
         }
     }

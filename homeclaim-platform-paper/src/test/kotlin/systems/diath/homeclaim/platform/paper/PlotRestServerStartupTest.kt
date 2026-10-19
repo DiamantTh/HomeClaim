@@ -10,6 +10,20 @@ import java.io.IOException
 
 class PlotRestServerStartupTest {
     @Test
+    fun `remote binding requires explicit opt in and strong allowlisted credentials`() {
+        val server = PlotRestServer(
+            regionService = InMemoryRegionStore(),
+            zoneService = null,
+            componentService = null,
+            adminService = null,
+            port = 0,
+            authToken = "weak",
+            bindHost = "0.0.0.0"
+        )
+        assertThrows(IllegalArgumentException::class.java) { server.start() }
+    }
+
+    @Test
     fun `port bind failure releases engine resources so a later start can succeed`() {
         val occupiedPort = ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
         val port = occupiedPort.localPort

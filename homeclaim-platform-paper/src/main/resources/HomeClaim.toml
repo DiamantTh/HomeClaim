@@ -14,18 +14,29 @@ maximumPoolSize = 10
 [homeclaim.rest]
 enabled = false
 port = 8080
+bindHost = "127.0.0.1"
+allowRemote = false
 token = ""
 tokenEnv = ""
 tokenFile = ""
 rateLimitPerMinute = 0
 allowLocalhost = false
 allowedHosts = []
+allowedHostHeaders = []
+
+[homeclaim.rest.cors]
+enabled = false
+allowedOrigins = []
 
 [homeclaim.webux]
-# The read-oriented WebUX server is opt-in and has no per-user authentication yet.
+# WebUX uses in-game one-time pairing and server-side sessions. Sessions expire on restart.
 enabled = false
 port = 8081
-host = "0.0.0.0"
+host = "127.0.0.1"
+allowRemote = false
+secureCookies = false
+allowedHosts = []
+allowedOrigins = []
 
 [homeclaim.limits]
 # -1 means unlimited. These operation quotas are enforced by the shared plot operation service.
