@@ -51,6 +51,20 @@ tasks.register<Test>("databaseIntegrationTest") {
     useJUnitPlatform()
 }
 
+fun registerDatabaseProcessRestartTask(taskName: String, phase: String) = tasks.register<Test>(taskName) {
+    group = "verification"
+    description = "Verify PostgreSQL and MariaDB data survives a real database process restart ($phase phase)"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    filter { includeTestsMatching("*DatabaseProcessRestartRuntimeTest") }
+    systemProperty("homeclaim.database.process.restart.required", "true")
+    systemProperty("homeclaim.database.process.restart.phase", phase)
+    useJUnitPlatform()
+}
+
+registerDatabaseProcessRestartTask("databaseProcessRestartPrepare", "prepare")
+registerDatabaseProcessRestartTask("databaseProcessRestartVerify", "verify")
+
 // Optimized Shadow JAR instead of fatJar
 tasks.shadowJar {
     archiveBaseName.set("HomeClaim")
