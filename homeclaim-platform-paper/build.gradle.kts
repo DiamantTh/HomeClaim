@@ -37,6 +37,18 @@ dependencies {
     faweRuntime("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:$faweVersion") { isTransitive = false }
 }
 
+tasks.register<Test>("databaseIntegrationTest") {
+    group = "verification"
+    description = "Run SQLite, PostgreSQL 17.11, and MariaDB 11.4 runtime persistence checks"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    filter {
+        includeTestsMatching("*DatabaseDialectRuntimeTest")
+    }
+    systemProperty("homeclaim.database.integration.required", "true")
+    useJUnitPlatform()
+}
+
 // Optimized Shadow JAR instead of fatJar
 tasks.shadowJar {
     archiveBaseName.set("HomeClaim")

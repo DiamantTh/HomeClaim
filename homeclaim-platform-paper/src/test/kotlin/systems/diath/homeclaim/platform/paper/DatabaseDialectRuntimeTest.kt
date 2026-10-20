@@ -60,7 +60,11 @@ class DatabaseDialectRuntimeTest {
 
     private fun configured(prefix: String, driver: String): JdbcConnectionConfig {
         val jdbcUrl = System.getenv("${prefix}_JDBC_URL")
-        assumeTrue(!jdbcUrl.isNullOrBlank(), "Set ${prefix}_JDBC_URL to an isolated disposable test database")
+        if (jdbcUrl.isNullOrBlank()) {
+            val required = System.getProperty("homeclaim.database.integration.required") == "true"
+            if (required) error("${prefix}_JDBC_URL is required by databaseIntegrationTest")
+            assumeTrue(false, "Set ${prefix}_JDBC_URL to an isolated disposable test database")
+        }
         return JdbcConnectionConfig(
             jdbcUrl = jdbcUrl!!,
             username = System.getenv("${prefix}_USERNAME"),
@@ -70,7 +74,7 @@ class DatabaseDialectRuntimeTest {
     }
 
     private fun verifyFullRuntime(config: JdbcConnectionConfig, vararg locations: String) {
-        val dataSource = SqlDsl.hikari(
+        var dataSource = SqlDsl.hikari(
             jdbcUrl = config.jdbcUrl,
             username = config.username,
             password = config.password,
@@ -128,6 +132,28 @@ class DatabaseDialectRuntimeTest {
                                 assertTrue(result.next(), "Missing PostgreSQL column $table.$column")
                                 assertEquals("uuid", result.getString(1), "$table.$column should use PostgreSQL UUID")
                             }
+                        }
+                    }
+                }
+            }
+            if (dataSource.connection.use { it.metaData.databaseProductName.contains("MariaDB", ignoreCase = true) }) {
+                dataSource.connection.use { connection ->
+                    val version = connection.metaData.databaseProductVersion
+                    assertTrue(version.startsWith("11.4."), "Expected pinned MariaDB 11.4.x runtime, got $version")
+                    connection.prepareStatement(
+                        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'region_flags' AND column_name = 'flag_build'"
+                    ).use { statement ->
+                        statement.executeQuery().use { result ->
+                            result.next()
+                            assertEquals(1, result.getInt(1), "MariaDB generated BUILD flag column should be installed")
+                        }
+                    }
+                    connection.prepareStatement(
+                        "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'region_flags' AND index_name = 'idx_region_flags_build'"
+                    ).use { statement ->
+                        statement.executeQuery().use { result ->
+                            result.next()
+                            assertEquals(1, result.getInt(1), "MariaDB BUILD flag index should be installed")
                         }
                     }
                 }
@@ -481,6 +507,51 @@ class DatabaseDialectRuntimeTest {
             } finally {
                 failedEngine.stop(100, 1_000)
             }
+
+            // Exercise persistence through a closed Hikari pool and a new pool, not just
+            // repository objects rebuilt over the original connections.
+            dataSource.close()
+            dataSource = SqlDsl.hikari(
+                jdbcUrl = config.jdbcUrl,
+                username = config.username,
+                password = config.password,
+                driverClassName = config.driver,
+                maximumPoolSize = 4,
+                minimumIdle = 0
+            ) as com.zaxxer.hikari.HikariDataSource
+            Flyway.configure(HomeClaimPaperPlugin::class.java.classLoader)
+                .dataSource(dataSource)
+                .locations(*locations)
+                .baselineOnMigrate(false)
+                .load()
+                .migrate()
+            val reopenedBackups = JdbcPlotBackupIndex(dataSource)
+            assertEquals(PlotBackupStatus.READY, reopenedBackups.find(backup.id)?.status)
+            assertEquals(PlotBackupCompression.NONE, reopenedBackups.find(backup.id)?.compression)
+            assertEquals("a".repeat(64), reopenedBackups.find(backup.id)?.checksumSha256)
+            assertEquals(PlotBackupCompression.ZSTD, reopenedBackups.find(zstdBackup.id)?.compression)
+            assertEquals("b".repeat(64), reopenedBackups.find(zstdBackup.id)?.checksumSha256)
+
+            val reopenedJobs = JdbcPlotMutationJobStore(dataSource)
+            val reopenedJob = reopenedJobs.findById(jobId)
+            assertEquals(PlotMutationJobStatus.RECOVERED, reopenedJob?.status)
+            assertTrue(reopenedJob?.details?.contains("recoveryAction=RESTORE_BOTH") == true)
+            assertEquals(jobCorrelation, reopenedJob?.correlationId)
+            val reopenedAudit = JdbcAuditService(dataSource)
+            assertTrue(reopenedAudit.findForTarget(firstId.value, java.time.Instant.EPOCH, 50)
+                .any { it.correlationId == correlationId })
+            val reopenedWorlds = JdbcWorldAreaRepository(dataSource).also {
+                it.ensureSchema()
+                it.warmRuntimeCache()
+            }
+            assertEquals(world.id, reopenedWorlds.getWorldByPlatformId(platformWorldId)?.id)
+            assertEquals(area.id, reopenedWorlds.resolveArea(world.id, 3, 64, 4)?.id)
+            val reopenedRegions = JdbcRegionRepository(dataSource, auditService = reopenedAudit, worldAreaRepository = reopenedWorlds)
+            assertTrue(reopenedRegions.getRegionById(firstId)?.roles?.trusted?.contains(restPlayerId) == true)
+            assertEquals(PolicyValue.Bool(false), reopenedRegions.getRegionById(firstId)?.flags?.get(FlagKey("BUILD")))
+            assertEquals(PolicyValue.IntValue(500), reopenedRegions.getRegionById(firstId)?.limits?.get(LimitKey("COMPONENT_COOLDOWN_MS")))
+            assertEquals(ComponentState.DISABLED, JdbcComponentRepository(dataSource).getComponentAt(componentPosition)?.state)
+            assertEquals(profile, JdbcFlagProfileService(dataSource).getProfile("runtime"))
         } finally {
             dataSource.close()
         }
