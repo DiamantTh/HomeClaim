@@ -38,6 +38,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecovery
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferFaultInjector
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPhase
 import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator
+import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationOperation
 import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletionStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason
@@ -69,6 +70,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
     private lateinit var first: Region
     private lateinit var second: Region
     private lateinit var third: Region
+    private var concurrencyRegion: Region? = null
+    private var concurrencyTarget: Region? = null
+    private var concurrencyLease: RegionMutationConflictCoordinator.Lease? = null
 
     override fun onEnable() {
         dataFolder.mkdirs()
@@ -147,7 +151,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
     }
 
     private fun createFixtures(homeClaim: HomeClaimPaperPlugin, areas: systems.diath.homeclaim.core.service.WorldAreaService, testWorld: World) {
-        val areaBounds = Bounds(-16, 16, testWorld.minHeight, testWorld.maxHeight - 1, -8, 8)
+        val areaBounds = Bounds(-32, 32, testWorld.minHeight, testWorld.maxHeight - 1, -16, 16)
         area = areas.createArea(Area(systems.diath.homeclaim.core.model.AreaId.newId(), homeWorld.id,
             "paper-world-e2e", AreaScope.Finite(areaBounds), priority = 100_000))
         val bounds = { x: Int -> Bounds(x, x, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0) }
@@ -416,9 +420,116 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                 recover(job.id, PlotMutationRecoveryAction.RESTORE_TARGET) {
                     check(capture(testWorld, first.bounds.minX) == originalTarget) { "Restore recovery did not return to the pre-restore Y state" }
                     check(jobStore.findById(job.id)?.status == PlotMutationJobStatus.RECOVERED)
-                    finish()
+                    runSnapshotConcurrency(testWorld)
                 }
             }
+        }
+    }
+
+    /** Demonstrates the documented tick-wise snapshot boundary against an actual Paper world. */
+    private fun runSnapshotConcurrency(testWorld: World) {
+        val region = createRegion(Bounds(8, 15, testWorld.minHeight, testWorld.maxHeight - 1, -8, 7))
+        concurrencyRegion = region
+        val target = createRegion(Bounds(16, 23, testWorld.minHeight, testWorld.maxHeight - 1, -8, 7))
+        concurrencyTarget = target
+        val early = Triple(region.bounds.minX, testWorld.minHeight + 20, region.bounds.minZ)
+        val late = Triple(region.bounds.maxX, testWorld.maxHeight - 1, region.bounds.maxZ)
+        testWorld.getBlockAt(early.first, early.second, early.third).setType(Material.STONE, false)
+        testWorld.getBlockAt(late.first, late.second, late.third).setType(Material.STONE, false)
+
+        val actor = ActionActor.System("paper-world-e2e-concurrency")
+        val correlation = CorrelationId.newId()
+        val reservation = conflicts.reserve(RegionMutationOperation.RESET, listOf(region.id), actor = actor, correlationId = correlation)
+        concurrencyLease = (reservation as? ReservationAttempt.Acquired)?.lease
+            ?: error("Could not reserve the snapshot region for the capture concurrency check: $reservation")
+
+        val backupId = UUID.randomUUID()
+        val startedAt = System.nanoTime()
+        var tickCount = 0
+        var lastTickAt = startedAt
+        var maxTickIntervalNanos = 0L
+        var externallyChanged = false
+        val stageFile = homeClaimPlugin.dataFolder.toPath()
+            .resolve("backups/.staging/$backupId.payload.part")
+        lateinit var monitor: BukkitTask
+        monitor = server.scheduler.runTaskTimer(this, Runnable {
+            val now = System.nanoTime()
+            tickCount++
+            maxTickIntervalNanos = maxOf(maxTickIntervalNanos, now - lastTickAt)
+            lastTickAt = now
+            if (!externallyChanged && Files.isRegularFile(stageFile) && Files.size(stageFile) > 0) {
+                // The first column's early block was already captured; the far corner is still pending.
+                testWorld.getBlockAt(early.first, early.second, early.third).setType(Material.DIAMOND_BLOCK, false)
+                testWorld.getBlockAt(late.first, late.second, late.third).setType(Material.DIAMOND_BLOCK, false)
+                val competing = conflicts.reserve(RegionMutationOperation.COPY, listOf(region.id), actor = actor)
+                check(competing is ReservationAttempt.Conflict) {
+                    if (competing is ReservationAttempt.Acquired) competing.lease.close()
+                    "A second HomeClaim mutation was not blocked during capture"
+                }
+                externallyChanged = true
+            }
+            if (tickCount > 20 * 180) {
+                monitor.cancel()
+                fail(IllegalStateException("Snapshot concurrency check timed out after 180 seconds"))
+            }
+        }, 1L, 1L)
+
+        val accepted = backupService.createBeforeReset(
+            region, testWorld, testWorld.minHeight, testWorld.maxHeight - 1, actor, correlation,
+            "e2e:snapshot-concurrency", backupId
+        ) { result ->
+            val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+            val record = result.getOrElse { fail(it); return@createBeforeReset }
+            if (!externallyChanged) {
+                fail(IllegalStateException("Capture completed before the test plugin could interleave its world writes"))
+                return@createBeforeReset
+            }
+            concurrencyLease?.close()
+            concurrencyLease = null
+            backupService.validateReadyBackup(record.id).whenComplete { validated, validationFailure ->
+                if (validationFailure != null) {
+                    server.scheduler.runTask(this, Runnable { fail(validationFailure) })
+                    return@whenComplete
+                }
+                val rawBytes = record.uncompressedPayloadBytes
+                    ?: run { monitor.cancel(); fail(IllegalStateException("Validated snapshot is missing uncompressed size")); return@whenComplete }
+                val applyStartedAt = System.nanoTime()
+                testBackupService.applyBackupToTarget(
+                    validated.id, region, target, testWorld, homeWorld.id, CorrelationId.newId()
+                ).whenComplete { applied, applyFailure ->
+                    server.scheduler.runTask(this, Runnable {
+                        monitor.cancel()
+                        if (applyFailure != null) {
+                            fail(applyFailure)
+                            return@Runnable
+                        }
+                        val dx = target.bounds.minX - region.bounds.minX
+                        val dz = target.bounds.minZ - region.bounds.minZ
+                        check(applied == record.blockCount.toInt()) { "Snapshot replay applied $applied / ${record.blockCount} blocks" }
+                        check(testWorld.getBlockAt(early.first + dx, early.second, early.third + dz).type == Material.STONE) {
+                            "The already-captured block did not retain its pre-change state"
+                        }
+                        check(testWorld.getBlockAt(late.first + dx, late.second, late.third + dz).type == Material.DIAMOND_BLOCK) {
+                            "The not-yet-captured block did not record the later external plugin write"
+                        }
+                        check(record.compression == PlotBackupCompression.ZSTD && !record.checksumSha256.isNullOrBlank())
+                        val storedBytes = record.payloadBytes
+                        val ratio = if (rawBytes == 0L) 0.0 else storedBytes.toDouble() / rawBytes
+                        val applyMillis = (System.nanoTime() - applyStartedAt) / 1_000_000
+                        finish(
+                            "PASS copy move swap reset restore recoveries; snapshotConcurrency=non-atomic-interleaved " +
+                                "blocks=${record.blockCount} ticks=$tickCount captureMs=$elapsedMillis applyMs=$applyMillis " +
+                                "maxTickIntervalMs=${"%.2f".format(java.util.Locale.ROOT, maxTickIntervalNanos / 1_000_000.0)} " +
+                                "rawBytes=$rawBytes storedBytes=$storedBytes storedRatio=${"%.4f".format(java.util.Locale.ROOT, ratio)} " +
+                                "sameRegionMutation=blocked codec=ZSTD"
+                        )
+                    })
+                }
+            }
+        }
+        if (!accepted) {
+            monitor.cancel()
+            fail(IllegalStateException("Could not start the snapshot concurrency capture"))
         }
     }
 
@@ -563,6 +674,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         services.regionService.deleteRegion(first.id)
         services.regionService.deleteRegion(second.id)
         if (::third.isInitialized) services.regionService.deleteRegion(third.id)
+        concurrencyRegion?.let { services.regionService.deleteRegion(it.id) }
+        concurrencyTarget?.let { services.regionService.deleteRegion(it.id) }
+        concurrencyLease?.close()
+        concurrencyLease = null
         services.worldAreaService?.deleteArea(area.id)
         runCatching { testBackupService.shutdown() }
         runCatching { testWorld.save() }
@@ -572,6 +687,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
 
     private fun fail(error: Throwable) {
         logger.severe("Paper world E2E failed: ${error.stackTraceToString()}")
+        concurrencyLease?.close()
+        concurrencyLease = null
         runCatching { if (::testBackupService.isInitialized) testBackupService.shutdown() }
         runCatching { writeResult("FAIL ${error.javaClass.simpleName}: ${error.message}") }
         Bukkit.shutdown()

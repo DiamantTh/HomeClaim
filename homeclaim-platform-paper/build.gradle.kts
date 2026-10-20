@@ -2,6 +2,8 @@ import groovy.json.JsonSlurper
 import java.util.zip.ZipFile
 import java.net.URI
 import java.net.URL
+import java.net.InetAddress
+import java.net.ServerSocket
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -296,8 +298,9 @@ tasks.register<Exec>("paperWorldE2E") {
             into(serverDir.resolve("plugins"))
         }
         serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         serverDir.resolve("server.properties").writeText(
-            "level-name=world\nserver-port=25595\nonline-mode=false\nmax-players=1\n" +
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
     }
@@ -347,8 +350,9 @@ tasks.register("paperWorldRestartRecoveryE2E") {
             into(serverDir.resolve("plugins"))
         }
         serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         serverDir.resolve("server.properties").writeText(
-            "level-name=world\nserver-port=25596\nonline-mode=false\nmax-players=1\n" +
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
         listOf("restart-prepare", "restart-verify").forEachIndexed { index, phase ->
