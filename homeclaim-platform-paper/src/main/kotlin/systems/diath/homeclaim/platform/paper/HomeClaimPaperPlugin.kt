@@ -1003,7 +1003,12 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             username = config.username,
             password = config.password,
             driverClassName = driverClassName,
-            maximumPoolSize = config.maximumPoolSize
+            // SQLite is a single-writer database; a single pooled connection prevents HomeClaim's
+            // asynchronous audit writer racing synchronous mutation journals for the write lock.
+            maximumPoolSize = if (config.driver == DriverType.SQLITE) 1 else config.maximumPoolSize,
+            // SQLite allows one writer at a time. Audit and mutation journals may write concurrently;
+            // let SQLite serialize short writes instead of failing immediately with SQLITE_BUSY.
+            connectionInitSql = if (config.driver == DriverType.SQLITE) "PRAGMA busy_timeout=5000" else null
         )
     }
 

@@ -233,3 +233,128 @@ tasks.register<Exec>("runPaper") {
     workingDir = runPaperDir.asFile
     commandLine("java", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
 }
+
+// A companion Paper plugin exercises the production HomeClaim plugin against real Bukkit worlds.
+// It is built as a separate artifact and is never added to shadowJar or the normal runtime classpath.
+val paperWorldE2E by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output + sourceSets.test.get().runtimeClasspath
+    runtimeClasspath += output + compileClasspath
+}
+
+configurations[paperWorldE2E.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+configurations[paperWorldE2E.runtimeOnlyConfigurationName].extendsFrom(configurations.testRuntimeOnly.get())
+
+val paperWorldE2EJar = tasks.register<Jar>("paperWorldE2EJar") {
+    group = "verification"
+    description = "Build the isolated test-only Paper world E2E companion plugin"
+    dependsOn(paperWorldE2E.classesTaskName)
+    archiveBaseName.set("HomeClaim-PaperWorldE2E")
+    archiveVersion.set("")
+    archiveClassifier.set("")
+    destinationDirectory.set(layout.buildDirectory.dir("paper-world-e2e/artifacts"))
+    from(paperWorldE2E.output)
+}
+
+tasks.register<Exec>("paperWorldE2E") {
+    group = "verification"
+    description = "Run HomeClaim mutation scenarios in a disposable real Paper 26.3 server"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("paper-world-e2e/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/paper-world-e2e").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = providers.environmentVariable("JAVA_HOME")
+        .map { "$it/bin/java" }
+        .orElse("java")
+    doFirst {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        copy {
+            from(paperJar)
+            into(serverDir)
+        }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy {
+            from(companionJar.get().asFile)
+            into(serverDir.resolve("plugins"))
+        }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-port=25595\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+    }
+    workingDir(serverDir)
+    commandLine(javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
+    isIgnoreExitValue = true
+    doLast {
+        val logsDir = serverDir.resolve("logs")
+        if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
+        val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val exitCode = executionResult.get().exitValue
+        val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+        delete(serverDir)
+        check(exitCode == 0) { "Paper E2E server exited with code $exitCode; report: $result" }
+        check(result.startsWith("PASS")) { "Paper World E2E failed: $result" }
+        reportDir.resolve("result.txt").writeText(result)
+        println(result.trim())
+    }
+}
+
+tasks.register("paperWorldRestartRecoveryE2E") {
+    group = "verification"
+    description = "Verify persistent mutation recovery across two real Paper server processes"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("paper-world-restart-e2e/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/paper-world-restart-e2e").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = providers.environmentVariable("JAVA_HOME")
+        .map { "$it/bin/java" }
+        .orElse("java")
+    doLast {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        copy {
+            from(paperJar)
+            into(serverDir)
+        }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy {
+            from(companionJar.get().asFile)
+            into(serverDir.resolve("plugins"))
+        }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-port=25596\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+        listOf("restart-prepare", "restart-verify").forEachIndexed { index, phase ->
+            val process = ProcessBuilder(
+                javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
+                "-jar", paperJar.name, "nogui"
+            ).directory(serverDir).inheritIO().start()
+            val exitCode = process.waitFor()
+            val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+            val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+            val logsDir = serverDir.resolve("logs")
+            if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("$phase-logs")) }
+            check(exitCode == 0) { "Paper $phase process exited with code $exitCode: $result" }
+            val expected = if (index == 0) "PREPARED" else "PASS restart recovery"
+            check(result.startsWith(expected)) { "Paper $phase failed: $result" }
+            reportDir.resolve("$phase-result.txt").writeText(result)
+        }
+        println(reportDir.resolve("restart-verify-result.txt").readText().trim())
+        delete(serverDir)
+    }
+}

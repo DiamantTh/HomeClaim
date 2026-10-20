@@ -28,7 +28,8 @@ class PaperPlotTransferService(
     private val backups: PaperPlotBackupService,
     private val conflicts: RegionMutationConflictCoordinator,
     private val jobs: PlotMutationJobStore,
-    private val auditService: AuditService?
+    private val auditService: AuditService?,
+    private val faultInjector: PlotTransferFaultInjector = PlotTransferFaultInjector.NONE
 ) {
     private val activeTasks = java.util.concurrent.ConcurrentHashMap.newKeySet<TransferTask>()
     fun execute(
@@ -159,9 +160,13 @@ class PaperPlotTransferService(
             if (task.plan.operation == PlotTransferOperation.COPY) {
                 complete(task)
             } else if (task.plan.operation == PlotTransferOperation.MOVE) {
-                updatePhase(task, "CLEANING_SOURCE") { clearSource(task) }
+                updatePhase(task, "CLEANING_SOURCE") {
+                    faultInjector.beforePhase(PlotTransferPhase.SOURCE_CLEANUP)
+                    clearSource(task)
+                }
             } else {
                 updatePhase(task, "APPLYING_SECONDARY") {
+                    faultInjector.beforePhase(PlotTransferPhase.SECONDARY_APPLY)
                     backups.applyBackupToTarget(
                         task.targetBackupId, task.plan.target, task.plan.source, task.world,
                         task.plan.worldId, task.correlationId
@@ -433,5 +438,16 @@ class PaperPlotTransferService(
 
     private companion object {
         const val CLEANUP_BLOCKS_PER_TICK = 512
+    }
+}
+
+/** Narrow dependency-injection seam for isolated integration tests; production always uses [NONE]. */
+enum class PlotTransferPhase { SOURCE_CLEANUP, SECONDARY_APPLY }
+
+fun interface PlotTransferFaultInjector {
+    fun beforePhase(phase: PlotTransferPhase)
+
+    companion object {
+        val NONE = PlotTransferFaultInjector { }
     }
 }

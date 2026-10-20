@@ -1,0 +1,12 @@
+name: HomeClaimWorldE2E
+version: 0.1.0-test
+main: systems.diath.homeclaim.platform.paper.e2e.PaperWorldE2EHarnessPlugin
+api-version: "26.3"
+load: POSTWORLD
+description: Test-only real Paper world integration harness for HomeClaim
+dependencies:
+  server:
+    HomeClaim:
+      load: AFTER
+      required: true
+      join-classpath: true

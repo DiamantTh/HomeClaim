@@ -45,7 +45,8 @@ class PaperPlotBackupService(
     private val jobStore: PlotMutationJobStore,
     private val auditService: AuditService?,
     private val conflicts: RegionMutationConflictCoordinator? = null,
-    private val compression: PlotBackupCompression = PlotBackupCompression.ZSTD
+    private val compression: PlotBackupCompression = PlotBackupCompression.ZSTD,
+    private val faultInjector: PlotBackupFaultInjector = PlotBackupFaultInjector.NONE
 ) {
     private val dataRoot = plugin.dataFolder.toPath().resolve("backups").toAbsolutePath().normalize()
     private val io: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -255,6 +256,7 @@ class PaperPlotBackupService(
                                 block.setBlockData(Bukkit.createBlockData(snapshot.blockData), false)
                                 task.applied++
                                 task.onProgress?.invoke(task.applied)
+                                faultInjector.afterBlockWrite(PlotBackupApplyKind.TRANSFER, task.applied)
                                 val items = snapshot.inventoryItems ?: continue
                                 val state = block.state
                                 require(state is Container) { "Source container does not match the restored block at $x,${snapshot.y},$z" }
@@ -596,6 +598,7 @@ class PaperPlotBackupService(
                 val block = task.world.getBlockAt(snapshot.x, snapshot.y, snapshot.z)
                 block.setBlockData(Bukkit.createBlockData(snapshot.blockData), false)
                 task.applied++
+                faultInjector.afterBlockWrite(PlotBackupApplyKind.RESTORE, task.applied)
                 val items = snapshot.inventoryItems ?: continue
                 val state = block.state
                 require(state is Container) { "Backup expects a container at ${snapshot.x},${snapshot.y},${snapshot.z}" }

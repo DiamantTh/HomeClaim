@@ -17,7 +17,8 @@ object SqlDsl {
         idleTimeoutMs: Long = 300_000,
         maxLifetimeMs: Long = 1_800_000,
         leakDetectionThresholdMs: Long = 60_000,
-        connectionTestQuery: String = "SELECT 1"
+        connectionTestQuery: String = "SELECT 1",
+        connectionInitSql: String? = null
     ): DataSource {
         val config = HikariConfig().apply {
             this.jdbcUrl = jdbcUrl
@@ -32,6 +33,7 @@ object SqlDsl {
             this.maxLifetime = maxLifetimeMs
             this.leakDetectionThreshold = leakDetectionThresholdMs
             this.connectionTestQuery = connectionTestQuery
+            connectionInitSql?.let { this.connectionInitSql = it }
         }
         return HikariDataSource(config)
     }

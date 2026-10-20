@@ -24,6 +24,17 @@ enum class PlotBackupCompression {
     }
 }
 
+enum class PlotBackupApplyKind { TRANSFER, RESTORE }
+
+/** No-op in production. Tests may inject deterministic failures without a config or command backdoor. */
+fun interface PlotBackupFaultInjector {
+    fun afterBlockWrite(kind: PlotBackupApplyKind, appliedBlocks: Int)
+
+    companion object {
+        val NONE = PlotBackupFaultInjector { _, _ -> }
+    }
+}
+
 /** Persistent metadata for a versioned file payload. The file path is derived from UUIDs, never stored as input. */
 data class PlotBackupRecord(
     val id: UUID,
