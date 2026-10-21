@@ -584,10 +584,14 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         concurrencyRegion = region
         val target = createRegion(Bounds(16, 23, testWorld.minHeight, testWorld.maxHeight - 1, -8, 7))
         concurrencyTarget = target
-        val early = Triple(region.bounds.minX, testWorld.minHeight + 20, region.bounds.minZ)
-        val late = Triple(region.bounds.maxX, testWorld.maxHeight - 1, region.bounds.maxZ)
-        testWorld.getBlockAt(early.first, early.second, early.third).setType(Material.STONE, false)
-        testWorld.getBlockAt(late.first, late.second, late.third).setType(Material.STONE, false)
+        val earlyIndex = 20L
+        val blockCount = blockCount(region.bounds)
+        val middleIndex = blockCount / 2
+        val lateIndex = blockCount - 20
+        val early = captureCoordinate(region.bounds, earlyIndex)
+        val middle = captureCoordinate(region.bounds, middleIndex)
+        val late = captureCoordinate(region.bounds, lateIndex)
+        listOf(early, middle, late).forEach { (x, y, z) -> testWorld.getBlockAt(x, y, z).setType(Material.STONE, false) }
 
         val actor = ActionActor.System("paper-world-e2e-concurrency")
         val correlation = CorrelationId.newId()
@@ -600,7 +604,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         var tickCount = 0
         var lastTickAt = startedAt
         var maxTickIntervalNanos = 0L
-        var externallyChanged = false
+        val externallyChanged = mutableSetOf<String>()
+        var conflictVerified = false
         val stageFile = homeClaimPlugin.dataFolder.toPath()
             .resolve("backups/.staging/$backupId.payload.part")
         lateinit var monitor: BukkitTask
@@ -609,16 +614,28 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             tickCount++
             maxTickIntervalNanos = maxOf(maxTickIntervalNanos, now - lastTickAt)
             lastTickAt = now
-            if (!externallyChanged && Files.isRegularFile(stageFile) && Files.size(stageFile) > 0) {
-                // The first column's early block was already captured; the far corner is still pending.
-                testWorld.getBlockAt(early.first, early.second, early.third).setType(Material.DIAMOND_BLOCK, false)
-                testWorld.getBlockAt(late.first, late.second, late.third).setType(Material.DIAMOND_BLOCK, false)
+            val stagedBytes = if (Files.isRegularFile(stageFile)) Files.size(stageFile) else 0L
+            // Captured records are written in bounded 192-block batches. Use deliberately
+            // conservative byte thresholds to interleave at early, middle and late capture
+            // progress, with marker indices well before/after each threshold.
+            val changes = listOf(
+                Triple("early", early, 1L),
+                Triple("middle", middle, blockCount * 15L),
+                Triple("late", late, blockCount * 23L)
+            )
+            changes.forEach { (name, marker, threshold) ->
+                if (name !in externallyChanged && stagedBytes >= threshold) {
+                    testWorld.getBlockAt(marker.first, marker.second, marker.third).setType(Material.DIAMOND_BLOCK, false)
+                    externallyChanged += name
+                }
+            }
+            if (!conflictVerified && externallyChanged.isNotEmpty()) {
                 val competing = conflicts.reserve(RegionMutationOperation.COPY, listOf(region.id), actor = actor)
                 check(competing is ReservationAttempt.Conflict) {
                     if (competing is ReservationAttempt.Acquired) competing.lease.close()
                     "A second HomeClaim mutation was not blocked during capture"
                 }
-                externallyChanged = true
+                conflictVerified = true
             }
             if (tickCount > 20 * 180) {
                 monitor.cancel()
@@ -632,8 +649,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         ) { result ->
             val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
             val record = result.getOrElse { fail(it); return@createBeforeReset }
-            if (!externallyChanged) {
-                fail(IllegalStateException("Capture completed before the test plugin could interleave its world writes"))
+            if (externallyChanged != setOf("early", "middle", "late")) {
+                fail(IllegalStateException("Capture did not reach all controlled interleaving points: $externallyChanged"))
                 return@createBeforeReset
             }
             concurrencyLease?.close()
@@ -659,10 +676,13 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                         val dz = target.bounds.minZ - region.bounds.minZ
                         check(applied == record.blockCount.toInt()) { "Snapshot replay applied $applied / ${record.blockCount} blocks" }
                         check(testWorld.getBlockAt(early.first + dx, early.second, early.third + dz).type == Material.STONE) {
-                            "The already-captured block did not retain its pre-change state"
+                            "Early marker did not retain its pre-change state"
+                        }
+                        check(testWorld.getBlockAt(middle.first + dx, middle.second, middle.third + dz).type == Material.DIAMOND_BLOCK) {
+                            "Middle marker did not record the interleaved external plugin write"
                         }
                         check(testWorld.getBlockAt(late.first + dx, late.second, late.third + dz).type == Material.DIAMOND_BLOCK) {
-                            "The not-yet-captured block did not record the later external plugin write"
+                            "Late marker did not record the interleaved external plugin write"
                         }
                         check(record.compression == PlotBackupCompression.ZSTD && !record.checksumSha256.isNullOrBlank())
                         val storedBytes = record.payloadBytes
@@ -673,6 +693,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                                 "blocks=${record.blockCount} ticks=$tickCount captureMs=$elapsedMillis applyMs=$applyMillis " +
                                 "maxTickIntervalMs=${"%.2f".format(java.util.Locale.ROOT, maxTickIntervalNanos / 1_000_000.0)} " +
                                 "rawBytes=$rawBytes storedBytes=$storedBytes storedRatio=${"%.4f".format(java.util.Locale.ROOT, ratio)} " +
+                                "interleavedMarkers=early-old,middle-new,late-new " +
                                 "sameRegionMutation=blocked codec=ZSTD"
                         runMergeUnlinkSafetyE2E(testWorld, report)
                     })
@@ -684,6 +705,22 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             fail(IllegalStateException("Could not start the snapshot concurrency capture"))
         }
     }
+
+    private fun captureCoordinate(bounds: Bounds, index: Long): Triple<Int, Int, Int> {
+        val height = bounds.maxY.toLong() - bounds.minY + 1
+        val zWidth = bounds.maxZ.toLong() - bounds.minZ + 1
+        require(index in 0 until blockCount(bounds))
+        val y = bounds.minY + (index % height).toInt()
+        val column = index / height
+        val x = bounds.minX + (column / zWidth).toInt()
+        val z = bounds.minZ + (column % zWidth).toInt()
+        return Triple(x, y, z)
+    }
+
+    private fun blockCount(bounds: Bounds): Long = Math.multiplyExact(
+        Math.multiplyExact(bounds.maxX.toLong() - bounds.minX + 1, bounds.maxY.toLong() - bounds.minY + 1),
+        bounds.maxZ.toLong() - bounds.minZ + 1
+    )
 
     private fun transferWithPhaseFault(failAt: PlotTransferPhase?): PaperPlotTransferService = PaperPlotTransferService(
         homeClaimPlugin,

@@ -78,3 +78,15 @@ The 2026-10-20 runtime run passed all three dialect cases against fresh schemas:
 The script requires a working Docker or Podman engine, Java 25, `openssl`, and the pinned images. Alternatively, when providing isolated databases yourself, run `databaseProcessRestartPrepare`, stop and restart those same DB processes without deleting their data directories, then run `databaseProcessRestartVerify`; both phases require the six external dialect variables above plus `HOMECLAIM_PROCESS_RESTART_RUN_ID` with the same value in both invocations. The two Gradle tasks fail if any required database URL is missing. This test does not contact or modify production databases.
 
 The Step 17B run passed both phases on PostgreSQL 17.11 and MariaDB 11.4.13. Each dialect's prepare and verify cases passed (4 test executions total) after stopping and starting the same containers with their named volumes preserved. The post-restart phase reran Flyway, rebuilt repositories, and verified the world/Area/region spatial binding, READY HCBK v2 ZSTD metadata/checksum, RECOVERY_REQUIRED job details and region reference, and correlated audit row/actor/status/Area. The script removed the containers and volumes afterward. SQLite continues to be exercised by the ordinary runtime suite; this process-restart script is specifically for the two production server dialects.
+
+### Live database outage and pool reconnect
+
+`./scripts/database-interruption-test.sh` exercises an abrupt database outage while a test Hikari pool built with HomeClaim's `SqlDsl.hikari` remains alive. It starts pinned PostgreSQL 17.11 and MariaDB 11.4.13 containers with named volumes, makes a baseline write, sends `SIGKILL` to each existing database process, asserts a write fails, starts the same container again, and verifies that the same pool reconnects, the failed write did not appear, and a post-reconnect write succeeds. The test is isolated and never uses production DB settings. It tests the pool factory and JDBC behavior in a test JVM; it does not claim to run an entire Paper plugin during the outage.
+
+Run with Java 25 and a working Docker or Podman engine:
+
+```sh
+./scripts/database-interruption-test.sh
+```
+
+The Gradle task `:homeclaim-platform-paper:databaseInterruptionTest` is strict and requires the isolated database JDBC settings, container engine, and container names. SQLite remains covered by the normal runtime suite; this abrupt-process test targets PostgreSQL and MariaDB.

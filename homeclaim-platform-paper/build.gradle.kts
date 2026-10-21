@@ -67,6 +67,17 @@ fun registerDatabaseProcessRestartTask(taskName: String, phase: String) = tasks.
 registerDatabaseProcessRestartTask("databaseProcessRestartPrepare", "prepare")
 registerDatabaseProcessRestartTask("databaseProcessRestartVerify", "verify")
 
+tasks.register<Test>("databaseInterruptionTest") {
+    group = "verification"
+    description = "Verify that a live Hikari pool fails closed during a database outage and reconnects after the same process returns"
+    outputs.upToDateWhen { false }
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    filter { includeTestsMatching("*DatabaseInterruptionRuntimeTest") }
+    systemProperty("homeclaim.database.interruption.required", "true")
+    useJUnitPlatform()
+}
+
 // Optimized Shadow JAR instead of fatJar
 tasks.shadowJar {
     archiveBaseName.set("HomeClaim")
