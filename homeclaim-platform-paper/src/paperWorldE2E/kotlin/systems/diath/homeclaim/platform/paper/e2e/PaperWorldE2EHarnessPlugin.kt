@@ -1,5 +1,6 @@
 package systems.diath.homeclaim.platform.paper.e2e
 
+import com.github.luben.zstd.ZstdInputStream
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.World
@@ -910,11 +911,113 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                         check(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED, "phase=WORLD_AND_DOMAIN_VERIFIED"))
                         lease.close()
                         check(conflicts.checkAvailable(targets) == null) { "Merge recovery left its regions blocked" }
-                        finish("$previousReport; merge=PASS; unlink=PASS; mergePartialFailureRecovery=PASS; safetyIntegrity=corrupt-payload-rejected; operationSafety=zstd-world+domain-v1; $safetyStats")
+                        val report = "$previousReport; merge=PASS; unlink=PASS; mergePartialFailureRecovery=PASS; safetyIntegrity=corrupt-payload-rejected; operationSafety=zstd-world+domain-v1; $safetyStats"
+                        runDomainFailureRecovery(testWorld, MutationSafetyOperation.MERGE, report) { afterMergeDomain ->
+                            runDomainFailureRecovery(testWorld, MutationSafetyOperation.UNLINK, afterMergeDomain) { afterUnlinkDomain ->
+                                finish(afterUnlinkDomain)
+                            }
+                        }
                     }) }
                 }) }
             }
         }
+    }
+
+    /** Injects a domain persistence failure after one Region write, then recovers both pre-images. */
+    private fun runDomainFailureRecovery(
+        testWorld: World,
+        operation: MutationSafetyOperation,
+        previousReport: String,
+        onSuccess: (String) -> Unit
+    ) {
+        val left = createRegion(Bounds(44, 46, testWorld.minHeight, testWorld.maxHeight - 1, 18, 20))
+            .copy(home = RegionHome(45.5, testWorld.minHeight + 12.0, 19.5, 30f, 0f))
+        val right = createRegion(Bounds(50, 52, testWorld.minHeight, testWorld.maxHeight - 1, 18, 20))
+            .copy(home = RegionHome(51.5, testWorld.minHeight + 12.0, 19.5, 210f, 0f))
+        services.regionService.updateRegion(left)
+        services.regionService.updateRegion(right)
+        operationSafetyRegions += left
+        operationSafetyRegions += right
+
+        val originalRegions: List<Region>
+        val mutationRegions: List<Region>
+        if (operation == MutationSafetyOperation.MERGE) {
+            originalRegions = listOf(left, right)
+            val prospectiveGroup = MergeGroupId(UUID.randomUUID())
+            mutationRegions = originalRegions.map { it.copy(mergeGroupId = prospectiveGroup, home = if (it.id == left.id) left.home else null) }
+        } else {
+            val originalGroup = services.regionService.mergeRegions(listOf(left.id, right.id))
+            originalRegions = listOf(left, right).map { before ->
+                before.copy(mergeGroupId = originalGroup, home = if (before.id == left.id) left.home else null).also(services.regionService::updateRegion)
+            }
+            mutationRegions = originalRegions.map { it.copy(mergeGroupId = null) }
+        }
+        // Region updates schedule their normal Paper border repaint. Let those writes finish
+        // before seeding and capturing this operation's distinct failure fixture.
+        server.scheduler.runTaskLater(this, Runnable {
+            val plan = if (operation == MutationSafetyOperation.MERGE) {
+                plotWorldMutation.prepareMergeMutation(mutationRegions)
+            } else {
+                plotWorldMutation.prepareUnlinkMutation(mutationRegions, createRoads = true, MutationReason.UNCLAIM)
+            }
+            seedMutationScope(testWorld, plan, if (operation == MutationSafetyOperation.MERGE) Material.CHEST else Material.BARREL)
+            val expectedWorld = captureMutationScope(testWorld, plan)
+            val expectedDomain = systems.diath.homeclaim.platform.paper.plot.mutation.MergeDomainSnapshotV1.capture(originalRegions)
+            val jobId = createSafetyJob(operation.name, originalRegions)
+            val bundleId = UUID.randomUUID()
+            await(safetyBundleStore.create(jobId, operation, homeWorld.id, area.id, originalRegions, plan, testWorld,
+                ActionActor.System("paper-world-${operation.name.lowercase()}-domain-failure"), CorrelationId.newId(), bundleId)) { bundle ->
+                recordSafetyReady(jobId, bundle)
+                assertWorldMapsEqual("$operation bundle capture", expectedWorld, readSafetyWorldSnapshot(bundle))
+                plotWorldMutation.applyPreparedMutation(plan, operation.name.lowercase()).whenComplete { _, worldFailure -> server.scheduler.runTask(this, checkedRunnable {
+                    if (worldFailure != null) throw IllegalStateException("$operation world apply failed before domain failure injection", worldFailure)
+                    val domainFailure = try {
+                        if (operation == MutationSafetyOperation.MERGE) {
+                            val group = requireNotNull(mutationRegions.first().mergeGroupId)
+                            val current = requireNotNull(services.regionService.getRegionById(left.id))
+                            services.regionService.updateRegion(current.copy(mergeGroupId = group, home = left.home))
+                        } else {
+                            val current = requireNotNull(services.regionService.getRegionById(left.id))
+                            services.regionService.updateRegion(current.copy(mergeGroupId = null))
+                        }
+                        error("test-only injected partial $operation domain persistence failure")
+                    } catch (failure: Throwable) {
+                        failure
+                    }
+                    check(domainFailure.message?.contains("test-only injected partial $operation domain persistence failure") == true) {
+                        "Expected injected $operation domain failure was not observed"
+                    }
+                    jobStore.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, plan.batches.size, domainFailure.message)
+                    val targetIds = originalRegions.map { it.id }
+                    val lease = when (val reservation = conflicts.reserveRecovery(jobId, targetIds,
+                        ActionActor.System("paper-world-${operation.name.lowercase()}-domain-recovery"), CorrelationId.newId())) {
+                        is ReservationAttempt.Conflict -> error("Could not reserve $operation domain-failure recovery: ${reservation.conflict}")
+                        is ReservationAttempt.Acquired -> reservation.lease
+                    }
+                    check(jobStore.beginRecovery(jobId, "e2e $operation partial domain failure recovery"))
+                    safetyBundleStore.validate(jobId, bundleId, operation, area.id, homeWorld.id, testWorld.uid,
+                        targetIds, bundle.manifestSha256).whenComplete { validated, validationFailure -> server.scheduler.runTask(this, checkedRunnable {
+                        if (validationFailure != null) throw IllegalStateException("$operation domain-failure bundle validation failed", validationFailure)
+                        safetyBundleStore.restoreWorld(validated, testWorld).whenComplete { _, restoreFailure -> server.scheduler.runTask(this, checkedRunnable {
+                            if (restoreFailure != null) throw IllegalStateException("$operation domain-failure world restore failed", restoreFailure)
+                            assertWorldMapsEqual("$operation world restore before domain restoration", expectedWorld, captureMutationScope(testWorld, plan))
+                            restoreDomainSnapshot(validated.domainSnapshot, area.id)
+                            val actualWorld = captureMutationScope(testWorld, plan)
+                            assertWorldMapsEqual("$operation domain recovery", expectedWorld, actualWorld)
+                            val restoredDomain = systems.diath.homeclaim.platform.paper.plot.mutation.MergeDomainSnapshotV1.capture(
+                                targetIds.map { requireNotNull(services.regionService.getRegionById(it)) }
+                            )
+                            check(restoredDomain == expectedDomain) { "$operation domain recovery did not restore the exact MergeGroup/home pre-image" }
+                            check(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED, "phase=WORLD_AND_DOMAIN_VERIFIED"))
+                            lease.close()
+                            check(conflicts.checkAvailable(targetIds) == null) { "$operation domain recovery left Regions blocked" }
+                            val flag = if (operation == MutationSafetyOperation.MERGE) "mergeDomainFailureRecovery=PASS" else "unlinkDomainFailureRecovery=PASS"
+                            onSuccess("$previousReport; $flag")
+                        }) }
+                    }) }
+                }) }
+            }
+        }, 2L)
     }
 
     private fun createSafetyJob(operation: String, regions: List<Region>): UUID {
@@ -958,6 +1061,46 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             }
             Triple(op.x, op.y, op.z) to BlockImage(block.blockData.asString, items)
         }
+
+    private fun readSafetyWorldSnapshot(bundle: MutationSafetyBundle): Map<Triple<Int, Int, Int>, BlockImage> {
+        val file = homeClaimPlugin.dataFolder.toPath().resolve("mutation-safety").resolve(bundle.jobId.toString())
+            .resolve(bundle.bundleId.toString()).resolve(bundle.worldSnapshot.relativeFile)
+        return java.io.DataInputStream(ZstdInputStream(Files.newInputStream(file))).use { input ->
+            val snapshots = HashMap<Triple<Int, Int, Int>, BlockImage>(bundle.worldSnapshot.blockCount.toInt())
+            var remaining = bundle.worldSnapshot.blockCount
+            while (remaining > 0) {
+                val x = input.readInt()
+                val y = input.readInt()
+                val z = input.readInt()
+                require(bundle.worldSnapshot.bounds.contains(x, y, z)) { "Safety payload coordinate escaped declared bounds" }
+                val stringSize = input.readInt()
+                require(stringSize in 1..16_384) { "Safety payload block data length is invalid" }
+                val blockData = ByteArray(stringSize).also(input::readFully).toString(Charsets.UTF_8)
+                val items = if (!input.readBoolean()) null else {
+                    val slots = input.readUnsignedShort()
+                    require(slots <= 4096) { "Safety payload inventory slot count is invalid" }
+                    List(slots) {
+                        val size = input.readInt()
+                        when {
+                            size == -1 -> null
+                            size in 1..1_048_576 -> ByteArray(size).also(input::readFully).let(Base64.getEncoder()::encodeToString)
+                            else -> error("Safety payload item size is invalid")
+                        }
+                    }
+                }
+                snapshots[Triple(x, y, z)] = BlockImage(blockData, items)
+                remaining--
+            }
+            require(input.read() == -1) { "Safety payload had trailing data during E2E assertion" }
+            snapshots
+        }
+    }
+
+    private fun assertWorldMapsEqual(label: String, expected: Map<Triple<Int, Int, Int>, BlockImage>, actual: Map<Triple<Int, Int, Int>, BlockImage>) {
+        if (actual == expected) return
+        val coordinate = (expected.keys + actual.keys).firstOrNull { expected[it] != actual[it] }
+        error("$label differs at $coordinate: expected=${expected[coordinate]?.blockData}/${expected[coordinate]?.items?.map { it?.take(24) }}, actual=${actual[coordinate]?.blockData}/${actual[coordinate]?.items?.map { it?.take(24) }}")
+    }
 
     private fun restoreDomainSnapshot(snapshot: systems.diath.homeclaim.platform.paper.plot.mutation.MergeDomainSnapshotV1, areaId: systems.diath.homeclaim.core.model.AreaId) {
         systems.diath.homeclaim.core.service.MutationAuditScope.withinOperation {
