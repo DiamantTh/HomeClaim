@@ -275,7 +275,7 @@ class PlotCommandTest {
     }
 
     @Test
-    fun `merge waits for world mutation before persisting and reporting completion`() {
+    fun `merge refuses a painter without operation scoped safety`() {
         val regions = mergedPair()
         val auditService = mock(AuditService::class.java)
         val world = mock(World::class.java)
@@ -297,18 +297,15 @@ class PlotCommandTest {
 
         assertNull(regions.listAllRegions().first().mergeGroupId)
         verify(player, never()).sendMessage(contains("Merge completed"))
-        mutationFuture.complete(Unit)
-
-        val merged = regions.listAllRegions().map { it.mergeGroupId }.distinct()
-        assertEquals(1, merged.size)
-        assertTrue(merged.single() != null)
+        verify(player, atLeastOnce()).sendMessage(contains("safety snapshots are unavailable"))
+        assertTrue(mutationFuture.isDone.not())
+        assertNull(regions.listAllRegions().first().mergeGroupId)
         val messages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertTrue(messages.any { it.contains("group") || it.contains("Gruppe") }, "User should receive the merge completion message only after world mutation")
-        assertTrue(messages.none { it.contains("queued", ignoreCase = true) || it.contains("eingereiht", ignoreCase = true) })
+        assertTrue(messages.any { it.contains("safety snapshots are unavailable") })
         val auditRecords = Mockito.mockingDetails(auditService).invocations
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
-        assertEquals(listOf(AuditStatus.ATTEMPTED, AuditStatus.ALLOWED, AuditStatus.COMPLETED), auditRecords.map { it.status })
+        assertEquals(listOf(AuditStatus.ATTEMPTED, AuditStatus.ALLOWED, AuditStatus.FAILED), auditRecords.map { it.status })
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
     }
 
@@ -363,12 +360,8 @@ class PlotCommandTest {
         val finalMessages = Mockito.mockingDetails(player).invocations
             .filter { it.method.name == "sendMessage" }
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertEquals(
-            1,
-            mutationCalls.get(),
-            "the failed preflight must release its reservation so the next request can proceed; audit=${auditRecords.map { it.status to it.correlationId }}, messages=$finalMessages"
-        )
-        assertTrue(regions.listAllRegions().all { it.mergeGroupId != null })
+        assertEquals(0, mutationCalls.get(), "without a READY operation bundle no painter may run; messages=$finalMessages")
+        assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
         assertEquals(2, auditRecords.map { it.correlationId }.distinct().size)
     }
 
@@ -434,8 +427,9 @@ class PlotCommandTest {
 
         command.execute(player, arrayOf("merge"))
 
-        assertEquals(1, mutationCalls.get(), "a journal startup failure must release the region reservation")
-        assertEquals(PlotMutationJobStatus.COMPLETED, finishedJobs.last().second)
+        assertEquals(0, mutationCalls.get(), "a journal failure or missing safety store must fail before the painter")
+        assertEquals(2, jobs.size, "retry should acquire the released reservation and create a new durable job")
+        assertEquals(PlotMutationJobStatus.FAILED, finishedJobs.last().second)
     }
 
     @Test
@@ -489,40 +483,28 @@ class PlotCommandTest {
 
             command.execute(player, arrayOf("merge", "east"))
             command.execute(player, arrayOf("merge", "east"))
-            assertEquals(
-                1,
-                mutationCalls.get(),
-                "an overlapping merge must be rejected while the first world mutation is pending; audit=${auditRecords.map { it.status }}, messages=${Mockito.mockingDetails(player).invocations.mapNotNull { it.arguments.firstOrNull() as? String }}"
-            )
-            assertEquals(1, pendingMutations.size)
-
-            pendingMutations.removeFirst().complete(Unit)
+            assertEquals(0, mutationCalls.get(), "missing safety storage must reject before entering the writer")
+            assertEquals(0, pendingMutations.size)
             assertEquals(3, regions.listAllRegions().size, "merge must preserve every persisted region")
-            assertEquals(2, regions.listAllRegions().count { it.mergeGroupId != null })
+            assertEquals(0, regions.listAllRegions().count { it.mergeGroupId != null })
             assertTrue(regions.getRegionAt2D(area.id, 5, 5) != null, "the player's plot must remain spatially indexed")
             doReturn(Location(world, -5.0, 65.0, 5.0)).`when`(player).location
             command.execute(player, arrayOf("merge", "east"))
-            assertEquals(
-                2,
-                mutationCalls.get(),
-                "a new adjacent plot must be mergeable after completion releases the reservation; audit=${auditRecords.map { it.status }}, messages=${Mockito.mockingDetails(player).invocations.mapNotNull { it.arguments.firstOrNull() as? String }}"
-            )
-            assertEquals(1, pendingMutations.size)
-            pendingMutations.removeFirst().complete(Unit)
-            assertEquals(1, regions.listAllRegions().map { it.mergeGroupId }.distinct().size)
-            assertTrue(regions.listAllRegions().all { it.mergeGroupId != null })
+            assertEquals(0, mutationCalls.get(), "a second request must be accepted by reservation but fail closed before the painter")
+            assertEquals(0, pendingMutations.size)
+            assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
             command.execute(player, arrayOf("merge", "east"))
-            assertEquals(2, mutationCalls.get(), "the completed merge group must not be merged again")
+            assertEquals(0, mutationCalls.get(), "repeated attempts without safety storage must remain non-mutating")
 
             val statuses = auditRecords.map { it.status }
-            assertEquals(2, statuses.count { it == AuditStatus.COMPLETED })
-            assertTrue(statuses.none { it == AuditStatus.FAILED || it == AuditStatus.ROLLED_BACK }, "rejected duplicate requests must not create failed execution records: $statuses")
+            assertEquals(0, statuses.count { it == AuditStatus.COMPLETED })
+            assertTrue(statuses.count { it == AuditStatus.FAILED } >= 2, "missing safety must be an explicit failed operation: $statuses")
             assertTrue(pendingMutations.isEmpty(), "all started world mutations must finish")
         }
     }
 
     @Test
-    fun `failed merge world mutation does not persist a merge and reports recovery state`() {
+    fun `failed merge cannot reach world writer without operation safety`() {
         val regions = mergedPair()
         val auditService = mock(AuditService::class.java)
         val world = mock(World::class.java)
@@ -548,7 +530,7 @@ class PlotCommandTest {
         assertTrue(regions.listAllRegions().all { it.mergeGroupId == null })
         val messages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertTrue(messages.any { it.contains("recovery", ignoreCase = true) })
+        assertTrue(messages.any { it.contains("safety snapshots are unavailable") })
         assertTrue(messages.none { it.contains("group") || it.contains("Gruppe") })
         val auditRecords = Mockito.mockingDetails(auditService).invocations
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
@@ -556,14 +538,14 @@ class PlotCommandTest {
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
 
         command.execute(player, arrayOf("merge"))
-        assertEquals(2, mutationCalls.get(), "a failed attempt must release its reservation so a later retry can run")
+        assertEquals(0, mutationCalls.get(), "a failed preflight must not invoke the painter")
         val allAuditRecords = Mockito.mockingDetails(auditService).invocations
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
         assertEquals(2, allAuditRecords.map { it.correlationId }.distinct().size)
     }
 
     @Test
-    fun `merge persistence failure restores the previous world visuals and does not report success`() {
+    fun `merge persistence is not attempted when operation safety is unavailable`() {
         val ownerId = UUID.randomUUID()
         val backingStore = mergedPair(ownerId)
         val regionService = object : RegionService by backingStore {
@@ -592,18 +574,18 @@ class PlotCommandTest {
 
         val messages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertTrue(worldRestored, "world restoration was not requested; messages=$messages")
+        assertTrue(!worldRestored, "the world must not be mutated before operation safety is READY; messages=$messages")
         assertTrue(backingStore.listAllRegions().all { it.mergeGroupId == null })
-        assertTrue(messages.any { it.contains("failed", ignoreCase = true) || it.contains("fehlgeschlagen", ignoreCase = true) })
+        assertTrue(messages.any { it.contains("safety snapshots are unavailable", ignoreCase = true) }, "messages=$messages")
         assertTrue(messages.none { it.contains("group") || it.contains("Gruppe") })
         val auditRecords = Mockito.mockingDetails(auditService).invocations
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
-        assertEquals(AuditStatus.ROLLED_BACK, auditRecords.last().status)
+        assertEquals(AuditStatus.FAILED, auditRecords.last().status)
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
     }
 
     @Test
-    fun `failed unlink mutation restores persisted merge state and reports rollback`() {
+    fun `unlink refuses a painter without operation scoped safety`() {
         val regionService = mergedPair()
         val originalRegions = regionService.listAllRegions()
         val mergeGroupId = regionService.mergeRegions(originalRegions.map { it.id })
@@ -637,25 +619,22 @@ class PlotCommandTest {
 
         val unlinkMessages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertTrue(
-            regionService.listAllRegions().all { it.mergeGroupId == null },
-            "unlink should persist before waiting for world mutation; messages=$unlinkMessages, region=${regionService.listAllRegions()}, location=${player.location}"
-        )
+        assertTrue(regionService.listAllRegions().all { it.mergeGroupId == mergeGroupId },
+            "unlink must retain domain state when no READY safety bundle exists; messages=$unlinkMessages")
         val preCompletionMessages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
         assertTrue(preCompletionMessages.none { it.contains("unlink", ignoreCase = true) && it.contains("success", ignoreCase = true) })
 
-        mutationFuture.completeExceptionally(IllegalStateException("simulated corridor failure"))
-
-        assertTrue(visualCompensationRan)
+        assertTrue(mutationFuture.isDone.not())
+        assertTrue(!visualCompensationRan)
         assertTrue(regionService.listAllRegions().all { it.mergeGroupId == mergeGroupId })
         val messages = Mockito.mockingDetails(player).invocations
             .mapNotNull { it.arguments.firstOrNull() as? String }
-        assertTrue(messages.any { it.contains("failed", ignoreCase = true) || it.contains("fehlgeschlagen", ignoreCase = true) })
+        assertTrue(messages.any { it.contains("safety snapshots are unavailable", ignoreCase = true) }, "messages=$messages")
         assertTrue(messages.none { it.contains("Unlinked", ignoreCase = true) || it.contains("entknüpft", ignoreCase = true) })
         val auditRecords = Mockito.mockingDetails(auditService).invocations
             .mapNotNull { it.arguments.firstOrNull() as? AuditEntry }
-        assertEquals(AuditStatus.ROLLED_BACK, auditRecords.last().status)
+        assertEquals(AuditStatus.FAILED, auditRecords.last().status)
         assertEquals(1, auditRecords.map { it.correlationId }.distinct().size)
     }
 

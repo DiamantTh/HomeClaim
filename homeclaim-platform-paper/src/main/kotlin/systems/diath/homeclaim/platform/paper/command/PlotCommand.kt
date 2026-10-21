@@ -64,6 +64,12 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationOperat
 import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
 import systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperMutationSafetyBundleStore
+import systems.diath.homeclaim.platform.paper.plot.mutation.MutationSafetyBundleService
+import systems.diath.homeclaim.platform.paper.plot.mutation.OperationScopedPlotMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.MutationSafetyOperation
+import systems.diath.homeclaim.platform.paper.plot.mutation.RegionHomeSnapshotV1
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferOperation
@@ -113,6 +119,8 @@ class PlotCommand(
     private val mutationConflicts: RegionMutationConflictCoordinator = RegionMutationConflictCoordinator(mutationJobStore),
     private val backupService: PaperPlotBackupService? = null,
     private val transferService: PaperPlotTransferService? = null,
+    private val mutationSafetyBundleStore: MutationSafetyBundleService? = null,
+    private val operationScopedMutationService: OperationScopedPlotMutationService? = plotMutationService as? OperationScopedPlotMutationService,
     private val componentService: ComponentService? = null
 ) {
 
@@ -1177,86 +1185,235 @@ class PlotCommand(
             }
             return
         }
-        val worldMutation = runCatching { plotMutationService.handleRegionsMerged(prospectiveRegions) }
-            .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
-
-        worldMutation.whenComplete { _, worldError ->
-            if (worldError != null) {
-                val cause = worldError.cause ?: worldError
-                val detail = "Merge world mutation failed; partial world changes cannot be excluded: ${cause.message ?: cause.javaClass.simpleName}"
-                try {
-                    runCatching {
-                        mutationJobStore?.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, originalRegions.size, detail)
-                    }.onFailure { journalError ->
-                        org.bukkit.Bukkit.getLogger().severe("Could not persist merge recovery status for job $jobId: ${journalError.message}")
-                    }
-                    runCatching { auditOperation(request, AuditStatus.FAILED, detail, mergedIds.size) }
-                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit failed merge $jobId: ${auditError.message}") }
-                    runCatching { if (player.isOnline) player.sendMessage("§cPlot merge requires recovery: $detail") }
-                        .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge recovery feedback for $jobId: ${feedbackError.message}") }
-                } finally {
-                    reservation.close()
-                }
-                return@whenComplete
-            }
-
-        val persisted = runCatching { operationLimits.merge(request, mergedIds, bypassLimit) }
-            .getOrElse { error ->
-                systems.diath.homeclaim.core.service.OperationResult.rejected(
-                    OperationStatus.FAILED,
-                    "MERGE_EXECUTION_FAILED:${error.javaClass.simpleName}"
-                )
-            }
-            if (persisted.status == OperationStatus.SUCCESS && persisted.value != null) {
-                val mergeId = requireNotNull(persisted.value)
-                runCatching {
-                    mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size)
-                }.onFailure { journalError ->
-                    // World and domain state agree. Leave the nonterminal journal row for conservative startup review.
-                    org.bukkit.Bukkit.getLogger().severe("Merge $jobId completed but its journal could not be finalized: ${journalError.message}")
-                }
-                try {
-                    runCatching { auditOperation(request, AuditStatus.COMPLETED, targetCount = mergedIds.size) }
-                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit completed merge $jobId: ${auditError.message}") }
-                    runCatching {
-                        if (player.isOnline) {
-                            player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, mergeId.value.toString().take(8)))
-                        }
-                    }.onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge completion feedback for $jobId: ${feedbackError.message}") }
-                } finally {
-                    reservation.close()
-                }
-                return@whenComplete
-            }
-
-            val reason = persisted.detail ?: if (persisted.status == OperationStatus.SUCCESS) "MERGE_RESULT_MISSING_GROUP" else persisted.status.name
-            val compensation = runCatching { plotMutationService.restoreRegionVisualStates(originalRegions) }
-                .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
-            compensation.whenComplete { _, compensationError ->
-                val cause = compensationError?.cause ?: compensationError
-                val auditStatus = if (cause == null) AuditStatus.ROLLED_BACK else AuditStatus.FAILED
-                val detail = if (cause == null) {
-                    "Merge persistence failed ($reason); world visuals restored"
-                } else {
-                    "Merge persistence failed ($reason); recovery required because visual compensation failed: ${cause.message ?: cause.javaClass.simpleName}"
-                }
-                val jobStatus = if (cause == null) PlotMutationJobStatus.ROLLED_BACK else PlotMutationJobStatus.RECOVERY_REQUIRED
-                runCatching {
-                    mutationJobStore?.finish(jobId, jobStatus, originalRegions.size, originalRegions.size, detail)
-                }.onFailure { journalError ->
-                    org.bukkit.Bukkit.getLogger().severe("Could not persist merge compensation status for job $jobId: ${journalError.message}")
-                }
-                try {
-                    runCatching { auditOperation(request, auditStatus, detail, mergedIds.size) }
-                        .onFailure { auditError -> org.bukkit.Bukkit.getLogger().severe("Could not audit merge compensation $jobId: ${auditError.message}") }
-                    runCatching { if (player.isOnline) player.sendMessage("§cPlot merge failed: $detail") }
-                        .onFailure { feedbackError -> org.bukkit.Bukkit.getLogger().warning("Could not send merge failure feedback for $jobId: ${feedbackError.message}") }
-                } finally {
-                    reservation.close()
-                }
-            }
-        }
+        beginMergeWithSafety(player, request, originalRegions, prospectiveRegions, mergedIds, bypassLimit, jobId, reservation)
     }
+
+    private fun beginMergeWithSafety(
+        player: Player,
+        request: ActionRequest,
+        originalRegions: List<Region>,
+        prospectiveRegions: List<Region>,
+        mergedIds: Collection<RegionId>,
+        bypassLimit: Boolean,
+        jobId: UUID,
+        reservation: RegionMutationConflictCoordinator.Lease
+    ) {
+        val safety = mutationSafetyBundleStore
+        val paperMutation = operationScopedMutationService
+        if (safety == null || paperMutation == null) {
+            finishMergeBeforeWorld(player, request, jobId, reservation, "Operation-scoped safety snapshots are unavailable for this mutation backend")
+            return
+        }
+        val plan = runCatching { paperMutation.prepareMergeMutation(prospectiveRegions) }.getOrElse {
+            finishMergeBeforeWorld(player, request, jobId, reservation, "Could not build the exact merge write plan: ${it.message ?: it.javaClass.simpleName}")
+            return
+        }
+        val world = org.bukkit.Bukkit.getWorld(plan.worldId)
+        val worldId = worldAreaService?.getArea(originalRegions.first().areaId)?.worldId
+        if (world == null || world.uid != player.world.uid || worldId == null) {
+            finishMergeBeforeWorld(player, request, jobId, reservation, "Merge world or HomeClaim binding is unavailable")
+            return
+        }
+        val bundleId = UUID.randomUUID()
+        val captureDetails = safetyDetails(jobId, bundleId, "SAFETY_CAPTURE")
+        if (!runCatching { mutationJobStore?.updateDetails(jobId, captureDetails) }.isSuccess) {
+            finishMergeBeforeWorld(player, request, jobId, reservation, "Could not persist the merge safety-bundle reference")
+            return
+        }
+        safety.create(jobId, MutationSafetyOperation.MERGE, requireNotNull(worldId), originalRegions.first().areaId,
+            originalRegions, plan, world, ActionActor.Player(player.uniqueId), request.correlationId, bundleId)
+            .whenComplete { bundle, captureError -> onPaper {
+                if (captureError != null || bundle == null) {
+                    finishMergeBeforeWorld(player, request, jobId, reservation,
+                        "Merge safety bundle failed before world mutation: ${captureError?.cause?.message ?: captureError?.message ?: "unknown failure"}")
+                    return@onPaper
+                }
+                val started = runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "WORLD_MUTATION", bundle.manifestSha256)) }.isSuccess
+                if (!started) {
+                    finishMergeBeforeWorld(player, request, jobId, reservation, "Could not persist READY safety-bundle state; world mutation was not started")
+                    return@onPaper
+                }
+                paperMutation.applyPreparedMutation(plan, "merge").whenComplete { _, worldError -> onPaper {
+                    if (worldError != null) {
+                        finishMergeRecovery(player, request, jobId, reservation, bundle.bundleId, "WORLD_MUTATION_PARTIAL",
+                            "Merge world write failed; original world and domain snapshots are ready: ${worldError.cause?.message ?: worldError.message}")
+                        return@onPaper
+                    }
+                    runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "DOMAIN_PERSISTING")) }
+                        .onFailure { loggerForPlotCommand().severe("Could not record merge domain phase for $jobId: ${it.message}") }
+                    val persisted = runCatching { operationLimits.merge(request, mergedIds, bypassLimit) }
+                        .getOrElse { error -> systems.diath.homeclaim.core.service.OperationResult.rejected(
+                            OperationStatus.FAILED, "MERGE_EXECUTION_FAILED:${error.javaClass.simpleName}") }
+                    val mergeId = persisted.value
+                    val domainVerified = persisted.status == OperationStatus.SUCCESS && mergeId != null && runCatching {
+                        val desiredHomes = prospectiveRegions.associate { it.id to it.home }
+                        systems.diath.homeclaim.core.service.MutationAuditScope.withinOperation {
+                            originalRegions.forEach { original ->
+                                val current = regionService.getRegionById(original.id) ?: error("Merged Region disappeared")
+                                regionService.updateRegion(current.copy(mergeGroupId = mergeId, home = desiredHomes[original.id]))
+                            }
+                        }
+                        val saved = originalRegions.map { regionService.getRegionById(it.id) ?: error("Merged Region disappeared") }
+                        check(saved.all { it.mergeGroupId == mergeId }) { "MergeGroup membership did not verify" }
+                        check(saved.all { it.home == desiredHomes[it.id] }) { "Merge home anchor did not verify" }
+                    }.isSuccess
+                    if (!domainVerified) {
+                        finishMergeRecovery(player, request, jobId, reservation, bundle.bundleId, "WORLD_APPLIED_DOMAIN_INCOMPLETE",
+                            "Merge world writes completed but merge-domain persistence or verification failed (${persisted.detail ?: persisted.status})")
+                        return@onPaper
+                    }
+                    mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "DOMAIN_VERIFIED"))
+                    if (!runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size) }.isSuccess) {
+                        finishMergeRecovery(player, request, jobId, reservation, bundle.bundleId, "TERMINALIZATION_FAILED",
+                            "Merge world and domain were written, but terminal job persistence failed")
+                        return@onPaper
+                    }
+                    runCatching { auditOperation(request, AuditStatus.COMPLETED, "safetyBundleId=${bundle.bundleId}", mergedIds.size) }
+                        .onFailure { loggerForPlotCommand().severe("Could not audit completed merge $jobId: ${it.message}") }
+                    if (player.isOnline) player.sendMessage(i18n.msg("plot.merge_success", mergedIds.size - 1, requireNotNull(mergeId).value.toString().take(8)))
+                    reservation.close()
+                } }
+            } }
+    }
+
+    private fun finishMergeBeforeWorld(
+        player: Player, request: ActionRequest, jobId: UUID, reservation: RegionMutationConflictCoordinator.Lease, detail: String
+    ) {
+        runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.FAILED, 0, 0, detail) }
+        runCatching { auditOperation(request, AuditStatus.FAILED, detail) }
+        if (player.isOnline) player.sendMessage("§cPlot merge was not started: $detail")
+        reservation.close()
+    }
+
+    private fun finishMergeRecovery(
+        player: Player, request: ActionRequest, jobId: UUID, reservation: RegionMutationConflictCoordinator.Lease,
+        bundleId: UUID, phase: String, detail: String
+    ) {
+        runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundleId, phase)) }
+        runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, 0, detail) }
+            .onFailure { loggerForPlotCommand().severe("Could not persist merge recovery state for $jobId: ${it.message}") }
+        runCatching { auditOperation(request, AuditStatus.FAILED, "safetyBundleId=$bundleId; $detail") }
+        if (player.isOnline) player.sendMessage("§cPlot merge requires explicit recovery: $detail. Job: $jobId")
+        reservation.close()
+    }
+
+    private fun beginUnlinkWithSafety(
+        player: Player,
+        request: ActionRequest,
+        originalRegions: List<Region>,
+        updatedRegions: List<Region>,
+        createRoads: Boolean,
+        jobId: UUID,
+        reservation: RegionMutationConflictCoordinator.Lease
+    ) {
+        val safety = mutationSafetyBundleStore
+        val paperMutation = operationScopedMutationService
+        if (safety == null || paperMutation == null) {
+            finishUnlinkBeforeWorld(player, request, jobId, reservation, "Operation-scoped safety snapshots are unavailable for this mutation backend")
+            return
+        }
+        val plan = runCatching { paperMutation.prepareUnlinkMutation(updatedRegions, createRoads) }.getOrElse {
+            finishUnlinkBeforeWorld(player, request, jobId, reservation, "Could not build the exact unlink write plan: ${it.message ?: it.javaClass.simpleName}")
+            return
+        }
+        val world = org.bukkit.Bukkit.getWorld(plan.worldId)
+        val worldId = worldAreaService?.getArea(originalRegions.first().areaId)?.worldId
+        if (world == null || world.uid != player.world.uid || worldId == null) {
+            finishUnlinkBeforeWorld(player, request, jobId, reservation, "Unlink world or HomeClaim binding is unavailable")
+            return
+        }
+        val bundleId = UUID.randomUUID()
+        if (!runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundleId, "SAFETY_CAPTURE")) }.isSuccess) {
+            finishUnlinkBeforeWorld(player, request, jobId, reservation, "Could not persist the unlink safety-bundle reference")
+            return
+        }
+        safety.create(jobId, MutationSafetyOperation.UNLINK, requireNotNull(worldId), originalRegions.first().areaId,
+            originalRegions, plan, world, ActionActor.Player(player.uniqueId), request.correlationId, bundleId)
+            .whenComplete { bundle, captureError -> onPaper {
+                if (captureError != null || bundle == null) {
+                    finishUnlinkBeforeWorld(player, request, jobId, reservation,
+                        "Unlink safety bundle failed before world mutation: ${captureError?.cause?.message ?: captureError?.message ?: "unknown failure"}")
+                    return@onPaper
+                }
+                if (!runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "WORLD_MUTATION", bundle.manifestSha256)) }.isSuccess) {
+                    finishUnlinkBeforeWorld(player, request, jobId, reservation, "Could not persist READY safety-bundle state; world mutation was not started")
+                    return@onPaper
+                }
+                paperMutation.applyPreparedMutation(plan, "unlink").whenComplete { _, worldError -> onPaper {
+                    if (worldError != null) {
+                        finishUnlinkRecovery(player, request, jobId, reservation, bundle.bundleId, "WORLD_MUTATION_PARTIAL",
+                            "Unlink world write failed; original world and domain snapshots are ready: ${worldError.cause?.message ?: worldError.message}")
+                        return@onPaper
+                    }
+                    runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "DOMAIN_PERSISTING")) }
+                        .onFailure { loggerForPlotCommand().severe("Could not record unlink domain phase for $jobId: ${it.message}") }
+                    try {
+                        updatedRegions.forEach(regionService::updateRegion)
+                        homeService?.reconcileUnlinked(originalRegions)
+                        val saved = originalRegions.map { regionService.getRegionById(it.id) ?: error("Unlinked Region disappeared") }
+                        check(saved.all { it.mergeGroupId == null }) { "Unlink membership did not verify" }
+                        check(saved.all { current ->
+                            current.home?.let { current.bounds.contains(kotlin.math.floor(it.x).toInt(), kotlin.math.floor(it.y).toInt(), kotlin.math.floor(it.z).toInt()) } ?: true
+                        }) { "Unlink home reconciliation did not verify" }
+                    } catch (failure: Throwable) {
+                        finishUnlinkRecovery(player, request, jobId, reservation, bundle.bundleId, "WORLD_APPLIED_DOMAIN_INCOMPLETE",
+                            "Unlink world writes completed but domain persistence or verification failed: ${failure.message ?: failure.javaClass.simpleName}")
+                        return@onPaper
+                    }
+                    mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundle.bundleId, "DOMAIN_VERIFIED"))
+                    if (!runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size) }.isSuccess) {
+                        finishUnlinkRecovery(player, request, jobId, reservation, bundle.bundleId, "TERMINALIZATION_FAILED",
+                            "Unlink world and domain were written, but terminal job persistence failed")
+                        return@onPaper
+                    }
+                    runCatching { auditOperation(request, AuditStatus.COMPLETED, "safetyBundleId=${bundle.bundleId}", originalRegions.size) }
+                    if (player.isOnline) player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
+                    reservation.close()
+                } }
+            } }
+    }
+
+    private fun finishUnlinkBeforeWorld(
+        player: Player, request: ActionRequest, jobId: UUID, reservation: RegionMutationConflictCoordinator.Lease, detail: String
+    ) {
+        runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.FAILED, 0, 0, detail) }
+        runCatching { auditOperation(request, AuditStatus.FAILED, detail) }
+        if (player.isOnline) player.sendMessage("§cPlot unlink was not started: $detail")
+        reservation.close()
+    }
+
+    private fun finishUnlinkRecovery(
+        player: Player, request: ActionRequest, jobId: UUID, reservation: RegionMutationConflictCoordinator.Lease,
+        bundleId: UUID, phase: String, detail: String
+    ) {
+        runCatching { mutationJobStore?.updateDetails(jobId, safetyDetails(jobId, bundleId, phase)) }
+        runCatching { mutationJobStore?.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, 0, detail) }
+            .onFailure { loggerForPlotCommand().severe("Could not persist unlink recovery state for $jobId: ${it.message}") }
+        runCatching { auditOperation(request, AuditStatus.FAILED, "safetyBundleId=$bundleId; $detail") }
+        if (player.isOnline) player.sendMessage("§cPlot unlink requires explicit recovery: $detail. Job: $jobId")
+        reservation.close()
+    }
+
+    private fun safetyDetails(jobId: UUID, bundleId: UUID, phase: String, manifestSha256: String? = null): String {
+        val priorLines = mutationJobStore?.findById(jobId)?.details.orEmpty().lineSequence().toList()
+        val savedHash = manifestSha256 ?: priorLines.firstOrNull { it.startsWith("safetyBundleManifestSha256=") }?.substringAfter('=')
+        val existing = priorLines.asSequence()
+            .filterNot { it.startsWith("safetyBundleId=") || it.startsWith("safetyBundleManifestSha256=") ||
+                it.startsWith("phase=") || it.startsWith("recoveryPhase=") }
+            .toList()
+        return (existing + listOfNotNull("format=homeclaim-mutation-safety-job-v1", "safetyBundleId=$bundleId",
+            savedHash?.let { "safetyBundleManifestSha256=$it" }, "phase=$phase", "recoveryPhase=IDLE"))
+            .joinToString("\n").take(8192)
+    }
+
+    private fun onPaper(action: () -> Unit) {
+        if (org.bukkit.Bukkit.isPrimaryThread()) action()
+        else org.bukkit.Bukkit.getScheduler().runTask(
+            org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), Runnable(action)
+        )
+    }
+
+    private fun loggerForPlotCommand() = org.bukkit.Bukkit.getLogger()
 
     private fun acquireMutationReservation(
         operation: RegionMutationOperation,
@@ -1388,63 +1545,7 @@ class PlotCommand(
             reservation.close()
             return
         }
-        try {
-            updatedRegions.forEach(regionService::updateRegion)
-        } catch (error: Throwable) {
-            val rollbackError = runCatching { originalRegions.forEach(regionService::updateRegion) }.exceptionOrNull()
-            val detail = buildString {
-                append(error.message ?: "Unlink persistence failed")
-                if (rollbackError != null) append("; persistence rollback failed: ${rollbackError.message}")
-            }
-            val status = if (rollbackError == null) PlotMutationJobStatus.ROLLED_BACK else PlotMutationJobStatus.RECOVERY_REQUIRED
-            runCatching { mutationJobStore?.finish(jobId, status, 0, originalRegions.size, detail) }
-                .onFailure { journalError -> org.bukkit.Bukkit.getLogger().severe("Could not persist unlink recovery state for job $jobId: ${journalError.message}") }
-            auditOperation(request, if (rollbackError == null) AuditStatus.ROLLED_BACK else AuditStatus.FAILED, detail, groupedRegions.size)
-            player.sendMessage("§cPlot unlink failed: $detail")
-            reservation.close()
-            return
-        }
-
-        val mutation = try {
-            plotMutationService.handleRegionsUnlinked(updatedRegions, createRoads)
-        } catch (error: Throwable) {
-            java.util.concurrent.CompletableFuture.failedFuture(error)
-        }
-        mutation.whenComplete { _, mutationError ->
-            if (mutationError == null) {
-                runCatching { homeService?.reconcileUnlinked(originalRegions) }
-                    .onFailure { error -> org.bukkit.Bukkit.getLogger().warning("Could not reconcile plot homes after unlink $jobId: ${error.message}") }
-                runCatching {
-                    mutationJobStore?.finish(jobId, PlotMutationJobStatus.COMPLETED, originalRegions.size, originalRegions.size)
-                }.onFailure { journalError ->
-                    org.bukkit.Bukkit.getLogger().severe("Unlink $jobId completed but its journal could not be finalized: ${journalError.message}")
-                }
-                auditOperation(request, AuditStatus.COMPLETED, targetCount = updatedRegions.size)
-                if (player.isOnline) player.sendMessage(i18n.msg("plot.unlink_success", updatedRegions.size, createRoads.toString()))
-                reservation.close()
-            } else {
-                val cause = mutationError.cause ?: mutationError
-                val rollbackError = runCatching { originalRegions.forEach(regionService::updateRegion) }.exceptionOrNull()
-                val compensation = runCatching { plotMutationService.handleRegionsMerged(originalRegions) }
-                    .getOrElse { java.util.concurrent.CompletableFuture.failedFuture(it) }
-                compensation.whenComplete { _, compensationError ->
-                    val compensationCause = compensationError?.cause ?: compensationError
-                    val recoveryRequired = rollbackError != null || compensationCause != null
-                    val detail = buildString {
-                        append(cause.message ?: "Unlink world mutation failed")
-                        if (rollbackError != null) append("; persistence rollback failed: ${rollbackError.message}")
-                        else append("; persisted merge state restored")
-                        if (compensationCause != null) append("; world compensation failed: ${compensationCause.message ?: compensationCause.javaClass.simpleName}")
-                    }
-                    val jobStatus = if (recoveryRequired) PlotMutationJobStatus.RECOVERY_REQUIRED else PlotMutationJobStatus.ROLLED_BACK
-                    runCatching { mutationJobStore?.finish(jobId, jobStatus, originalRegions.size, originalRegions.size, detail) }
-                        .onFailure { journalError -> org.bukkit.Bukkit.getLogger().severe("Could not persist unlink terminal state for job $jobId: ${journalError.message}") }
-                    auditOperation(request, if (recoveryRequired) AuditStatus.FAILED else AuditStatus.ROLLED_BACK, detail, groupedRegions.size)
-                    if (player.isOnline) player.sendMessage("§cPlot unlink failed: $detail")
-                    reservation.close()
-                }
-            }
-        }
+        beginUnlinkWithSafety(player, request, originalRegions, updatedRegions, createRoads, jobId, reservation)
     }
 
     private fun handleReset(player: Player, confirm: Boolean = false) {
@@ -1728,7 +1829,10 @@ class PlotCommand(
             player.sendMessage("§cThat recovery action is unavailable for this job. Inspect it and choose a supported action.")
             return
         }
-        if (action != PlotMutationRecoveryAction.ACKNOWLEDGE && recoveryTargets(job, action).isNullOrEmpty()) {
+        val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
+        if (action != PlotMutationRecoveryAction.ACKNOWLEDGE &&
+            (operationOriginal && (safetyBundleId(job) == null || safetyBundleManifestSha256(job) == null) ||
+                !operationOriginal && recoveryTargets(job, action).isNullOrEmpty())) {
             player.sendMessage("§cThis job has no safe recorded backup for that recovery action.")
             return
         }
@@ -1740,6 +1844,8 @@ class PlotCommand(
         pendingConfirmations.create(actor, operationKey, target, recoveryStateSignature(job), correlationId = correlation)
         if (action == PlotMutationRecoveryAction.ACKNOWLEDGE) {
             player.sendMessage("§cThis only acknowledges manual repair. HomeClaim will not verify or change the world.")
+        } else if (operationOriginal) {
+            player.sendMessage("§cThis will restore the recorded world pre-image and merge/home domain state from the validated safety bundle.")
         } else {
             player.sendMessage("§cThis will restore ${recoveryTargets(job, action)!!.size} region(s) from the job's validated original backup(s).")
         }
@@ -1748,7 +1854,7 @@ class PlotCommand(
     }
 
     private fun confirmJobRecovery(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
-        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
+        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|RESTORE_OPERATION_ORIGINAL|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
         val jobId = match?.groupValues?.get(1)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val action = match?.groupValues?.get(2)?.let { runCatching { PlotMutationRecoveryAction.valueOf(it) }.getOrNull() }
         val store = mutationJobStore ?: run { pendingConfirmations.invalidate(actor); player.sendMessage("§cPersistent mutation-job storage is unavailable."); return }
@@ -1760,6 +1866,7 @@ class PlotCommand(
             return
         }
         val acknowledgement = action == PlotMutationRecoveryAction.ACKNOWLEDGE
+        val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
         val expectedOperation = if (acknowledgement) HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE
             else HomeClaimOperationActions.REGION_RECOVERY
         if (pending.operation != expectedOperation) {
@@ -1769,7 +1876,7 @@ class PlotCommand(
         }
         if (!Permissions.checkWithMessage(player, if (acknowledgement) Permissions.ADMIN_JOBS_RESOLVE else Permissions.ADMIN_JOBS_RECOVER)) return
         val targets = if (acknowledgement) emptyList() else recoveryTargets(job, action).orEmpty()
-        if (!acknowledgement && targets.isEmpty()) {
+        if (!acknowledgement && !operationOriginal && targets.isEmpty()) {
             pendingConfirmations.invalidate(actor)
             player.sendMessage("§cA safe backup mapping is no longer available for this action.")
             return
@@ -1781,7 +1888,8 @@ class PlotCommand(
                 is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
             }
         } else {
-            when (val attempt = mutationConflicts.reserveRecovery(job.id, targets.map { it.region.id }, actor, pending.correlationId)) {
+            val regionIds = if (operationOriginal) job.regionIds else targets.map { it.region.id }
+            when (val attempt = mutationConflicts.reserveRecovery(job.id, regionIds, actor, pending.correlationId)) {
                 is ReservationAttempt.Acquired -> attempt.lease
                 is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
             }
@@ -1799,6 +1907,7 @@ class PlotCommand(
             attributes = mapOf(
                 "jobId" to job.id.toString(), "originalCorrelationId" to job.correlationId.toString(),
                 "recoveryAction" to action.name,
+                "safetyBundleId" to (safetyBundleId(job)?.toString() ?: ""),
                 "backupIds" to targets.joinToString(",") { it.backupId.toString() },
                 "regions" to (if (targets.isEmpty()) job.regionIds else targets.map { it.region.id }).joinToString(",") { it.value.toString() }
             ))
@@ -1820,6 +1929,10 @@ class PlotCommand(
                 "Recovery was not started because ATTEMPTED audit failed: ${auditStartFailure.message}") }
             lease.close()
             player.sendMessage("§cRecovery was not started because its audit could not be recorded; the plot remains blocked.")
+            return
+        }
+        if (operationOriginal) {
+            recoverOperationOriginal(player, job, action, actor, pending.correlationId, request, lease)
             return
         }
         if (acknowledgement) {
@@ -1913,6 +2026,132 @@ class PlotCommand(
         }
     }
 
+    private fun safetyBundleId(job: PlotMutationJobRecord): UUID? = job.details.orEmpty().lineSequence()
+        .firstOrNull { it.startsWith("safetyBundleId=") }?.substringAfter('=')
+        ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+
+    private fun safetyBundleManifestSha256(job: PlotMutationJobRecord): String? = job.details.orEmpty().lineSequence()
+        .firstOrNull { it.startsWith("safetyBundleManifestSha256=") }?.substringAfter('=')
+        ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+
+    private fun recoverOperationOriginal(
+        player: Player,
+        job: PlotMutationJobRecord,
+        action: PlotMutationRecoveryAction,
+        actor: ActionActor,
+        recoveryCorrelation: CorrelationId,
+        request: ActionRequest,
+        lease: RegionMutationConflictCoordinator.Lease
+    ) {
+        val store = mutationJobStore
+        val bundleStore = mutationSafetyBundleStore
+        val bundleId = safetyBundleId(job)
+        val manifestHash = safetyBundleManifestSha256(job)
+        val paperId = recoveryPaperWorldId(job)
+        val world = paperId?.let(org.bukkit.Bukkit::getWorld)
+        if (store == null || bundleStore == null || bundleId == null || manifestHash == null || paperId == null || world == null || job.worldId == null) {
+            failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                "VALIDATION_FAILED", "Safety bundle or original World binding is unavailable")
+            return
+        }
+        val operation = runCatching { MutationSafetyOperation.valueOf(job.operation) }.getOrNull()
+        if (operation == null) {
+            failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                "VALIDATION_FAILED", "Unsupported operation safety bundle")
+            return
+        }
+        player.sendMessage("§7Validating operation safety bundle ${bundleId} before restoring world and domain state…")
+        bundleStore.validate(job.id, bundleId, operation, job.areaId, job.worldId, paperId, job.regionIds, manifestHash)
+            .whenComplete { bundle, validationError -> onPaper {
+                if (validationError != null || bundle == null) {
+                    failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                        "VALIDATION_FAILED", "Safety bundle validation failed: ${validationError?.cause?.message ?: validationError?.message}")
+                    return@onPaper
+                }
+                if (!store.updateRecoveryDetails(job.id, recoveryDetails(job, action, actor, recoveryCorrelation, "WORLD_RESTORE_RUNNING"))) {
+                    failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                        "CHECKPOINT_FAILED", "Could not persist the world-restore recovery phase")
+                    return@onPaper
+                }
+                bundleStore.restoreWorld(bundle, world).whenComplete { restored, worldError -> onPaper {
+                    if (worldError != null) {
+                        failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                            "WORLD_RESTORE_FAILED", "World pre-image restore failed after ${restored ?: 0} blocks: ${worldError.cause?.message ?: worldError.message}")
+                        return@onPaper
+                    }
+                    if (!store.updateRecoveryDetails(job.id, recoveryDetails(job, action, actor, recoveryCorrelation, "WORLD_RESTORED_DOMAIN_RESTORE_PENDING"))) {
+                        failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                            "DOMAIN_RESTORE_PENDING", "World was restored, but the recovery checkpoint could not be saved")
+                        return@onPaper
+                    }
+                    try {
+                        systems.diath.homeclaim.core.service.MutationAuditScope.withinOperation {
+                            bundle.domainSnapshot.regions.forEach { snapshot ->
+                                val id = RegionId(UUID.fromString(snapshot.regionId))
+                                val current = regionService.getRegionById(id) ?: error("Region $id is missing during domain recovery")
+                                require(current.areaId == job.areaId) { "Region Area binding changed during recovery" }
+                                val group = snapshot.mergeGroupId?.let { systems.diath.homeclaim.core.model.MergeGroupId(UUID.fromString(it)) }
+                                val home = snapshot.home?.let {
+                                    systems.diath.homeclaim.core.model.RegionHome(it.x, it.y, it.z, it.yaw, it.pitch)
+                                }
+                                regionService.updateRegion(current.copy(mergeGroupId = group, home = home))
+                            }
+                        }
+                        if (!store.updateRecoveryDetails(job.id, recoveryDetails(job, action, actor, recoveryCorrelation, "VERIFYING_WORLD_AND_DOMAIN"))) {
+                            error("Could not persist the verification checkpoint")
+                        }
+                        val verified = bundle.domainSnapshot.regions.all { snapshot ->
+                            val current = regionService.getRegionById(RegionId(UUID.fromString(snapshot.regionId)))
+                                ?: return@all false
+                            current.mergeGroupId?.value?.toString() == snapshot.mergeGroupId &&
+                                current.home?.let { RegionHomeSnapshotV1(it.x, it.y, it.z, it.yaw, it.pitch) } == snapshot.home
+                        }
+                        check(verified) { "Restored merge-group membership or plot homes did not verify" }
+                        check(world.uid == bundle.paperWorldId) { "Restored Paper world binding changed" }
+                    } catch (failure: Throwable) {
+                        failOperationRecovery(player, job, action, actor, recoveryCorrelation, request, lease,
+                            "DOMAIN_RESTORE_FAILED", "World may be restored but the original domain state was not verified: ${failure.message ?: failure.javaClass.simpleName}")
+                        return@onPaper
+                    }
+                    val details = recoveryDetails(job, action, actor, recoveryCorrelation, "WORLD_AND_DOMAIN_VERIFIED")
+                    val saved = runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERED, details) }.getOrDefault(false)
+                    if (!saved) {
+                        runCatching { store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                            recoveryDetails(job, action, actor, recoveryCorrelation, "FINALIZATION_FAILED"),
+                            "World and domain recovery verified, but terminal job persistence failed") }
+                        runCatching { auditOperation(request, AuditStatus.FAILED, "safetyBundleId=$bundleId; terminal persistence failed", job.regionIds.size) }
+                        if (player.isOnline) player.sendMessage("§cWorld and domain were restored, but job finalization failed; job remains blocked for inspection.")
+                    } else {
+                        runCatching { auditOperation(request, AuditStatus.COMPLETED,
+                            "safetyBundleId=$bundleId; originalJobId=${job.id}; worldBlocks=$restored; worldAndDomainVerified=true", job.regionIds.size) }
+                            .onFailure { org.bukkit.Bukkit.getLogger().warning("Operation recovery ${job.id} completed but audit append failed: ${it.message}") }
+                        if (player.isOnline) player.sendMessage("§aOperation recovery completed: original world and merge/home domain state restored; job ${job.id} is RECOVERED.")
+                    }
+                    lease.close()
+                } }
+            } }
+    }
+
+    private fun failOperationRecovery(
+        player: Player,
+        job: PlotMutationJobRecord,
+        action: PlotMutationRecoveryAction,
+        actor: ActionActor,
+        correlationId: CorrelationId,
+        request: ActionRequest,
+        lease: RegionMutationConflictCoordinator.Lease,
+        phase: String,
+        detail: String
+    ) {
+        val store = mutationJobStore
+        runCatching { store?.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+            recoveryDetails(job, action, actor, correlationId, phase), detail) }
+            .onFailure { org.bukkit.Bukkit.getLogger().severe("Could not persist operation recovery failure for ${job.id}: ${it.message}") }
+        runCatching { auditOperation(request, AuditStatus.FAILED, "safetyBundleId=${safetyBundleId(job)}; phase=$phase; $detail", job.regionIds.size) }
+        if (player.isOnline) player.sendMessage("§cOperation recovery remains unresolved at $phase: $detail. The affected Regions stay blocked.")
+        lease.close()
+    }
+
     private fun recoveryTargets(job: PlotMutationJobRecord, action: PlotMutationRecoveryAction): List<RecoveryTarget>? {
         val plan = when (val result = PlotMutationRecoveryPlanner.plan(job, action)) {
             is PlotMutationRecoveryPlanResult.Ready -> result.targets
@@ -1930,12 +2169,21 @@ class PlotCommand(
             job.details.orEmpty(), job.error.orEmpty()).joinToString("|")
 
     private fun recoveryDetails(job: PlotMutationJobRecord, action: PlotMutationRecoveryAction, actor: ActionActor,
-                                correlationId: CorrelationId, phase: String): String =
-        listOfNotNull(job.details?.takeIf(String::isNotBlank),
+                                correlationId: CorrelationId, phase: String): String {
+        val recoveryFields = setOf(
+            "recoveryAction=", "recoveryActorKind=", "recoveryActorRef=", "recoveryCorrelationId=",
+            "recoveryAt=", "recoveryPhase=", "recoveryPhase"
+        )
+        val originalDetails = job.details.orEmpty().lineSequence()
+            .filter { line -> recoveryFields.none(line::startsWith) }
+            .joinToString("\n")
+            .takeIf(String::isNotBlank)
+        return listOfNotNull(originalDetails,
             "originalFailure=${job.error.orEmpty().replace('\n', ' ').take(1200)}",
             "recoveryAction=${action.name}", "recoveryActorKind=${actor.kind}",
             "recoveryActorRef=${actor.stableId ?: ""}", "recoveryCorrelationId=$correlationId",
             "recoveryAt=${java.time.Instant.now()}", "recoveryPhase=$phase").joinToString("\n").take(8192)
+    }
 
     private fun handleAlias(player: Player, args: Array<out String>) {
         val region = currentRegion(player) ?: run {

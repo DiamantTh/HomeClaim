@@ -375,6 +375,32 @@ class DatabaseDialectRuntimeTest {
                 "${jobStore.findById(jobId)?.details}\nrecoveryPhase=RECOVERED"))
             assertEquals(PlotMutationJobStatus.RECOVERED, jobStore.findById(jobId)?.status)
 
+            val operationJobId = UUID.randomUUID()
+            val operationCorrelation = CorrelationId.newId()
+            val operationBundleId = UUID.randomUUID()
+            val operationManifestHash = "c".repeat(64)
+            jobStore.create(PlotMutationJobRecord(
+                id = operationJobId,
+                correlationId = operationCorrelation,
+                operation = "MERGE",
+                worldId = world.id,
+                areaId = area.id,
+                worldName = world.name,
+                regionIds = listOf(firstId),
+                backend = "runtime-test",
+                status = PlotMutationJobStatus.QUEUED,
+                details = "format=homeclaim-mutation-safety-v1\nsafetyBundleId=$operationBundleId\n" +
+                    "safetyBundleManifestSha256=$operationManifestHash\nphase=WORLD_MUTATION"
+            ))
+            jobStore.markRunning(operationJobId)
+            jobStore.finish(operationJobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, 1, "injected operation-layer failure")
+            assertTrue(jobStore.beginRecovery(operationJobId,
+                "${jobStore.findById(operationJobId)?.details}\nrecoveryAction=RESTORE_OPERATION_ORIGINAL\nrecoveryPhase=WORLD_RESTORE_RUNNING"))
+            assertTrue(jobStore.updateRecoveryDetails(operationJobId,
+                "${jobStore.findById(operationJobId)?.details}\nrecoveryPhase=WORLD_RESTORED_DOMAIN_RESTORE_PENDING"))
+            assertTrue(jobStore.finishRecovery(operationJobId, PlotMutationJobStatus.RECOVERED,
+                "${jobStore.findById(operationJobId)?.details}\nrecoveryPhase=WORLD_AND_DOMAIN_VERIFIED"))
+
             // Runtime wiring gives the canonical operation service the same audit sink as
             // the repositories and REST adapter, so the operation lifecycle is persisted
             // without falling back to the repository's compatibility audit.
@@ -537,6 +563,13 @@ class DatabaseDialectRuntimeTest {
             assertEquals(PlotMutationJobStatus.RECOVERED, reopenedJob?.status)
             assertTrue(reopenedJob?.details?.contains("recoveryAction=RESTORE_BOTH") == true)
             assertEquals(jobCorrelation, reopenedJob?.correlationId)
+            val reopenedOperationJob = reopenedJobs.findById(operationJobId)
+            assertEquals(PlotMutationJobStatus.RECOVERED, reopenedOperationJob?.status)
+            assertEquals(operationCorrelation, reopenedOperationJob?.correlationId)
+            assertEquals(listOf(firstId), reopenedOperationJob?.regionIds)
+            assertTrue(reopenedOperationJob?.details?.contains("safetyBundleId=$operationBundleId") == true)
+            assertTrue(reopenedOperationJob?.details?.contains("recoveryPhase=WORLD_AND_DOMAIN_VERIFIED") == true)
+            assertTrue(reopenedOperationJob?.details?.contains(operationManifestHash) == true)
             val reopenedAudit = JdbcAuditService(dataSource)
             assertTrue(reopenedAudit.findForTarget(firstId.value, java.time.Instant.EPOCH, 50)
                 .any { it.correlationId == correlationId })

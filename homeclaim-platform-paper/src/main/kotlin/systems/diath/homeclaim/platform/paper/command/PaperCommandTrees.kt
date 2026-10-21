@@ -238,7 +238,7 @@ internal object PaperCommandTrees {
                 .then(Commands.argument("recoveryAction", StringArgumentType.word())
                     .suggests { _, builder ->
                         val choices = if (action == "resolve") listOf("acknowledge")
-                            else listOf("restore-target", "restore-both")
+                            else listOf("restore-target", "restore-both", "restore-operation-original")
                         choices.filter { it.startsWith(builder.remaining, ignoreCase = true) }.forEach(builder::suggest)
                         builder.buildFuture()
                     }

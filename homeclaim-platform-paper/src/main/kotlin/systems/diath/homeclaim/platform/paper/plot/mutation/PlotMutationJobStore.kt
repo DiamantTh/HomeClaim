@@ -64,6 +64,9 @@ interface PlotMutationJobStore {
     /** Atomically claims an explicitly confirmed operator recovery. */
     fun beginRecovery(id: UUID, recoveryDetails: String): Boolean = false
 
+    /** Updates a durable recovery checkpoint without clearing RECOVERY_IN_PROGRESS. */
+    fun updateRecoveryDetails(id: UUID, recoveryDetails: String): Boolean = false
+
     /** Persists the recovery outcome while retaining the original mutation job. */
     fun finishRecovery(id: UUID, status: PlotMutationJobStatus, recoveryDetails: String, error: String? = null): Boolean = false
 }
@@ -208,6 +211,21 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.setString(2, recoveryDetails)
                 statement.setObject(3, id)
                 statement.setString(4, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
+                statement.executeUpdate() == 1
+            }
+        }
+    }
+
+    override fun updateRecoveryDetails(id: UUID, recoveryDetails: String): Boolean {
+        require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
+        return dataSource.connection.use { connection ->
+            connection.prepareStatement("""
+                UPDATE plot_mutation_jobs SET details = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = ?
+            """.trimIndent()).use { statement ->
+                statement.setString(1, recoveryDetails)
+                statement.setObject(2, id)
+                statement.setString(3, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
                 statement.executeUpdate() == 1
             }
         }
@@ -384,6 +402,7 @@ object PlotMutationRestartClassifier {
             record.operation in setOf("COPY", "MOVE", "SWAP") -> phase in setOf("VALIDATING", "BACKING_UP")
             record.operation.startsWith("RESET_") -> phase in setOf("BACKING_UP", "VALIDATING")
             record.operation == "RESTORE" -> phase in setOf("VALIDATING", "BACKING_UP_SAFETY")
+            record.operation in setOf("MERGE", "UNLINK") -> phase == "SAFETY_CAPTURE"
             else -> false
         }
         return if (safelyBeforeWorldWrite) {

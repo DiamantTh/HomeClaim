@@ -66,6 +66,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
     private var plotMutationBackend: systems.diath.homeclaim.core.mutation.WorldMutationBackend? = null
     private var plotMutationJobStore: systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStore? = null
     private var plotBackupService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService? = null
+    private var mutationSafetyBundleStore: systems.diath.homeclaim.platform.paper.plot.mutation.PaperMutationSafetyBundleStore? = null
     private var plotTransferService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferService? = null
     private var plotMutationConflicts: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator? = null
     private var biomeMutationService: systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService? = null
@@ -143,6 +144,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             backupService = plotBackupService,
             mutationConflicts = plotMutationConflicts ?: systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore),
             transferService = plotTransferService,
+            mutationSafetyBundleStore = mutationSafetyBundleStore,
             componentService = services.componentService
         )
         zoneCommand = systems.diath.homeclaim.platform.paper.command.ZoneCommand(
@@ -402,6 +404,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             mutationBackend = backend,
             worldAreaService = services.worldAreaService
         )
+        mutationSafetyBundleStore = systems.diath.homeclaim.platform.paper.plot.mutation.PaperMutationSafetyBundleStore(this)
         plotResetService = systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotResetService(
             this,
             mutationBackend = backend,
@@ -507,6 +510,7 @@ class HomeClaimPaperPlugin : JavaPlugin() {
             plotResetService.shutdown()
             plotTransferService?.shutdown()
             plotBackupService?.shutdown()
+            mutationSafetyBundleStore?.shutdown()
             biomeMutationService?.shutdown()
         }
         

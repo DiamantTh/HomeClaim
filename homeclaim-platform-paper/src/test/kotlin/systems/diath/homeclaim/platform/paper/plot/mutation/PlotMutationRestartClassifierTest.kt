@@ -54,4 +54,16 @@ class PlotMutationRestartClassifierTest {
         assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, result.status)
         assertEquals("operator_recovery_interrupted", result.reason)
     }
+
+    @Test
+    fun `merge and unlink are safely failed only while safety capture has not finished`() {
+        listOf("MERGE", "UNLINK").forEach { operation ->
+            val capture = PlotMutationRestartClassifier.classify(job(operation, PlotMutationJobStatus.RUNNING,
+                "format=homeclaim-mutation-safety-v1\nphase=SAFETY_CAPTURE"))
+            val applying = PlotMutationRestartClassifier.classify(job(operation, PlotMutationJobStatus.RUNNING,
+                "format=homeclaim-mutation-safety-v1\nphase=WORLD_MUTATION"))
+            assertEquals(PlotMutationJobStatus.FAILED, capture.status)
+            assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, applying.status)
+        }
+    }
 }

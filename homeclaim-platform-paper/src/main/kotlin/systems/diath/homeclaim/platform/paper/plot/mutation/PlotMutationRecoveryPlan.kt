@@ -3,7 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import systems.diath.homeclaim.core.model.RegionId
 import java.util.UUID
 
-enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, ACKNOWLEDGE }
+enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, RESTORE_OPERATION_ORIGINAL, ACKNOWLEDGE }
 
 data class PlotMutationRecoveryTarget(val regionId: RegionId, val backupId: UUID)
 
@@ -32,6 +32,8 @@ object PlotMutationRecoveryPlanner {
             return PlotMutationRecoveryTarget(region, backup)
         }
         val plan = when (job.operation) {
+            "MERGE", "UNLINK" -> if (action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL &&
+                id("safetyBundleId") != null && job.regionIds.isNotEmpty()) emptyList() else null
             "COPY" -> if (action == PlotMutationRecoveryAction.RESTORE_TARGET) {
                 listOfNotNull(target("targetRegion", "targetSafetyBackup"))
             } else null

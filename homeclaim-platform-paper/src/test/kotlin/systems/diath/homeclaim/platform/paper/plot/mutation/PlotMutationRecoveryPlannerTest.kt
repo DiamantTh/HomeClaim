@@ -59,4 +59,18 @@ class PlotMutationRecoveryPlannerTest {
         assertEquals(emptyList<PlotMutationRecoveryTarget>(),
             assertInstanceOf(PlotMutationRecoveryPlanResult.Ready::class.java, acknowledged).targets)
     }
+
+    @Test
+    fun `merge and unlink offer only operation original recovery with a durable bundle reference`() {
+        val bundleId = UUID.randomUUID()
+        listOf("MERGE", "UNLINK").forEach { operation ->
+            val details = "safetyBundleId=$bundleId\nsafetyBundleManifestSha256=${"a".repeat(64)}"
+            val result = PlotMutationRecoveryPlanner.plan(job(operation, details), PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL)
+            val ready = assertInstanceOf(PlotMutationRecoveryPlanResult.Ready::class.java, result)
+            assertEquals(PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL, ready.action)
+            assertEquals(emptyList<PlotMutationRecoveryTarget>(), ready.targets)
+            assertInstanceOf(PlotMutationRecoveryPlanResult.Rejected::class.java,
+                PlotMutationRecoveryPlanner.plan(job(operation, "safetyBundleId=$bundleId"), PlotMutationRecoveryAction.RESTORE_TARGET))
+        }
+    }
 }

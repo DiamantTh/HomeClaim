@@ -26,8 +26,9 @@ class PaperPlotMutationService(
     private val plugin: JavaPlugin,
     private val configStore: PlotWorldConfigStore = PlotWorldConfigStore(plugin),
     private val mutationBackend: WorldMutationBackend = PaperSynchronousWorldMutationBackend(),
-    private val worldAreaService: WorldAreaService? = null
-) : PlotMutationService {
+    private val worldAreaService: WorldAreaService? = null,
+    private val faultInjector: PlotMutationFaultInjector = PlotMutationFaultInjector.NONE
+) : PlotMutationService, OperationScopedPlotMutationService {
 
     override fun cancelPendingJobs(worldName: String?): Int {
         val jobs = activeJobInfo(worldName)
@@ -75,51 +76,77 @@ class PaperPlotMutationService(
     }
 
     override fun handleRegionsMerged(regions: Collection<Region>, reason: MutationReason): CompletableFuture<Unit> {
-        if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
-        val resolved = resolveWorld(regions.first())
-            ?: return CompletableFuture.failedFuture(IllegalStateException("World binding unavailable for merge mutation: ${regions.first().areaId.value}"))
-        val worldName = resolved.configName
-        if (regions.any { resolveWorld(it)?.world?.uid != resolved.world.uid }) {
-            return CompletableFuture.failedFuture(IllegalArgumentException("Merge regions must belong to one Paper world"))
-        }
-        val world = resolved.world
-        val config = configStore.loadConfig(worldName)
-            ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for merge mutation: $worldName"))
-        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
-        val result = CompletableFuture<Unit>()
+        val plan = runCatching { prepareMergeMutation(regions, reason) }.getOrElse { return CompletableFuture.failedFuture(it) }
+        return applyPreparedMutation(plan, "merge")
+    }
 
+    override fun prepareMergeMutation(regions: Collection<Region>, reason: MutationReason): PreparedPlotWorldMutation {
+        require(regions.isNotEmpty()) { "Merge requires regions" }
+        val merged = regions.distinctBy { it.id }
+        val resolved = resolveWorld(merged.first()) ?: error("World binding unavailable for merge mutation: ${merged.first().areaId.value}")
+        require(merged.all { resolveWorld(it)?.world?.uid == resolved.world.uid }) { "Merge regions must belong to one Paper world" }
+        val config = configStore.loadConfig(resolved.configName) ?: error("Plot-world config unavailable for merge mutation: ${resolved.configName}")
+        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
+        val batches = mutableListOf<MutationBatch>()
+        merged.forEach { region ->
+            val siblings = merged.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
+            val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
+            batches += PlotMutationPlanFactory.borderBatch(
+                id = "paper-mutation:merge-border:${region.id.value}", world = resolved.world.name,
+                bounds = region.bounds, config = config,
+                style = PlotMutationSupport.styleFor(region, config, PlotVisualState.MERGED), reason = reason,
+                includeNorth = !shared.north, includeSouth = !shared.south,
+                includeWest = !shared.west, includeEast = !shared.east
+            )
+        }
+        batches += corridorBatches(
+            resolved.world, merged, config, PlotBorderStyle(config.plotBlock, config.plotBlock), maxGap, reason
+        ) { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId }
+        return PreparedPlotWorldMutation(resolved.world.name, resolved.world.uid, batches)
+    }
+
+    override fun prepareUnlinkMutation(
+        regions: Collection<Region>, createRoads: Boolean, reason: MutationReason
+    ): PreparedPlotWorldMutation {
+        require(regions.isNotEmpty()) { "Unlink requires regions" }
+        val grouped = regions.distinctBy { it.id }
+        val resolved = resolveWorld(grouped.first()) ?: error("World binding unavailable for unlink mutation: ${grouped.first().areaId.value}")
+        require(grouped.all { resolveWorld(it)?.world?.uid == resolved.world.uid }) { "Unlink regions must belong to one Paper world" }
+        val config = configStore.loadConfig(resolved.configName) ?: error("Plot-world config unavailable for unlink mutation: ${resolved.configName}")
+        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
+        val batches = grouped.map { region ->
+            PlotMutationPlanFactory.borderBatch(
+                id = "paper-mutation:unlink-border:${region.id.value}", world = resolved.world.name,
+                bounds = region.bounds, config = config,
+                style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region)), reason = reason
+            )
+        }.toMutableList()
+        if (createRoads) {
+            batches += corridorBatches(
+                resolved.world, grouped, config,
+                PlotBorderStyle(config.roadBlock, config.roadBlock), maxGap, reason
+            ) { _, _ -> true }
+        }
+        return PreparedPlotWorldMutation(resolved.world.name, resolved.world.uid, batches)
+    }
+
+    override fun applyPreparedMutation(plan: PreparedPlotWorldMutation, label: String): CompletableFuture<Unit> {
+        val result = CompletableFuture<Unit>()
         try {
             Bukkit.getScheduler().runTask(plugin, Runnable {
                 try {
-                    val mergedRegions = regions.toList()
-                    mergedRegions.forEach { region ->
-                        val siblings = mergedRegions.filter { it.id != region.id && it.mergeGroupId == region.mergeGroupId }
-                        val shared = PlotBorderPlanner.sharedEdges(region.bounds, siblings.map { it.bounds }, maxGap)
-                        val style = PlotMutationSupport.styleFor(region, config, PlotVisualState.MERGED)
-                        repaintBorder(
-                            world = world,
-                            bounds = region.bounds,
-                            config = config,
-                            style = style,
-                            reason = reason,
-                            batchId = "paper-mutation:merge-border:${region.id.value}",
-                            includeNorth = !shared.north,
-                            includeSouth = !shared.south,
-                            includeWest = !shared.west,
-                            includeEast = !shared.east,
-                            throwOnMutationFailure = true
-                        )
+                    require(Bukkit.getWorld(plan.worldId)?.name == plan.worldName) { "Prepared mutation world binding changed" }
+                    val world = requireNotNull(Bukkit.getWorld(plan.worldId))
+                    plan.batches.forEachIndexed { index, batch ->
+                        applyBatch(world, batch, true)
+                        check(batch.operations.all { op ->
+                            world.getBlockAt(op.x, op.y, op.z).type == org.bukkit.Material.matchMaterial(op.blockStateId)
+                        }) { "World mutation verification failed for batch ${batch.id}" }
+                        faultInjector.afterBatchApplied(label, index + 1)
                     }
-
-                    val mergedFillStyle = PlotBorderStyle(config.plotBlock, config.plotBlock)
-                    repaintCorridors(
-                        world, mergedRegions, config, mergedFillStyle, maxGap, reason,
-                        predicate = { first, second -> first.mergeGroupId != null && first.mergeGroupId == second.mergeGroupId },
-                        throwOnMutationFailure = true
-                    )
                     result.complete(Unit)
                 } catch (failure: Throwable) {
-                    plugin.logger.log(java.util.logging.Level.SEVERE, "Paper merge mutation failed for $worldName", failure)
+                    plugin.logger.log(java.util.logging.Level.SEVERE, "Paper $label mutation failed for ${plan.worldName}", failure)
                     result.completeExceptionally(failure)
                 }
             })
@@ -196,56 +223,8 @@ class PaperPlotMutationService(
         createRoads: Boolean,
         reason: MutationReason
     ): CompletableFuture<Unit> {
-        if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
-        val resolved = resolveWorld(regions.first())
-            ?: return CompletableFuture.failedFuture(IllegalStateException("World binding unavailable for unlink mutation: ${regions.first().areaId.value}"))
-        val worldName = resolved.configName
-        if (regions.any { resolveWorld(it)?.world?.uid != resolved.world.uid }) {
-            return CompletableFuture.failedFuture(IllegalArgumentException("Unlink regions must belong to one Paper world"))
-        }
-        val world = resolved.world
-        val config = configStore.loadConfig(worldName)
-            ?: return CompletableFuture.failedFuture(IllegalStateException("Plot-world config unavailable for unlink mutation: $worldName"))
-        val maxGap = (config.roadWidth + 2).coerceAtLeast(1)
-        val result = CompletableFuture<Unit>()
-
-        try {
-            Bukkit.getScheduler().runTask(plugin, Runnable {
-                try {
-                    regions.forEach { region ->
-                        val style = PlotMutationSupport.styleFor(region, config, PlotVisualStates.resolve(region))
-                        repaintBorder(
-                            world, region.bounds, config, style, reason,
-                            "paper-mutation:unlink-border:${region.id.value}",
-                            throwOnMutationFailure = true
-                        )
-                    }
-
-                    if (createRoads) {
-                        val roadStyle = PlotBorderStyle(
-                            fillMaterial = config.roadBlock,
-                            capMaterial = config.roadBlock
-                        )
-                        repaintCorridors(
-                            world, regions.toList(), config, roadStyle, maxGap, reason,
-                            predicate = { _, _ -> true },
-                            throwOnMutationFailure = true
-                        )
-                    }
-                    result.complete(Unit)
-                } catch (failure: Throwable) {
-                    plugin.logger.log(
-                        java.util.logging.Level.SEVERE,
-                        "Paper unlink mutation failed for ${regions.joinToString { it.id.value.toString() }}",
-                        failure
-                    )
-                    result.completeExceptionally(failure)
-                }
-            })
-        } catch (failure: Throwable) {
-            result.completeExceptionally(failure)
-        }
-        return result
+        val plan = runCatching { prepareUnlinkMutation(regions, createRoads, reason) }.getOrElse { return CompletableFuture.failedFuture(it) }
+        return applyPreparedMutation(plan, "unlink")
     }
 
     private fun repaintBorder(
@@ -299,6 +278,21 @@ class PaperPlotMutationService(
         predicate: (Region, Region) -> Boolean,
         throwOnMutationFailure: Boolean = false
     ) {
+        corridorBatches(world, regions, config, style, maxGap, reason, predicate).forEach { batch ->
+            applyBatch(world, batch, throwOnMutationFailure)
+        }
+    }
+
+    private fun corridorBatches(
+        world: World,
+        regions: List<Region>,
+        config: PlotWorldConfig,
+        style: PlotBorderStyle,
+        maxGap: Int,
+        reason: MutationReason,
+        predicate: (Region, Region) -> Boolean
+    ): List<MutationBatch> {
+        val batches = mutableListOf<MutationBatch>()
         for (i in regions.indices) {
             for (j in i + 1 until regions.size) {
                 val first = regions[i]
@@ -306,7 +300,7 @@ class PaperPlotMutationService(
                 if (predicate(first, second)) {
                     val corridor = PlotBorderPlanner.mergeCorridorColumns(first.bounds, second.bounds, maxGap)
                     val orderedIds = listOf(first.id.value.toString(), second.id.value.toString()).sorted()
-                    val batch = PlotMutationPlanFactory.corridorBatch(
+                    batches += PlotMutationPlanFactory.corridorBatch(
                         id = "paper-mutation:corridor:${orderedIds[0]}:${orderedIds[1]}",
                         world = world.name,
                         columns = corridor,
@@ -314,10 +308,10 @@ class PaperPlotMutationService(
                         style = style,
                         reason = reason
                     )
-                    applyBatch(world, batch, throwOnMutationFailure)
                 }
             }
         }
+        return batches
     }
 
     private data class ResolvedWorld(val world: World, val configName: String)
@@ -335,4 +329,11 @@ class PaperPlotMutationService(
             ?: return null
         return ResolvedWorld(paperWorld, homeWorld.name)
     }
+}
+
+/** Dependency-injected test hook; there is no production config or command to activate it. */
+fun interface PlotMutationFaultInjector {
+    fun afterBatchApplied(operation: String, appliedBatches: Int)
+
+    companion object { val NONE = PlotMutationFaultInjector { _, _ -> } }
 }

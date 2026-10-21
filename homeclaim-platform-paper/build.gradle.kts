@@ -42,6 +42,7 @@ dependencies {
 tasks.register<Test>("databaseIntegrationTest") {
     group = "verification"
     description = "Run SQLite, PostgreSQL 17.11, and MariaDB 11.4 runtime persistence checks"
+    outputs.upToDateWhen { false }
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     filter {
@@ -54,6 +55,7 @@ tasks.register<Test>("databaseIntegrationTest") {
 fun registerDatabaseProcessRestartTask(taskName: String, phase: String) = tasks.register<Test>(taskName) {
     group = "verification"
     description = "Verify PostgreSQL and MariaDB data survives a real database process restart ($phase phase)"
+    outputs.upToDateWhen { false }
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     filter { includeTestsMatching("*DatabaseProcessRestartRuntimeTest") }
@@ -337,7 +339,7 @@ tasks.register<Exec>("paperWorldE2E") {
 
 tasks.register("paperWorldRestartRecoveryE2E") {
     group = "verification"
-    description = "Verify persistent mutation recovery across two real Paper server processes"
+    description = "Verify transfer and merge world/domain recovery across real Paper process restarts"
     dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
     val serverDir = layout.buildDirectory.dir("paper-world-restart-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/paper-world-restart-e2e").get().asFile
@@ -369,7 +371,8 @@ tasks.register("paperWorldRestartRecoveryE2E") {
             "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
-        listOf("restart-prepare", "restart-verify").forEachIndexed { index, phase ->
+        val phases = listOf("merge-restart-prepare", "merge-restart-verify", "restart-prepare", "restart-verify")
+        phases.forEach { phase ->
             val process = ProcessBuilder(
                 javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
                 "-jar", paperJar.name, "nogui"
@@ -380,11 +383,18 @@ tasks.register("paperWorldRestartRecoveryE2E") {
             val logsDir = serverDir.resolve("logs")
             if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("$phase-logs")) }
             check(exitCode == 0) { "Paper $phase process exited with code $exitCode: $result" }
-            val expected = if (index == 0) "PREPARED" else "PASS restart recovery"
+            val expected = when (phase) {
+                "merge-restart-prepare" -> "PREPARED MERGE_RECOVERY_IN_PROGRESS"
+                "merge-restart-verify" -> "PASS merge world+domain recovery"
+                "restart-prepare" -> "PREPARED"
+                else -> "PASS restart recovery"
+            }
             check(result.startsWith(expected)) { "Paper $phase failed: $result" }
             reportDir.resolve("$phase-result.txt").writeText(result)
         }
-        println(reportDir.resolve("restart-verify-result.txt").readText().trim())
+        println(phases.filter { it.endsWith("verify") }.joinToString("; ") { phase ->
+            reportDir.resolve("$phase-result.txt").readText().trim()
+        })
         delete(serverDir)
     }
 }

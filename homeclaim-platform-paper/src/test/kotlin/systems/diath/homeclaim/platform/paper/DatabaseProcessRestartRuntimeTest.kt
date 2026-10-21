@@ -42,6 +42,9 @@ class DatabaseProcessRestartRuntimeTest {
         val regionId = RegionId(id(runId, "$prefix-region"))
         val backupId = id(runId, "$prefix-backup")
         val jobId = id(runId, "$prefix-job")
+        val operationJobId = id(runId, "$prefix-operation-job")
+        val safetyBundleId = id(runId, "$prefix-safety-bundle")
+        val safetyManifestHash = "a4".repeat(32)
         val correlation = CorrelationId(id(runId, "$prefix-correlation"))
         val actorId = id(runId, "$prefix-actor")
         val checksum = "8f".repeat(32)
@@ -64,10 +67,19 @@ class DatabaseProcessRestartRuntimeTest {
 
             if (phase == "prepare") {
                 persistState(dataSource, prefix, platformWorldId, areaId, regionId, backupId, jobId,
-                    correlation, actorId, checksum)
+                    operationJobId, safetyBundleId, safetyManifestHash, correlation, actorId, checksum)
             } else {
                 verifyState(dataSource, prefix, platformWorldId, areaId, regionId, backupId, jobId,
-                    correlation, actorId, checksum)
+                    operationJobId, safetyBundleId, safetyManifestHash, correlation, actorId, checksum)
+                val jobs = JdbcPlotMutationJobStore(dataSource)
+                val operationJob = requireNotNull(jobs.findById(operationJobId))
+                assertTrue(jobs.beginRecovery(operationJobId,
+                    "${operationJob.details}\nrecoveryAction=RESTORE_OPERATION_ORIGINAL\nrecoveryPhase=WORLD_RESTORE_RUNNING"))
+                assertTrue(jobs.updateRecoveryDetails(operationJobId,
+                    "${jobs.findById(operationJobId)?.details}\nrecoveryPhase=WORLD_RESTORED_DOMAIN_RESTORE_PENDING"))
+                assertTrue(jobs.finishRecovery(operationJobId, PlotMutationJobStatus.RECOVERED,
+                    "${jobs.findById(operationJobId)?.details}\nrecoveryPhase=WORLD_AND_DOMAIN_VERIFIED"))
+                assertEquals(PlotMutationJobStatus.RECOVERED, jobs.findById(operationJobId)?.status)
             }
         } finally {
             dataSource.close()
@@ -82,6 +94,9 @@ class DatabaseProcessRestartRuntimeTest {
         regionId: RegionId,
         backupId: UUID,
         jobId: UUID,
+        operationJobId: UUID,
+        safetyBundleId: UUID,
+        safetyManifestHash: String,
         correlation: CorrelationId,
         actorId: UUID,
         checksum: String
@@ -147,8 +162,22 @@ class DatabaseProcessRestartRuntimeTest {
             status = AuditStatus.FAILED,
             reason = "restart persistence fixture"
         ))
+        JdbcPlotMutationJobStore(dataSource).create(PlotMutationJobRecord(
+            id = operationJobId,
+            correlationId = CorrelationId(id(correlation.value.toString(), "$prefix-operation-correlation")),
+            operation = "MERGE",
+            worldId = world.id,
+            areaId = area.id,
+            worldName = world.name,
+            regionIds = listOf(regionId),
+            backend = "paper-native",
+            status = PlotMutationJobStatus.RECOVERY_REQUIRED,
+            error = "operation safety process restart fixture",
+            details = "format=homeclaim-mutation-safety-v1\nsafetyBundleId=$safetyBundleId\n" +
+                "safetyBundleManifestSha256=$safetyManifestHash\nphase=WORLD_MUTATION\nrecoveryPhase=IDLE"
+        ))
         verifyState(dataSource, "${prefix}_immediate", platformWorldId, areaId, regionId,
-            backupId, jobId, correlation, actorId, checksum)
+            backupId, jobId, operationJobId, safetyBundleId, safetyManifestHash, correlation, actorId, checksum)
     }
 
     private fun verifyState(
@@ -159,6 +188,9 @@ class DatabaseProcessRestartRuntimeTest {
         regionId: RegionId,
         backupId: UUID,
         jobId: UUID,
+        operationJobId: UUID,
+        safetyBundleId: UUID,
+        safetyManifestHash: String,
         correlation: CorrelationId,
         actorId: UUID,
         checksum: String
@@ -196,6 +228,17 @@ class DatabaseProcessRestartRuntimeTest {
         assertTrue(job?.details?.contains("backupId=$backupId") == true)
         assertTrue(JdbcPlotMutationJobStore(dataSource).findRecoveryRequiredForRegions(listOf(regionId))
             .any { it.id == jobId })
+
+        val operationJob = JdbcPlotMutationJobStore(dataSource).findById(operationJobId)
+        assertNotNull(operationJob, "$prefix operation safety recovery job")
+        assertEquals(PlotMutationJobStatus.RECOVERY_REQUIRED, operationJob?.status)
+        assertEquals("MERGE", operationJob?.operation)
+        assertEquals(listOf(regionId), operationJob?.regionIds)
+        assertTrue(operationJob?.details?.contains("safetyBundleId=$safetyBundleId") == true)
+        assertTrue(operationJob?.details?.contains("safetyBundleManifestSha256=$safetyManifestHash") == true)
+        assertTrue(operationJob?.details?.contains("phase=WORLD_MUTATION") == true)
+        assertTrue(JdbcPlotMutationJobStore(dataSource).findRecoveryRequiredForRegions(listOf(regionId))
+            .any { it.id == operationJobId })
 
         val entries = audit.findForTarget(regionId.value, java.time.Instant.EPOCH, 100)
         val entry = entries.singleOrNull { it.correlationId == correlation }
