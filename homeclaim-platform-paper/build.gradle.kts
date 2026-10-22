@@ -229,6 +229,21 @@ val downloadPaper = tasks.register("downloadPaper") {
     doLast { downloadServer("paper", minecraftVersion, paperJar) }
 }
 
+// Pin the Purpur runtime used by the real-world compatibility suite. The test companion remains
+// an isolated artifact and the production plugin JAR is identical to the Paper test artifact.
+val purpurBuild = "2647"
+val purpurJar = layout.buildDirectory.file("purpur-world-e2e/purpur-$minecraftVersion-$purpurBuild.jar")
+val downloadPurpur = tasks.register("downloadPurpur") {
+    outputs.file(purpurJar)
+    doLast {
+        val destination = purpurJar.get().asFile
+        destination.parentFile.mkdirs()
+        val url = URI("https://api.purpurmc.org/v2/purpur/$minecraftVersion/$purpurBuild/download").toURL()
+        openUrl(url).use { input -> destination.outputStream().use(input::copyTo) }
+        println("Downloaded Purpur $minecraftVersion build $purpurBuild to $destination")
+    }
+}
+
 val eulaPaper = tasks.register("eulaPaper") {
     val file = runPaperDir.file("eula.txt").asFile
     outputs.file(file)
@@ -346,6 +361,66 @@ tasks.register<Exec>("paperWorldE2E") {
         reportDir.resolve("result.txt").writeText(result)
         println(result.trim())
     }
+}
+
+tasks.register<Exec>("purpurWorldE2E") {
+    group = "verification"
+    description = "Run the HomeClaim mutation scenarios in a disposable real Purpur 26.3 server"
+    dependsOn(downloadPurpur, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("purpur-world-e2e/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/purpur-world-e2e").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = providers.environmentVariable("JAVA_HOME")
+        .map { "$it/bin/java" }
+        .orElse("java")
+    doFirst {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        copy { from(purpurJar); into(serverDir) }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+    }
+    workingDir(serverDir)
+    commandLine(javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-jar", purpurJar.get().asFile.name, "nogui")
+    isIgnoreExitValue = true
+    doLast {
+        val logsDir = serverDir.resolve("logs")
+        if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
+        val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val exitCode = executionResult.get().exitValue
+        val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+        delete(serverDir)
+        check(exitCode == 0) { "Purpur E2E server exited with code $exitCode; report: $result" }
+        check(result.startsWith("PASS")) { "Purpur World E2E failed: $result" }
+        reportDir.resolve("result.txt").writeText(result)
+        println(result.trim())
+    }
+}
+
+tasks.register<Exec>("paperDatabaseInterruptionE2E") {
+    group = "verification"
+    description = "Stop PostgreSQL and MariaDB while the real HomeClaim Paper plugin is running, then verify fail-closed and same-process recovery"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "bash",
+        rootProject.file("scripts/paper-database-interruption-e2e.sh").absolutePath,
+        paperJar.absolutePath,
+        tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath
+    )
 }
 
 tasks.register("paperSnapshotPerformance") {

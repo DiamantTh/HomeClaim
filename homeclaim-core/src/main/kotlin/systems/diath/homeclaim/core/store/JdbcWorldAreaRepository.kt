@@ -64,12 +64,13 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
         }
     }
 
-    override fun getWorld(id: WorldId): HomeClaimWorld? = dataSource.connection.use { conn ->
-        conn.prepareStatement("SELECT * FROM worlds WHERE id = ?").use { ps ->
-            ps.setObject(1, id.value)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
+    override fun getWorld(id: WorldId): HomeClaimWorld? =
+        worldSnapshot.get()?.firstOrNull { it.id == id } ?: dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT * FROM worlds WHERE id = ?").use { ps ->
+                ps.setObject(1, id.value)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.toWorld() else null }
+            }
         }
-    }
 
     override fun getWorldByName(name: String): HomeClaimWorld? = dataSource.connection.use { conn ->
         conn.prepareStatement("SELECT * FROM worlds WHERE name = ? ORDER BY id").use { ps ->
@@ -148,7 +149,10 @@ class JdbcWorldAreaRepository(private val dataSource: DataSource) : WorldAreaSer
         getWorld(id)!!
     }.also { invalidateWorlds() }
 
-    override fun getArea(id: AreaId): Area? = dataSource.connection.use { conn -> conn.selectArea(id) }
+    override fun getArea(id: AreaId): Area? = areaSnapshot.values.asSequence()
+        .flatMap { it.asSequence() }
+        .firstOrNull { it.id == id }
+        ?: dataSource.connection.use { conn -> conn.selectArea(id) }
 
     override fun listAreas(worldId: WorldId): List<Area> = areaSnapshot[worldId] ?: dataSource.connection.use { conn ->
         conn.prepareStatement("SELECT * FROM areas WHERE world_id = ? ORDER BY priority DESC, id").use { ps ->

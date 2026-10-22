@@ -90,3 +90,9 @@ Run with Java 25 and a working Docker or Podman engine:
 ```
 
 The Gradle task `:homeclaim-platform-paper:databaseInterruptionTest` is strict and requires the isolated database JDBC settings, container engine, and container names. SQLite remains covered by the normal runtime suite; this abrupt-process test targets PostgreSQL and MariaDB.
+
+### Full Paper plugin outage test
+
+`./gradlew :homeclaim-platform-paper:paperDatabaseInterruptionE2E --no-daemon` runs the actual HomeClaim plugin in a disposable Paper 26.3 process with SQLite-free JDBC configuration against pinned PostgreSQL 17.11 and MariaDB 11.4.13 containers. The companion kills and restarts each same DB container with its named volume preserved while Paper stays online. It verifies a failed DB read, a reset that fails before any backup/world write, unchanged test blocks, an existing recovery blocker remaining active from the warmed runtime conflict index, recovery of the same Hikari pool without plugin reload, and a successful post-return reset with READY ZSTD backup. The task needs a working Docker/Podman engine, Java 25, and the pinned images; all binds are loopback-only and credentials are disposable. It does not inject an outage after a destructive world write, exercise SQLite process failure, or use production settings.
+
+Step 19B passed this task on PostgreSQL 17.11 and MariaDB 11.4.13. In both cases, the Paper server remained responsive, the down-state reset failed before world mutation, the same database process/volume returned, and a subsequent reset completed after Hikari reconnected. The configured Hikari connection timeout is 10 seconds; the direct down-read observed about 10 seconds to fail, and DB return was observed after 10 half-second polls. The independent strict `databaseIntegrationTest` also passed SQLite, PostgreSQL 17.11 and MariaDB 11.4.13 (3 cases, 0 skips).

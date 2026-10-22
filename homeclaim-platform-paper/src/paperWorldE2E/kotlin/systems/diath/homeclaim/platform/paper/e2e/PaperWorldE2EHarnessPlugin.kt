@@ -25,6 +25,7 @@ import systems.diath.homeclaim.platform.paper.HomeClaimPaperPlugin
 import systems.diath.homeclaim.platform.paper.PlatformServices
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfig
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldConfigStore
+import systems.diath.homeclaim.platform.paper.plot.sanitized
 import systems.diath.homeclaim.platform.paper.plot.PlotWorldChunkGenerator
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotBackupService
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotMutationService
@@ -171,6 +172,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         }
 
         createFixtures(homeClaim, areas, testWorld)
+
+        if (System.getProperty("homeclaim.worlde2e.phase") == "db-interruption") {
+            runDatabaseInterruption(testWorld)
+            return
+        }
 
         seed(first, "copy-source")
         seed(second, "copy-target")
@@ -462,6 +468,171 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             check(backupService.validateReadyBackup(resetBackup.id).get(20, java.util.concurrent.TimeUnit.SECONDS).status == PlotBackupStatus.READY)
             runRestore(testWorld)
         }
+    }
+
+    /** Runs inside the full HomeClaim Paper process against the configured disposable SQL server. */
+    private fun runDatabaseInterruption(testWorld: World) {
+        val engine = requireNotNull(System.getenv("HOMECLAIM_TEST_DB_CONTAINER_ENGINE"))
+        val container = requireNotNull(System.getenv("HOMECLAIM_TEST_DB_CONTAINER"))
+        // Mirror normal startup's warmed platform bindings and Area scope caches before the
+        // deliberate outage; plot reset resolution must not issue a cold DB lookup on the tick.
+        services.worldAreaService?.listWorlds()
+        services.worldAreaService?.listAreas(homeWorld.id)
+        check(services.worldAreaService?.getArea(area.id) == area) { "E2E Area was not present in the warmed Area cache" }
+        check(services.worldAreaService?.getWorld(homeWorld.id)?.platformWorldId == testWorld.uid) {
+            "E2E World binding was not present in the warmed World cache"
+        }
+        check(PlotWorldConfigStore(homeClaimPlugin).loadConfig(testWorld.name)?.sanitized() != null) {
+            "E2E plot-world reset config was not persisted or could not be sanitized"
+        }
+        check(systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetPlanner.interiorColumns(first.bounds).isNotEmpty()) {
+            "E2E reset region has no interior columns"
+        }
+        check(conflicts.checkAvailable(listOf(first.id)) == null) { "E2E test Region is already reserved" }
+        check(conflicts.checkAvailable(listOf(second.id)) == null) { "E2E recovery probe Region is already blocked" }
+        val recoveryProbeId = UUID.randomUUID()
+        jobStore.create(PlotMutationJobRecord(
+            id = recoveryProbeId,
+            correlationId = CorrelationId.newId(),
+            operation = "DB_OUTAGE_RECOVERY_INDEX_PROBE",
+            worldId = homeWorld.id,
+            areaId = area.id,
+            worldName = testWorld.name,
+            regionIds = listOf(second.id),
+            backend = "paper-world-e2e",
+            status = PlotMutationJobStatus.QUEUED,
+            totalUnits = 1
+        ))
+        jobStore.markRunning(recoveryProbeId)
+        jobStore.finish(recoveryProbeId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, 1, "E2E recovery blocker probe")
+        check(conflicts.checkAvailable(listOf(second.id)) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired) {
+            "Persisted recovery job did not enter the in-memory conflict index"
+        }
+        seed(first, "db-outage-before")
+        val before = capture(testWorld, first.bounds.minX)
+        val control = dataFolder.toPath().resolve("control")
+        val status = dataFolder.toPath().resolve("phase.txt")
+        Files.createDirectories(control)
+        Files.writeString(status, "READY\n")
+
+        var downWatcher: BukkitTask? = null
+        downWatcher = server.scheduler.runTaskTimer(this, Runnable {
+            if (!Files.exists(control.resolve("db-down"))) return@Runnable
+            downWatcher?.cancel()
+            val readStarted = System.nanoTime()
+            CompletableFuture.supplyAsync {
+                requireNotNull(services.dataSource).connection.use { connection ->
+                    connection.createStatement().use { it.executeQuery("SELECT 1").use { result -> check(result.next()) } }
+                }
+            }.handle { _, error -> Pair(error, System.nanoTime() - readStarted) }
+                .whenComplete { readResult, workerFailure ->
+                    server.scheduler.runTask(this, Runnable {
+                        runCatching {
+                            if (workerFailure != null) throw IllegalStateException("DB-down read worker failed", workerFailure)
+                            val (readFailure, readNanos) = requireNotNull(readResult)
+                            check(readFailure != null) { "DB-down read unexpectedly succeeded" }
+                            check(conflicts.checkAvailable(listOf(second.id)) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired) {
+                                "DB outage incorrectly released a persisted recovery blocker"
+                            }
+                            check(conflicts.reserve(
+                                RegionMutationOperation.RESET,
+                                listOf(second.id),
+                                actor = ActionActor.System("paper-db-interruption-e2e")
+                            ) is ReservationAttempt.Conflict) {
+                                "Mutation reservation ignored a cached recovery blocker while DB was down"
+                            }
+
+                            val failedReset = CompletableFuture<systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion>()
+                            val resetAccepted = resetService.queueReset(
+                                first,
+                                PlotResetReason.MANUAL,
+                                CorrelationId.newId(),
+                                ActionActor.System("paper-db-interruption-e2e")
+                            ) { failedReset.complete(it) }
+                            check(resetAccepted) { "Reset queue rejected the test before exercising DB persistence" }
+                            await(failedReset, 600) { completion ->
+                                check(completion.status == PlotResetCompletionStatus.FAILED) {
+                                    "DB-down reset did not fail before mutation: $completion"
+                                }
+                                check(capture(testWorld, first.bounds.minX) == before) {
+                                    "DB-down reset changed world state before backup/job persistence"
+                                }
+                                check(conflicts.activeReservations().isEmpty()) {
+                                    "DB-down reset leaked its runtime reservation: ${conflicts.activeReservations()}"
+                                }
+                                check(resetService.activeJobs(testWorld.name).isEmpty()) {
+                                    "DB-down reset leaked its runtime job: ${resetService.activeJobs(testWorld.name)}"
+                                }
+                                Files.writeString(status, "DOWN_CHECKED readFailureMs=${readNanos / 1_000_000}\n")
+                                awaitDatabaseReturn(engine, container, testWorld, before, status)
+                            }
+                        }.onFailure(::fail)
+                    })
+                }
+        }, 1L, 1L)
+    }
+
+    private fun awaitDatabaseReturn(
+        engine: String,
+        container: String,
+        testWorld: World,
+        before: List<BlockImage>,
+        status: java.nio.file.Path
+    ) {
+        var attempts = 0
+        var watcher: BukkitTask? = null
+        val reconnectAccepted = java.util.concurrent.atomic.AtomicBoolean(false)
+        watcher = server.scheduler.runTaskTimerAsynchronously(this, Runnable {
+            attempts++
+            runCatching {
+                requireNotNull(services.dataSource).connection.use { connection ->
+                    connection.createStatement().use { it.executeQuery("SELECT 1").use { result -> check(result.next()) } }
+                }
+            }.onSuccess {
+                if (!reconnectAccepted.compareAndSet(false, true)) return@onSuccess
+                watcher?.cancel()
+                server.scheduler.runTask(this, Runnable {
+                    runCatching {
+                        val elapsedWait = attempts
+                        val finished = CompletableFuture<systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion>()
+                        val accepted = resetService.queueReset(
+                            first,
+                            PlotResetReason.MANUAL,
+                            CorrelationId.newId(),
+                            ActionActor.System("paper-db-interruption-e2e")
+                        ) { finished.complete(it) }
+                        check(accepted) {
+                            "Reset was not accepted after database return; conflict=${conflicts.checkAvailable(listOf(first.id))}; " +
+                                "activeJobs=${resetService.activeJobs(testWorld.name)}; " +
+                                "area=${services.worldAreaService?.getArea(area.id)}; " +
+                                "world=${services.worldAreaService?.getWorld(homeWorld.id)}"
+                        }
+                        await(finished) { completion ->
+                            check(completion.status == PlotResetCompletionStatus.COMPLETED) {
+                                "Post-reconnect reset did not complete: $completion"
+                            }
+                            check(capture(testWorld, first.bounds.minX) != before) {
+                                "Successful post-reconnect reset did not change the world"
+                            }
+                            val readyBackup = backupService.listBackups(first.id)
+                            await(readyBackup) { records ->
+                                check(records.any { it.cause.startsWith("reset:") && it.status == PlotBackupStatus.READY &&
+                                    it.compression == PlotBackupCompression.ZSTD && !it.checksumSha256.isNullOrBlank() }) {
+                                    "Post-reconnect reset did not retain its READY ZSTD safety backup"
+                                }
+                                finish("PASS full-Paper DB interruption read=rejected reset=failed-before-world-write reconnect=ok resetAfterReturn=completed dbWaitPolls=$elapsedWait")
+                            }
+                        }
+                    }.onFailure(::fail)
+                })
+            }
+            if (attempts > 240) {
+                watcher?.cancel()
+                server.scheduler.runTask(this, Runnable {
+                    fail(IllegalStateException("The existing HomeClaim connection pool did not reconnect within 120 seconds"))
+                })
+            }
+        }, 1L, 10L)
     }
 
     private fun runRestore(testWorld: World) {

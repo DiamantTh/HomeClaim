@@ -7,6 +7,7 @@ import systems.diath.homeclaim.core.policy.CorrelationId
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 
 enum class PlotMutationJobStatus {
@@ -56,6 +57,8 @@ interface PlotMutationJobStore {
      */
     fun findById(id: UUID): PlotMutationJobRecord?
     fun findRecoveryRequired(limit: Int = 100): List<PlotMutationJobRecord>
+    /** Loads the complete durable blocker set during startup before the Paper conflict path is used. */
+    fun loadRecoveryBlockers(): List<PlotMutationJobRecord> = findRecoveryRequired(500)
     fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>): List<PlotMutationJobRecord> {
         val targets = regionIds.toSet()
         return if (targets.isEmpty()) emptyList() else findRecoveryRequired(500).filter { job -> job.regionIds.any(targets::contains) }
@@ -72,6 +75,11 @@ interface PlotMutationJobStore {
 }
 
 class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutationJobStore {
+    /** Recovery blockers are loaded once during startup and then maintained with local journal writes. */
+    private val knownJobs = ConcurrentHashMap<UUID, PlotMutationJobRecord>()
+    private val recoveryIndex = ConcurrentHashMap<UUID, PlotMutationJobRecord>()
+    @Volatile private var recoveryIndexLoaded = false
+
     override fun create(record: PlotMutationJobRecord) {
         val sql = """
             INSERT INTO plot_mutation_jobs (
@@ -102,6 +110,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.executeUpdate()
             }
         }
+        knownJobs[record.id] = record
     }
 
     override fun markRunning(id: UUID) {
@@ -110,6 +119,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             SET status = ?, started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = ?
         """.trimIndent(), PlotMutationJobStatus.RUNNING.name, id, PlotMutationJobStatus.QUEUED.name)
+        knownJobs.computeIfPresent(id) { _, record -> record.copy(status = PlotMutationJobStatus.RUNNING, startedAt = record.startedAt ?: Instant.now(), updatedAt = Instant.now()) }
     }
 
     override fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int) {
@@ -119,6 +129,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             SET completed_units = ?, total_units = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = ?
         """.trimIndent(), completedUnits, totalUnits, id, PlotMutationJobStatus.RUNNING.name)
+        knownJobs.computeIfPresent(id) { _, record -> record.copy(completedUnits = completedUnits, totalUnits = totalUnits, updatedAt = Instant.now()) }
     }
 
     override fun updateDetails(id: UUID, details: String) {
@@ -127,6 +138,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             UPDATE plot_mutation_jobs SET details = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status IN (?, ?)
         """.trimIndent(), details, id, PlotMutationJobStatus.QUEUED.name, PlotMutationJobStatus.RUNNING.name)
+        knownJobs.computeIfPresent(id) { _, record -> record.copy(details = details, updatedAt = Instant.now()) }
     }
 
     override fun finish(
@@ -144,6 +156,13 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             PlotMutationJobStatus.RECOVERY_REQUIRED
         ))
         require(completedUnits >= 0 && totalUnits >= completedUnits)
+        val current = knownJobs[id]
+        if (current != null && status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
+            val terminal = current.copy(status = status, completedUnits = completedUnits, totalUnits = totalUnits,
+                error = error, updatedAt = Instant.now(), completedAt = Instant.now())
+            knownJobs[id] = terminal
+            updateRecoveryIndex(terminal)
+        }
         update("""
             UPDATE plot_mutation_jobs
             SET status = ?, completed_units = ?, total_units = ?, error = ?,
@@ -151,6 +170,12 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             WHERE id = ? AND status IN (?, ?)
         """.trimIndent(), status.name, completedUnits, totalUnits, error, id,
             PlotMutationJobStatus.QUEUED.name, PlotMutationJobStatus.RUNNING.name)
+        if (current != null && status != PlotMutationJobStatus.RECOVERY_REQUIRED) {
+            val terminal = current.copy(status = status, completedUnits = completedUnits, totalUnits = totalUnits,
+                error = error, updatedAt = Instant.now(), completedAt = Instant.now())
+            knownJobs[id] = terminal
+            updateRecoveryIndex(terminal)
+        }
     }
 
     override fun markInterruptedAsRecoveryRequired(): Int = dataSource.connection.use { connection ->
@@ -201,7 +226,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
 
     override fun beginRecovery(id: UUID, recoveryDetails: String): Boolean {
         require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
-        return dataSource.connection.use { connection ->
+        val changed = dataSource.connection.use { connection ->
             connection.prepareStatement("""
                 UPDATE plot_mutation_jobs SET status = ?, details = ?, updated_at = CURRENT_TIMESTAMP,
                     completed_at = NULL
@@ -214,11 +239,16 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.executeUpdate() == 1
             }
         }
+        if (changed) knownJobs.computeIfPresent(id) { _, record ->
+            record.copy(status = PlotMutationJobStatus.RECOVERY_IN_PROGRESS, details = recoveryDetails, updatedAt = Instant.now(), completedAt = null)
+                .also(::updateRecoveryIndex)
+        }
+        return changed
     }
 
     override fun updateRecoveryDetails(id: UUID, recoveryDetails: String): Boolean {
         require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
-        return dataSource.connection.use { connection ->
+        val changed = dataSource.connection.use { connection ->
             connection.prepareStatement("""
                 UPDATE plot_mutation_jobs SET details = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND status = ?
@@ -229,12 +259,16 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.executeUpdate() == 1
             }
         }
+        if (changed) knownJobs.computeIfPresent(id) { _, record ->
+            record.copy(details = recoveryDetails, updatedAt = Instant.now()).also(::updateRecoveryIndex)
+        }
+        return changed
     }
 
     override fun finishRecovery(id: UUID, status: PlotMutationJobStatus, recoveryDetails: String, error: String?): Boolean {
         require(status in setOf(PlotMutationJobStatus.RECOVERED, PlotMutationJobStatus.ACKNOWLEDGED, PlotMutationJobStatus.RECOVERY_REQUIRED))
         require(recoveryDetails.length <= MAX_DETAILS_LENGTH)
-        return dataSource.connection.use { connection ->
+        val changed = dataSource.connection.use { connection ->
             connection.prepareStatement("""
                 UPDATE plot_mutation_jobs SET status = ?, details = ?, error = ?, updated_at = CURRENT_TIMESTAMP,
                     completed_at = CASE WHEN ? = ? THEN NULL ELSE CURRENT_TIMESTAMP END
@@ -250,6 +284,12 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 statement.executeUpdate() == 1
             }
         }
+        if (changed) knownJobs.computeIfPresent(id) { _, record ->
+            record.copy(status = status, details = recoveryDetails, error = error, updatedAt = Instant.now(),
+                completedAt = if (status == PlotMutationJobStatus.RECOVERY_REQUIRED) null else Instant.now())
+                .also(::updateRecoveryIndex)
+        }
+        return changed
     }
 
     override fun findById(id: UUID): PlotMutationJobRecord? = dataSource.connection.use { connection ->
@@ -262,14 +302,22 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
         """.trimIndent()).use { statement ->
             statement.setObject(1, id)
             statement.executeQuery().use { result ->
-                if (result.next()) result.toRecordOrNull() else null
+                if (result.next()) result.toRecordOrNull()?.also { knownJobs[id] = it; updateRecoveryIndex(it) } else null
             }
         }
     }
 
     override fun findRecoveryRequired(limit: Int): List<PlotMutationJobRecord> {
         require(limit in 1..500)
-        return dataSource.connection.use { connection ->
+        return loadRecoveryRecords(limit, completeIndex = false)
+    }
+
+    override fun loadRecoveryBlockers(): List<PlotMutationJobRecord> =
+        loadRecoveryRecords(null, completeIndex = true)
+
+    private fun loadRecoveryRecords(limit: Int?, completeIndex: Boolean): List<PlotMutationJobRecord> {
+        val limitClause = if (limit == null) "" else "LIMIT ?"
+        val loaded = dataSource.connection.use { connection ->
             connection.prepareStatement("""
                 SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
                        world_id,
@@ -278,11 +326,11 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 FROM plot_mutation_jobs
                 WHERE status IN (?, ?)
                 ORDER BY created_at DESC, id DESC
-                LIMIT ?
+                $limitClause
             """.trimIndent()).use { statement ->
                 statement.setString(1, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
                 statement.setString(2, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
-                statement.setInt(3, limit)
+                if (limit != null) statement.setInt(3, limit)
                 statement.executeQuery().use { result ->
                     buildList {
                         while (result.next()) {
@@ -292,9 +340,20 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 }
             }
         }
+        loaded.forEach { knownJobs[it.id] = it }
+        if (completeIndex) {
+            recoveryIndex.clear()
+            loaded.forEach(::updateRecoveryIndex)
+            recoveryIndexLoaded = true
+        }
+        return loaded
     }
 
     override fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>): List<PlotMutationJobRecord> {
+        if (recoveryIndexLoaded) {
+            val targets = regionIds.toSet()
+            return recoveryIndex.values.filter { record -> record.regionIds.any(targets::contains) }
+        }
         val targets = regionIds.map { it.value.toString() }.distinct()
         if (targets.isEmpty()) return emptyList()
         val tokenClauses = targets.joinToString(" OR ") { "(region_ids = ? OR region_ids LIKE ? OR region_ids LIKE ? OR region_ids LIKE ?)" }
@@ -305,7 +364,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             WHERE status IN (?, ?) AND ($tokenClauses)
             ORDER BY created_at DESC, id DESC
         """.trimIndent()
-        return dataSource.connection.use { connection ->
+        val loaded = dataSource.connection.use { connection ->
             connection.prepareStatement(sql).use { statement ->
                 statement.setString(1, PlotMutationJobStatus.RECOVERY_REQUIRED.name)
                 statement.setString(2, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
@@ -320,6 +379,15 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                     buildList { while (result.next()) result.toRecordOrNull()?.let(::add) }
                 }
             }
+        }
+        return loaded
+    }
+
+    private fun updateRecoveryIndex(record: PlotMutationJobRecord) {
+        if (record.status in setOf(PlotMutationJobStatus.RECOVERY_REQUIRED, PlotMutationJobStatus.RECOVERY_IN_PROGRESS)) {
+            recoveryIndex[record.id] = record
+        } else {
+            recoveryIndex.remove(record.id)
         }
     }
 

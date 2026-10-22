@@ -42,11 +42,15 @@ class PaperPlotResetService(
             if (interrupted > 0) {
                 plugin.logger.severe("$interrupted plot mutation job(s) were interrupted by a previous server shutdown; inspect /plot jobs status")
             }
-            store.findRecoveryRequired().forEach { job ->
+            val recoveryBlockers = store.loadRecoveryBlockers()
+            recoveryBlockers.take(100).forEach { job ->
                 plugin.logger.severe(
                     "Plot mutation ${job.operation} requires recovery: job=${job.id}, region=${job.regionIds.joinToString()}, " +
                         "world=${job.worldName}, progress=${job.completedUnits}/${job.totalUnits}, correlation=${job.correlationId}"
                 )
+            }
+            if (recoveryBlockers.size > 100) {
+                plugin.logger.severe("Additional ${recoveryBlockers.size - 100} recovery-required plot mutations are loaded and blocking their Regions")
             }
         }
     }
@@ -119,10 +123,16 @@ class PaperPlotResetService(
         actor: ActionActor,
         onComplete: (PlotResetCompletion) -> Unit
     ): Boolean {
-        val resolved = resolveWorld(region) ?: return false
+        val resolved = resolveWorld(region) ?: run {
+            plugin.logger.fine("Skipping Paper plot reset for ${region.id.value}: world or area is unavailable")
+            return false
+        }
         val world = resolved.first
         val worldName = resolved.second
-        val config = configStore.loadConfig(worldName)?.sanitized() ?: return false
+        val config = configStore.loadConfig(worldName)?.sanitized() ?: run {
+            plugin.logger.fine("Skipping Paper plot reset for ${region.id.value}: plot-world config is unavailable")
+            return false
+        }
         if (reason == PlotResetReason.DELETE && !config.resetOnDelete) return false
         if (reason == PlotResetReason.UNCLAIM && !config.resetOnUnclaim) return false
 
@@ -131,7 +141,10 @@ class PaperPlotResetService(
         )) {
             null -> null
             is ReservationAttempt.Acquired -> attempt.lease
-            is ReservationAttempt.Conflict -> return false
+            is ReservationAttempt.Conflict -> {
+                plugin.logger.fine("Skipping Paper plot reset for ${region.id.value}: reservation conflict ${attempt.conflict}")
+                return false
+            }
         }
 
         val jobKey = "paper-reset:${world.uid}:${region.id.value}"
@@ -151,6 +164,7 @@ class PaperPlotResetService(
 
         val columns = ArrayDeque(PlotResetPlanner.interiorColumns(region.bounds))
         if (columns.isEmpty()) {
+            plugin.logger.fine("Skipping Paper plot reset for ${region.id.value}: reset bounds contain no interior columns")
             jobHandle.close()
             runtimeReservation?.close()
             return false
@@ -176,15 +190,7 @@ class PaperPlotResetService(
                 "worldId=${worldAreaService?.getArea(region.areaId)?.worldId?.value ?: ""}\n" +
                 "paperWorldId=${world.uid}\nactorKind=${actor.kind}\nactorRef=${actor.stableId ?: ""}\nphase=BACKING_UP"
         )
-        try {
-            jobStore?.create(persistentJob)
-        } catch (error: Throwable) {
-            jobHandle.close()
-            runtimeReservation?.close()
-            plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist reset job before mutation for ${region.id.value}", error)
-            return false
-        }
-        var journalStarted = false
+        var jobPersisted = false
         val completionSent = AtomicBoolean(false)
         var scheduledTask: BukkitTask? = null
         fun finish(status: PlotResetCompletionStatus, error: String? = null) {
@@ -194,7 +200,7 @@ class PaperPlotResetService(
             activeResets.remove(jobKey)
             val resultPartial = mutationAttempted && (status != PlotResetCompletionStatus.COMPLETED || completedColumns < totalColumns)
             val persistedStatus = PlotResetCompletion(status, completedColumns, resultPartial, error).persistentJobStatus()
-            val journalError = runCatching {
+            val journalError = if (jobPersisted) runCatching {
                 jobStore?.finish(
                     persistentJobId,
                     persistedStatus,
@@ -202,8 +208,8 @@ class PaperPlotResetService(
                     totalColumns,
                     error
                 )
-            }.exceptionOrNull()
-            if (journalError != null) {
+            }.exceptionOrNull() else null
+            if (journalError != null && jobPersisted) {
                 runCatching {
                     jobStore?.finish(
                         persistentJobId,
@@ -264,10 +270,6 @@ class PaperPlotResetService(
                             topY = topY,
                             clearUntil = clearUntil
                         )
-                        if (!journalStarted) {
-                            jobStore?.markRunning(persistentJobId)
-                            journalStarted = true
-                        }
                         mutationAttempted = true
                         mutationBackend.submit(batch)
                         completedColumns += batchColumns.size
@@ -310,30 +312,61 @@ class PaperPlotResetService(
             finish(PlotResetCompletionStatus.FAILED, "Persistent plot backup service is unavailable; reset was not started")
             return false
         }
-        val backupAccepted = backups.createBeforeReset(region, world, minY, clearUntil, actor, correlationId,
-            "reset:${reason.name.lowercase()}", preResetBackupId) { backupResult ->
-            if (backupResult.isFailure) {
-                finish(PlotResetCompletionStatus.FAILED, "Pre-reset backup failed; reset was not started: ${backupResult.exceptionOrNull()?.message ?: "unknown backup error"}")
-            } else {
-                val backup = backupResult.getOrThrow()
-                runCatching {
-                    jobStore?.updateDetails(persistentJobId,
-                        "format=homeclaim-reset-v1\nreason=${reason.name}\nbackupId=${backup.id}\n" +
-                            "regionId=${region.id.value}\nareaId=${region.areaId.value}\n" +
-                            "worldId=${backup.worldId.value}\npaperWorldId=${backup.paperWorldId}\n" +
-                            "actorKind=${actor.kind}\nactorRef=${actor.stableId ?: ""}\nphase=RESETTING")
-                }.onFailure { journalFailure ->
+
+        activeResets[jobKey] = {
+            backups.cancelCapture(region.id)
+            finish(PlotResetCompletionStatus.CANCELLED, "Reset cancelled before persistent job creation")
+        }
+        // JDBC can wait up to the pool connection timeout during an outage. Never make a Paper
+        // tick wait for the persistent pre-mutation journal; no backup or world write begins
+        // until both the job row and its RUNNING state are durable.
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+            var created = false
+            val journalFailure = runCatching {
+                jobStore?.create(persistentJob)
+                created = jobStore != null
+                jobStore?.markRunning(persistentJobId)
+            }.exceptionOrNull()
+            Bukkit.getScheduler().runTask(plugin, Runnable {
+                if (completionSent.get()) return@Runnable
+                jobPersisted = created
+                if (journalFailure != null) {
+                    plugin.logger.log(java.util.logging.Level.SEVERE,
+                        "Could not persist reset job before mutation for ${region.id.value}", journalFailure)
+                    // A failed pre-world journal must relinquish admission immediately even if
+                    // completion reporting has already been claimed by another shutdown path.
+                    activeResets.remove(jobKey)
+                    jobHandle.close()
+                    runtimeReservation?.close()
                     finish(PlotResetCompletionStatus.FAILED,
-                        "Pre-reset backup ${backup.id} is READY, but reset phase could not be journaled: ${journalFailure.message}")
-                    return@createBeforeReset
+                        "Could not persist reset job; reset was not started: ${journalFailure.message ?: journalFailure.javaClass.simpleName}")
+                    return@Runnable
                 }
-                startMutation()
-            }
-        }
-        if (!backupAccepted) {
-            finish(PlotResetCompletionStatus.FAILED, "Pre-reset backup could not be started; reset was not started")
-            return false
-        }
+                val backupAccepted = backups.createBeforeReset(region, world, minY, clearUntil, actor, correlationId,
+                    "reset:${reason.name.lowercase()}", preResetBackupId) { backupResult ->
+                    if (backupResult.isFailure) {
+                        finish(PlotResetCompletionStatus.FAILED, "Pre-reset backup failed; reset was not started: ${backupResult.exceptionOrNull()?.message ?: "unknown backup error"}")
+                    } else {
+                        val backup = backupResult.getOrThrow()
+                        runCatching {
+                            jobStore?.updateDetails(persistentJobId,
+                                "format=homeclaim-reset-v1\nreason=${reason.name}\nbackupId=${backup.id}\n" +
+                                    "regionId=${region.id.value}\nareaId=${region.areaId.value}\n" +
+                                    "worldId=${backup.worldId.value}\npaperWorldId=${backup.paperWorldId}\n" +
+                                    "actorKind=${actor.kind}\nactorRef=${actor.stableId ?: ""}\nphase=RESETTING")
+                        }.onFailure { journalError ->
+                            finish(PlotResetCompletionStatus.FAILED,
+                                "Pre-reset backup ${backup.id} is READY, but reset phase could not be journaled: ${journalError.message}")
+                            return@createBeforeReset
+                        }
+                        startMutation()
+                    }
+                }
+                if (!backupAccepted) {
+                    finish(PlotResetCompletionStatus.FAILED, "Pre-reset backup could not be started; reset was not started")
+                }
+            })
+        })
         return true
     }
 
