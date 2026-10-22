@@ -23,9 +23,10 @@ import java.util.UUID
 import com.github.luben.zstd.ZstdInputStream
 import com.github.luben.zstd.ZstdOutputStream
 
-/** Stable, bounded binary container. v1/NONE remains readable; new writes use the v2 manifest. */
+/** Stable, bounded binary container. v1/v2 remain readable; new writes use the v3 manifest. */
 internal object PlotBackupFormat {
-    const val CURRENT_VERSION = 2
+    const val CURRENT_VERSION = 3
+    private const val V2_VERSION = 2
     private const val LEGACY_VERSION = 1
     const val MAX_BLOCKS = 10_000_000L
     const val MAX_BACKUP_BYTES = 1_073_741_824L
@@ -135,9 +136,19 @@ internal object PlotBackupFormat {
 
         // Validate record framing and bounds before any world mutation. The payload is then
         // streamed again in bounded batches for restore; it is never loaded into one ByteArray.
+        var hasContainerInventory = false
         openPayload(file, Header(record, payloadOffset, manifest.uncompressedPayloadBytes)).use { input ->
-            repeat(record.blockCount.toInt()) { readBlock(input, record.bounds) }
+            repeat(record.blockCount.toInt()) {
+                if (readBlock(input, record.bounds).inventoryItems != null) hasContainerInventory = true
+            }
             require(input.read() == -1) { "Backup has trailing payload data" }
+        }
+        record.captureMetadata?.let { metadata ->
+            val actualCapabilities = buildSet {
+                add(PlotBackupCapability.BLOCK_DATA)
+                if (hasContainerInventory) add(PlotBackupCapability.CONTAINER_INVENTORY)
+            }
+            require(metadata.capabilities == actualCapabilities) { "Backup capability metadata does not match its payload" }
         }
         return Header(record.copy(payloadBytes = payloadSize, checksumSha256 = expectedDigest.joinToString("") { "%02x".format(it) },
             uncompressedPayloadBytes = manifest.uncompressedPayloadBytes),
@@ -156,6 +167,20 @@ internal object PlotBackupFormat {
             "Backup manifest integrity metadata does not match its index"
         }
         return manifest.uncompressedPayloadBytes
+    }
+
+    fun readCaptureMetadata(file: Path, indexed: PlotBackupRecord): PlotBackupCaptureMetadata? {
+        require(indexed.status == PlotBackupStatus.READY) { "Backup is not ready" }
+        val manifest = readManifest(file)
+        require(manifest.record.id == indexed.id && manifest.record.regionId == indexed.regionId &&
+            manifest.record.formatVersion == indexed.formatVersion && manifest.record.compression == indexed.compression) {
+            "Backup manifest identity does not match its index"
+        }
+        require(manifest.payloadSize == indexed.payloadBytes &&
+            manifest.digest.joinToString("") { "%02x".format(it) } == indexed.checksumSha256) {
+            "Backup manifest integrity metadata does not match its index"
+        }
+        return manifest.record.captureMetadata
     }
 
     fun openPayload(file: Path, header: Header): DataInputStream {
@@ -228,17 +253,19 @@ internal object PlotBackupFormat {
             val blockCount = recordInput.readLong()
             val payloadSize = recordInput.readLong()
             require(payloadSize in 0..MAX_BACKUP_BYTES) { "Declared backup payload size is invalid" }
-            val uncompressedPayloadBytes = if (version >= CURRENT_VERSION) recordInput.readLong() else payloadSize
+            val uncompressedPayloadBytes = if (version >= V2_VERSION) recordInput.readLong() else payloadSize
             require(uncompressedPayloadBytes in 0..MAX_BACKUP_BYTES) { "Declared uncompressed payload size is invalid" }
             if (version == LEGACY_VERSION) require(compression == PlotBackupCompression.NONE) { "HCBK v1 only supports NONE compression" }
             val checksum = ByteArray(32)
             recordInput.readFully(checksum)
+            val captureMetadata = if (version >= CURRENT_VERSION) readCaptureMetadata(recordInput, blockCount) else null
             require(recordInput.read() == -1) { "Backup manifest has trailing fields" }
             val record = PlotBackupRecord(
                 id, correlation, world, paperWorld, area, region, bounds, actorKind, actorRef, cause,
                 PlotBackupStatus.READY, version, compression, blockCount, payloadSize,
                 checksum.joinToString("") { "%02x".format(it) }, createdAt = createdAt,
-                uncompressedPayloadBytes = uncompressedPayloadBytes
+                uncompressedPayloadBytes = uncompressedPayloadBytes,
+                captureMetadata = captureMetadata
             )
             return ManifestRead(record, payloadSize, uncompressedPayloadBytes, checksum, 8L + manifestLength)
         }
@@ -264,8 +291,47 @@ internal object PlotBackupFormat {
             output.writeLong(payloadSize)
             output.writeLong(uncompressedPayloadSize)
             output.write(digest)
+            writeCaptureMetadata(output, requireNotNull(record.captureMetadata) { "HCBK v3 requires capture metadata" })
         }
         return bytes.toByteArray().also { require(it.size <= MAX_MANIFEST_BYTES) }
+    }
+
+    private fun writeCaptureMetadata(output: DataOutputStream, metadata: PlotBackupCaptureMetadata) {
+        require(metadata.mode == PlotBackupCaptureMode.TICKWISE) { "New HCBK backups must declare tickwise capture" }
+        require(metadata.capturedBlockCount in 1..MAX_BLOCKS) { "Captured block count is invalid" }
+        require(!metadata.completedAt.isBefore(metadata.startedAt)) { "Capture timestamps are out of order" }
+        require(PlotBackupCapability.BLOCK_DATA in metadata.capabilities) { "Block data capability is required" }
+        require(metadata.capabilities.size <= PlotBackupCapability.entries.size)
+        output.writeByte(metadata.mode.wireId)
+        output.writeLong(metadata.startedAt.toEpochMilli())
+        output.writeLong(metadata.completedAt.toEpochMilli())
+        output.writeLong(metadata.capturedBlockCount)
+        output.writeByte(metadata.capabilities.size)
+        metadata.capabilities.sortedBy { it.wireId }.forEach { output.writeByte(it.wireId) }
+    }
+
+    private fun readCaptureMetadata(input: DataInputStream, expectedBlockCount: Long): PlotBackupCaptureMetadata {
+        val mode = PlotBackupCaptureMode.fromWireId(input.readUnsignedByte())
+            ?: throw IllegalArgumentException("Unknown backup capture mode")
+        require(mode == PlotBackupCaptureMode.TICKWISE) { "Unsupported backup capture mode" }
+        val startedAt = Instant.ofEpochMilli(input.readLong())
+        val completedAt = Instant.ofEpochMilli(input.readLong())
+        val capturedBlockCount = input.readLong()
+        require(capturedBlockCount == expectedBlockCount && capturedBlockCount in 1..MAX_BLOCKS) {
+            "Capture block count does not match the backup bounds"
+        }
+        require(!completedAt.isBefore(startedAt)) { "Capture timestamps are out of order" }
+        val capabilityCount = input.readUnsignedByte()
+        require(capabilityCount in 1..PlotBackupCapability.entries.size) { "Backup capability count is invalid" }
+        val capabilities = buildSet {
+            repeat(capabilityCount) {
+                val capability = PlotBackupCapability.fromWireId(input.readUnsignedByte())
+                    ?: throw IllegalArgumentException("Unknown backup capability")
+                require(add(capability)) { "Duplicate backup capability" }
+            }
+        }
+        require(PlotBackupCapability.BLOCK_DATA in capabilities) { "Backup omits required block data capability" }
+        return PlotBackupCaptureMetadata(mode, startedAt, completedAt, capturedBlockCount, capabilities)
     }
 
     private fun writeBlock(output: DataOutputStream, block: BlockSnapshot) {

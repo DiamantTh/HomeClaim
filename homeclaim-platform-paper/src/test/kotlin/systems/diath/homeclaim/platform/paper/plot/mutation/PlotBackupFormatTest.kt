@@ -18,6 +18,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+import com.github.luben.zstd.ZstdOutputStream
 
 class PlotBackupFormatTest {
     @TempDir
@@ -26,7 +27,7 @@ class PlotBackupFormatTest {
     @Test
     fun `format validates manifest and streams payload blocks`() {
         val bounds = Bounds(3, 4, 60, 60, -2, -2)
-        val record = record(bounds)
+        val record = record(bounds, setOf(PlotBackupCapability.BLOCK_DATA, PlotBackupCapability.CONTAINER_INVENTORY))
         val payload = temp.resolve("payload.part")
         Files.createFile(payload)
         PlotBackupFormat.appendPayload(payload, listOf(
@@ -47,10 +48,11 @@ class PlotBackupFormatTest {
             assertEquals(null, blocks[1].inventoryItems?.get(1))
             assertEquals(-1, input.read())
         }
+        assertEquals(record.captureMetadata, header.record.captureMetadata)
     }
 
     @Test
-    fun `zstd v2 round trips and records compressed and uncompressed sizes`() {
+    fun `zstd v3 round trips capture metadata and compressed and uncompressed sizes`() {
         val bounds = Bounds(0, 1, 0, 0, 0, 0)
         val record = record(bounds).copy(compression = PlotBackupCompression.ZSTD)
         val payload = temp.resolve("zstd-payload.part")
@@ -67,6 +69,7 @@ class PlotBackupFormatTest {
         assertEquals(PlotBackupFormat.CURRENT_VERSION, header.record.formatVersion)
         assertEquals(originalBytes, header.uncompressedPayloadBytes)
         assertEquals(originalBytes, encoded.uncompressedPayloadBytes)
+        assertEquals(record.captureMetadata, header.record.captureMetadata)
         assertTrue(encoded.payloadBytes < originalBytes)
         PlotBackupFormat.openPayload(file, header).use { input ->
             assertEquals(listOf("minecraft:stone", "minecraft:stone"), PlotBackupFormat.readBatch(input, bounds, 2).map { it.blockData })
@@ -91,7 +94,7 @@ class PlotBackupFormatTest {
         bytes[payloadOffset + 3] = (bytes[payloadOffset + 3].toInt() xor 0x40).toByte()
         val storedPayload = bytes.copyOfRange(payloadOffset, bytes.size)
         val damagedDigest = MessageDigest.getInstance("SHA-256").digest(storedPayload)
-        damagedDigest.copyInto(bytes, 8 + offsets.manifestLength - 32)
+        damagedDigest.copyInto(bytes, 8 + offsets.checksumOffset)
         Files.write(file, bytes)
         val damagedIndex = indexed.copy(checksumSha256 = damagedDigest.joinToString("") { "%02x".format(it) })
         assertThrows(Exception::class.java) { PlotBackupFormat.validate(file, damagedIndex) }
@@ -107,7 +110,7 @@ class PlotBackupFormatTest {
         assertThrows(Exception::class.java) { PlotBackupFormat.validate(file, truncatedIndex) }
 
         finalized.checksum.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-            .copyInto(bytes, 8 + offsets.manifestLength - 32)
+            .copyInto(bytes, 8 + offsets.checksumOffset)
         ByteBuffer.wrap(bytes, 8 + offsets.uncompressedSizeOffset, Long.SIZE_BYTES)
             .putLong(PlotBackupFormat.MAX_BACKUP_BYTES + 1)
         Files.write(file, bytes)
@@ -159,6 +162,87 @@ class PlotBackupFormatTest {
     }
 
     @Test
+    fun `legacy hcbk v2 none fixture remains readable`() {
+        val bounds = Bounds(0, 0, 0, 0, 0, 0)
+        val oldRecord = record(bounds).copy(formatVersion = 2, compression = PlotBackupCompression.NONE)
+        val payload = ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0); output.writeInt(0); output.writeInt(0)
+                output.writeBounded("minecraft:air"); output.writeBoolean(false)
+            }
+        }.toByteArray()
+        val checksum = MessageDigest.getInstance("SHA-256").digest(payload)
+        val manifestBytes = ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(2)
+                output.writeUuid(oldRecord.id); output.writeUuid(oldRecord.correlationId.value)
+                output.writeUuid(oldRecord.worldId.value); output.writeUuid(oldRecord.paperWorldId)
+                output.writeUuid(oldRecord.areaId.value); output.writeUuid(oldRecord.regionId.value)
+                output.writeInt(bounds.minX); output.writeInt(bounds.maxX); output.writeInt(bounds.minY); output.writeInt(bounds.maxY)
+                output.writeInt(bounds.minZ); output.writeInt(bounds.maxZ)
+                output.writeBounded("PLAYER"); output.writeNullable(oldRecord.createdByRef)
+                output.writeBounded(oldRecord.cause); output.writeLong(oldRecord.createdAt.toEpochMilli())
+                output.writeByte(PlotBackupCompression.NONE.ordinal); output.writeLong(1); output.writeLong(payload.size.toLong())
+                output.writeLong(payload.size.toLong()); output.write(checksum)
+            }
+        }.toByteArray()
+        val file = temp.resolve("legacy-v2.hcbackup")
+        DataOutputStream(Files.newOutputStream(file)).use { output ->
+            output.writeInt(0x4843424B); output.writeInt(manifestBytes.size); output.write(manifestBytes); output.write(payload)
+        }
+        val indexed = oldRecord.copy(status = PlotBackupStatus.READY, payloadBytes = payload.size.toLong(),
+            checksumSha256 = checksum.joinToString("") { "%02x".format(it) })
+        val header = PlotBackupFormat.validate(file, indexed)
+        assertEquals(2, header.record.formatVersion)
+        assertEquals(PlotBackupCompression.NONE, header.record.compression)
+        assertEquals(null, header.record.captureMetadata)
+    }
+
+    @Test
+    fun `legacy hcbk v2 zstd fixture remains readable`() {
+        val bounds = Bounds(0, 0, 0, 0, 0, 0)
+        val oldRecord = record(bounds).copy(formatVersion = 2, compression = PlotBackupCompression.ZSTD)
+        val rawPayload = ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0); output.writeInt(0); output.writeInt(0)
+                output.writeBounded("minecraft:air"); output.writeBoolean(false)
+            }
+        }.toByteArray()
+        val storedPayload = ByteArrayOutputStream().also { bytes ->
+            ZstdOutputStream(bytes).use { it.write(rawPayload) }
+        }.toByteArray()
+        val checksum = MessageDigest.getInstance("SHA-256").digest(storedPayload)
+        val manifestBytes = ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(2)
+                output.writeUuid(oldRecord.id); output.writeUuid(oldRecord.correlationId.value)
+                output.writeUuid(oldRecord.worldId.value); output.writeUuid(oldRecord.paperWorldId)
+                output.writeUuid(oldRecord.areaId.value); output.writeUuid(oldRecord.regionId.value)
+                output.writeInt(bounds.minX); output.writeInt(bounds.maxX); output.writeInt(bounds.minY); output.writeInt(bounds.maxY)
+                output.writeInt(bounds.minZ); output.writeInt(bounds.maxZ)
+                output.writeBounded("PLAYER"); output.writeNullable(oldRecord.createdByRef)
+                output.writeBounded(oldRecord.cause); output.writeLong(oldRecord.createdAt.toEpochMilli())
+                output.writeByte(PlotBackupCompression.ZSTD.ordinal); output.writeLong(1)
+                output.writeLong(storedPayload.size.toLong()); output.writeLong(rawPayload.size.toLong()); output.write(checksum)
+            }
+        }.toByteArray()
+        val file = temp.resolve("legacy-v2-zstd.hcbackup")
+        DataOutputStream(Files.newOutputStream(file)).use { output ->
+            output.writeInt(0x4843424B); output.writeInt(manifestBytes.size); output.write(manifestBytes); output.write(storedPayload)
+        }
+        val indexed = oldRecord.copy(status = PlotBackupStatus.READY, payloadBytes = storedPayload.size.toLong(),
+            checksumSha256 = checksum.joinToString("") { "%02x".format(it) })
+        val header = PlotBackupFormat.validate(file, indexed)
+        assertEquals(2, header.record.formatVersion)
+        assertEquals(PlotBackupCompression.ZSTD, header.record.compression)
+        assertEquals(rawPayload.size.toLong(), header.uncompressedPayloadBytes)
+        assertEquals(null, header.record.captureMetadata)
+        PlotBackupFormat.openPayload(file, header).use { input ->
+            assertEquals("minecraft:air", PlotBackupFormat.readBatch(input, bounds, 1).single().blockData)
+        }
+    }
+
+    @Test
     fun `corrupt and truncated backup payloads are rejected before restore`() {
         val bounds = Bounds(0, 0, 0, 0, 0, 0)
         val record = record(bounds)
@@ -179,7 +263,7 @@ class PlotBackupFormatTest {
         assertThrows(IllegalArgumentException::class.java) { PlotBackupFormat.validate(file, indexed) }
     }
 
-    private fun record(bounds: Bounds) = PlotBackupRecord(
+    private fun record(bounds: Bounds, capabilities: Set<PlotBackupCapability> = setOf(PlotBackupCapability.BLOCK_DATA)) = PlotBackupRecord(
         id = UUID.randomUUID(),
         correlationId = CorrelationId.newId(),
         worldId = WorldId(UUID.randomUUID()),
@@ -194,7 +278,14 @@ class PlotBackupFormatTest {
         formatVersion = PlotBackupFormat.CURRENT_VERSION,
         compression = PlotBackupCompression.NONE,
         blockCount = PlotBackupFormat.blockCount(bounds),
-        createdAt = Instant.parse("2026-10-17T10:00:00Z")
+        createdAt = Instant.parse("2026-10-17T10:00:00Z"),
+        captureMetadata = PlotBackupCaptureMetadata(
+            mode = PlotBackupCaptureMode.TICKWISE,
+            startedAt = Instant.parse("2026-10-17T10:00:01Z"),
+            completedAt = Instant.parse("2026-10-17T10:00:02Z"),
+            capturedBlockCount = PlotBackupFormat.blockCount(bounds),
+            capabilities = capabilities
+        )
     )
 
     private fun DataOutputStream.writeUuid(value: UUID) { writeLong(value.mostSignificantBits); writeLong(value.leastSignificantBits) }

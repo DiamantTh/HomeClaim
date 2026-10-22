@@ -348,6 +348,12 @@ tasks.register<Exec>("paperWorldE2E") {
     }
 }
 
+tasks.register("paperSnapshotPerformance") {
+    group = "verification"
+    description = "Run the real-Paper snapshot capture/apply/verify size matrix as part of the mutation E2E"
+    dependsOn("paperWorldE2E")
+}
+
 tasks.register("paperWorldRestartRecoveryE2E") {
     group = "verification"
     description = "Verify transfer and merge world/domain recovery across real Paper process restarts"

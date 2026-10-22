@@ -25,6 +25,33 @@ enum class PlotBackupCompression {
 }
 
 enum class PlotBackupApplyKind { TRANSFER, RESTORE }
+enum class PlotBackupApplyPhase { APPLY_STARTED, APPLY_COMPLETED, VERIFY_COMPLETED }
+
+enum class PlotBackupCaptureMode(val wireId: Int) {
+    TICKWISE(1);
+
+    companion object {
+        fun fromWireId(id: Int): PlotBackupCaptureMode? = entries.firstOrNull { it.wireId == id }
+    }
+}
+
+enum class PlotBackupCapability(val wireId: Int) {
+    BLOCK_DATA(1),
+    CONTAINER_INVENTORY(2);
+
+    companion object {
+        fun fromWireId(id: Int): PlotBackupCapability? = entries.firstOrNull { it.wireId == id }
+    }
+}
+
+/** File-manifest metadata; intentionally not duplicated in the relational backup index. */
+data class PlotBackupCaptureMetadata(
+    val mode: PlotBackupCaptureMode,
+    val startedAt: Instant,
+    val completedAt: Instant,
+    val capturedBlockCount: Long,
+    val capabilities: Set<PlotBackupCapability>
+)
 
 /** No-op in production. Tests may inject deterministic failures without a config or command backdoor. */
 fun interface PlotBackupFaultInjector {
@@ -57,7 +84,9 @@ data class PlotBackupRecord(
     val createdAt: Instant = Instant.now(),
     val readyAt: Instant? = null,
     /** Read from the versioned manifest; the database index stores the encoded payload size. */
-    val uncompressedPayloadBytes: Long? = null
+    val uncompressedPayloadBytes: Long? = null,
+    /** Present in HCBK v3; older manifests do not claim capture timing or exact capabilities. */
+    val captureMetadata: PlotBackupCaptureMetadata? = null
 )
 
 interface PlotBackupIndex {

@@ -59,8 +59,13 @@ class PaperPlotBackupService(
 
     fun listBackups(regionId: RegionId, limit: Int = 10): CompletableFuture<List<PlotBackupRecord>> = async {
         index.list(regionId, limit).map { record ->
-            runCatching { PlotBackupFormat.readUncompressedPayloadBytes(backupFile(record), record) }
-                .getOrNull()?.let { size -> record.copy(uncompressedPayloadBytes = size) } ?: record
+            runCatching {
+                val file = backupFile(record)
+                record.copy(
+                    uncompressedPayloadBytes = PlotBackupFormat.readUncompressedPayloadBytes(file, record),
+                    captureMetadata = PlotBackupFormat.readCaptureMetadata(file, record)
+                )
+            }.getOrNull() ?: record
         }
     }
 
@@ -70,8 +75,7 @@ class PaperPlotBackupService(
     fun validateReadyBackup(id: UUID): CompletableFuture<PlotBackupRecord> = async {
         val record = index.find(id) ?: throw IllegalArgumentException("Backup $id was not found")
         require(record.status == PlotBackupStatus.READY) { "Backup $id is not READY" }
-        PlotBackupFormat.validate(backupFile(record), record)
-        record
+        PlotBackupFormat.validate(backupFile(record), record).record
     }
 
     /** Starts a pre-reset backup. Completion is delivered on Paper's server thread. */
@@ -164,13 +168,27 @@ class PaperPlotBackupService(
         expectedWorldId: systems.diath.homeclaim.core.model.WorldId,
         correlationId: CorrelationId,
         onProgress: ((Int) -> Unit)? = null
+    ): CompletableFuture<Int> = applyBackupToTargetWithPhases(
+        backupId, source, target, world, expectedWorldId, correlationId, onProgress, null
+    )
+
+    /** Test/diagnostic variant with explicit phase callbacks; the ordinary transfer API remains source-compatible. */
+    fun applyBackupToTargetWithPhases(
+        backupId: UUID,
+        source: Region,
+        target: Region,
+        world: World,
+        expectedWorldId: systems.diath.homeclaim.core.model.WorldId,
+        correlationId: CorrelationId,
+        onProgress: ((Int) -> Unit)?,
+        onPhase: ((PlotBackupApplyPhase) -> Unit)?
     ): CompletableFuture<Int> {
         val result = CompletableFuture<Int>()
         // Read Paper properties while called from the server thread; the worker only retains immutable values.
         val paperWorldId = world.uid
         val minHeight = world.minHeight
         val maxHeight = world.maxHeight
-        val task = ApplyTask(backupId, source, target, world, paperWorldId, minHeight, maxHeight, correlationId, result, onProgress)
+        val task = ApplyTask(backupId, source, target, world, paperWorldId, minHeight, maxHeight, correlationId, result, onProgress, onPhase)
         if (closed.get()) return CompletableFuture.failedFuture(IllegalStateException("Backup service is shutting down"))
         applies += task
         result.whenComplete { _, _ -> applies.remove(task) }
@@ -205,7 +223,10 @@ class PaperPlotBackupService(
                     task.file = file
                     task.header = PlotBackupFormat.validate(file, record)
                     task.input = PlotBackupFormat.openPayload(file, requireNotNull(task.header))
-                    io.execute { runOnServer { applyTransferBatch(task, targetBounds) } }
+                    io.execute { runOnServer {
+                        task.onPhase?.invoke(PlotBackupApplyPhase.APPLY_STARTED)
+                        applyTransferBatch(task, targetBounds)
+                    } }
                 } catch (failure: Throwable) {
                     result.completeExceptionally(failure)
                 }
@@ -223,6 +244,7 @@ class PaperPlotBackupService(
             val remaining = record.blockCount - task.applied
             if (remaining == 0L) {
                 if (!task.verifying) {
+                    task.onPhase?.invoke(PlotBackupApplyPhase.APPLY_COMPLETED)
                     task.verifying = true
                     io.execute {
                         try {
@@ -236,6 +258,7 @@ class PaperPlotBackupService(
                     }
                 } else {
                     task.input?.close()
+                    task.onPhase?.invoke(PlotBackupApplyPhase.VERIFY_COMPLETED)
                     if (task.completed.compareAndSet(false, true)) task.result.complete(task.applied)
                 }
                 return
@@ -455,6 +478,7 @@ class PaperPlotBackupService(
 
     private fun beginCapture(task: CaptureTask) {
         if (task.completed.get()) return
+        task.captureStartedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
         val blockCount = task.record.blockCount
         var cursor = 0L
         fun captureBatch() {
@@ -464,7 +488,7 @@ class PaperPlotBackupService(
                 val end = minOf(blockCount, cursor + CAPTURE_BATCH_BLOCKS)
                 var estimatedBytes = 0L
                 while (cursor < end) {
-                    val snapshot = captureBlock(task.world, task.record.bounds, cursor)
+                    val snapshot = captureBlock(task, cursor)
                     val snapshotBytes = snapshot.blockData.length * 2L +
                         snapshot.inventoryItems.orEmpty().sumOf { it?.size?.toLong() ?: 0L }
                     snapshots += snapshot
@@ -473,13 +497,26 @@ class PaperPlotBackupService(
                     if (estimatedBytes >= MAX_CAPTURE_BATCH_BYTES) break
                 }
                 if (snapshots.isEmpty()) {
+                    val captureCompletedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+                    val captureMetadata = PlotBackupCaptureMetadata(
+                        mode = PlotBackupCaptureMode.TICKWISE,
+                        startedAt = requireNotNull(task.captureStartedAt),
+                        completedAt = captureCompletedAt,
+                        capturedBlockCount = cursor,
+                        capabilities = buildSet {
+                            add(PlotBackupCapability.BLOCK_DATA)
+                            if (task.hasContainerInventory) add(PlotBackupCapability.CONTAINER_INVENTORY)
+                        }
+                    )
+                    check(captureMetadata.capturedBlockCount == task.record.blockCount) { "Snapshot capture ended before all blocks were read" }
+                    val capturedRecord = task.record.copy(captureMetadata = captureMetadata)
                     io.execute {
                         try {
                             val finalized = PlotBackupFormat.finalizeFile(
-                                task.payload, task.temporary, task.finalFile, task.record
+                                task.payload, task.temporary, task.finalFile, capturedRecord
                             )
-                            index.markReady(task.record.id, finalized.payloadBytes, finalized.checksum)
-                            val ready = task.record.copy(
+                            index.markReady(capturedRecord.id, finalized.payloadBytes, finalized.checksum)
+                            val ready = capturedRecord.copy(
                                 status = PlotBackupStatus.READY,
                                 payloadBytes = finalized.payloadBytes,
                                 checksumSha256 = finalized.checksum,
@@ -516,7 +553,9 @@ class PaperPlotBackupService(
         }, 1L, 1L)
     }
 
-    private fun captureBlock(world: World, bounds: Bounds, index: Long): PlotBackupFormat.BlockSnapshot {
+    private fun captureBlock(task: CaptureTask, index: Long): PlotBackupFormat.BlockSnapshot {
+        val world = task.world
+        val bounds = task.record.bounds
         val height = bounds.maxY.toLong() - bounds.minY + 1
         val layer = bounds.maxX.toLong() - bounds.minX + 1
         val area = layer * (bounds.maxZ.toLong() - bounds.minZ + 1)
@@ -528,9 +567,12 @@ class PaperPlotBackupService(
         val block = world.getBlockAt(x, y, z)
         val state = block.state
         val inventoryItems = when (state) {
-            is Container -> state.snapshotInventory.contents.map { item ->
-                item?.takeUnless { it.type.isAir }?.serializeAsBytes()?.also {
-                    require(it.size <= PlotBackupFormat.MAX_ITEM_BYTES) { "A container item exceeds the backup format limit at $x,$y,$z" }
+            is Container -> {
+                task.hasContainerInventory = true
+                state.snapshotInventory.contents.map { item ->
+                    item?.takeUnless { it.type.isAir }?.serializeAsBytes()?.also {
+                        require(it.size <= PlotBackupFormat.MAX_ITEM_BYTES) { "A container item exceeds the backup format limit at $x,$y,$z" }
+                    }
                 }
             }
             is TileState -> throw IllegalStateException("The plot backup format cannot preserve ${block.type.key} block-state data at $x,$y,$z; mutation was not started")
@@ -760,6 +802,8 @@ class PaperPlotBackupService(
     ) {
         @Volatile var indexCreated = false
         @Volatile var scheduled: BukkitTask? = null
+        @Volatile var captureStartedAt: Instant? = null
+        @Volatile var hasContainerInventory = false
     }
 
     private inner class RestoreTask(
@@ -793,6 +837,7 @@ class PaperPlotBackupService(
         val correlationId: CorrelationId,
         val result: CompletableFuture<Int>,
         val onProgress: ((Int) -> Unit)?,
+        val onPhase: ((PlotBackupApplyPhase) -> Unit)?,
         val completed: AtomicBoolean = AtomicBoolean()
     ) {
         @Volatile var header: PlotBackupFormat.Header? = null

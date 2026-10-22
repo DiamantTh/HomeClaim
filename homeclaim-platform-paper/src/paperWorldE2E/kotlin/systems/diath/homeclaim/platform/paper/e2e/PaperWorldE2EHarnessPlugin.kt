@@ -4,6 +4,7 @@ import com.github.luben.zstd.ZstdInputStream
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.World
+import org.bukkit.WorldCreator
 import org.bukkit.block.Container
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
@@ -38,6 +39,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PaperPlotTransferSer
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCompression
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupFaultInjector
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupApplyKind
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupApplyPhase
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupRecord
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
@@ -87,6 +89,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
     private var concurrencyTarget: Region? = null
     private var concurrencyLease: RegionMutationConflictCoordinator.Lease? = null
     private val operationSafetyRegions = mutableListOf<Region>()
+    private val performanceRegions = mutableListOf<Region>()
+    private var performanceArea: Area? = null
 
     override fun onEnable() {
         dataFolder.mkdirs()
@@ -107,7 +111,21 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         plotWorldMutation = privateField(homeClaim, "plotMutationService")
         jobStore = privateField(homeClaim, "plotMutationJobStore")
         conflicts = privateField(homeClaim, "plotMutationConflicts")
-        val testWorld = server.worlds.firstOrNull() ?: error("Paper did not load its isolated test world")
+        val testWorldName = "hc_world_e2e_void"
+        val testWorldConfig = PlotWorldConfig(
+            worldName = testWorldName,
+            plotSize = 64,
+            roadWidth = 0,
+            plotHeight = server.worlds.firstOrNull()?.maxHeight ?: 320,
+            plotBlock = Material.AIR,
+            roadBlock = Material.AIR,
+            wallBlock = Material.AIR,
+            accentBlock = null,
+            minGenHeight = server.worlds.firstOrNull()?.minHeight ?: -64
+        )
+        val testWorld = Bukkit.getWorld(testWorldName) ?: Bukkit.createWorld(
+            WorldCreator(testWorldName).generator(PlotWorldChunkGenerator(testWorldConfig))
+        ) ?: error("Paper could not create the isolated structure-free E2E world")
         world = testWorld
 
         val areas = requireNotNull(services.worldAreaService) { "HomeClaim WorldAreaService is unavailable" }
@@ -473,6 +491,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
 
     private fun runUnsupportedTileState(testWorld: World) {
         val unsupported = createRegion(Bounds(6, 6, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
+        operationSafetyRegions += unsupported
         val signY = testWorld.minHeight + 20
         testWorld.getBlockAt(6, signY, 0).setType(Material.OAK_SIGN, false)
         check(testWorld.getBlockAt(6, signY, 0).type == Material.OAK_SIGN)
@@ -482,7 +501,17 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             check(testWorld.getBlockAt(6, signY, 0).type == Material.OAK_SIGN) {
                 "Unsupported TileState was changed despite backup failure"
             }
-            runCopyRecovery(testWorld)
+            val bannerRegion = createRegion(Bounds(7, 7, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
+            operationSafetyRegions += bannerRegion
+            val bannerY = testWorld.minHeight + 24
+            testWorld.getBlockAt(7, bannerY, 0).setType(Material.WHITE_BANNER, false)
+            awaitFailure(backupService.createSnapshot(bannerRegion, testWorld, ActionActor.System("paper-world-e2e"),
+                CorrelationId.newId(), "e2e:unsupported-banner")) {
+                check(testWorld.getBlockAt(7, bannerY, 0).type == Material.WHITE_BANNER) {
+                    "Unsupported Banner TileState was changed despite backup failure"
+                }
+                runCopyRecovery(testWorld)
+            }
         }
     }
 
@@ -620,8 +649,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             // progress, with marker indices well before/after each threshold.
             val changes = listOf(
                 Triple("early", early, 1L),
-                Triple("middle", middle, blockCount * 15L),
-                Triple("late", late, blockCount * 23L)
+                Triple("middle", middle, blockCount * 8L),
+                Triple("late", late, blockCount * 16L)
             )
             changes.forEach { (name, marker, threshold) ->
                 if (name !in externallyChanged && stagedBytes >= threshold) {
@@ -666,11 +695,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                 testBackupService.applyBackupToTarget(
                     validated.id, region, target, testWorld, homeWorld.id, CorrelationId.newId()
                 ).whenComplete { applied, applyFailure ->
-                    server.scheduler.runTask(this, Runnable {
+                    server.scheduler.runTask(this, checkedRunnable {
                         monitor.cancel()
                         if (applyFailure != null) {
                             fail(applyFailure)
-                            return@Runnable
+                            return@checkedRunnable
                         }
                         val dx = target.bounds.minX - region.bounds.minX
                         val dz = target.bounds.minZ - region.bounds.minZ
@@ -704,6 +733,155 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             monitor.cancel()
             fail(IllegalStateException("Could not start the snapshot concurrency capture"))
         }
+    }
+
+    private fun runPerformanceMatrix(testWorld: World, priorReport: String) {
+        val perfWorldName = "hc_snapshot_perf"
+        val perfConfig = PlotWorldConfig(
+            worldName = perfWorldName,
+            plotSize = 64,
+            roadWidth = 0,
+            plotHeight = testWorld.maxHeight,
+            plotBlock = Material.STONE,
+            roadBlock = Material.AIR,
+            wallBlock = Material.AIR,
+            accentBlock = null,
+            minGenHeight = testWorld.minHeight
+        )
+        val perfWorld = Bukkit.createWorld(
+            WorldCreator(perfWorldName).generator(PlotWorldChunkGenerator(perfConfig))
+        ) ?: error("Could not create the isolated performance world")
+        val perfHomeWorld = services.worldAreaService?.getWorldByPlatformId(perfWorld.uid)
+            ?: services.worldAreaService?.createWorld(perfWorld.name, perfWorld.uid)
+            ?: error("Could not bind the isolated performance world to HomeClaim")
+        val perfAreaBounds = Bounds(-512, 512, perfWorld.minHeight, perfWorld.maxHeight - 1, -256, 256)
+        val perfArea = services.worldAreaService?.createArea(Area(
+            systems.diath.homeclaim.core.model.AreaId.newId(), perfHomeWorld.id,
+            "paper-snapshot-performance", AreaScope.Finite(perfAreaBounds), priority = 100_001
+        )) ?: error("Could not create the performance Area")
+        performanceArea = perfArea
+        data class SizeCase(val label: String, val width: Int, val height: Int, val depth: Int)
+        val cases = listOf(
+            SizeCase("SMALL", 4, 384, 4),
+            SizeCase("MEDIUM", 12, 384, 12),
+            SizeCase("LARGE", 24, 384, 24)
+        )
+        val summaries = mutableListOf<String>()
+        fun next(index: Int) {
+            if (index == cases.size) {
+                finish("$priorReport; performanceMatrix=${summaries.joinToString(";")}")
+                return
+            }
+            val size = cases[index]
+            val count = size.width.toLong() * size.height * size.depth
+            val minX = 80 + index * 120
+            val minZ = 80
+            val bounds = Bounds(minX, minX + size.width - 1, perfWorld.minHeight,
+                perfWorld.minHeight + size.height - 1, minZ, minZ + size.depth - 1)
+            val offset = size.width + 8
+            val targetBounds = Bounds(bounds.minX + offset, bounds.maxX + offset, bounds.minY, bounds.maxY,
+                bounds.minZ, bounds.maxZ)
+            val source = createRegion(bounds, perfArea.id, perfWorld.name)
+            val target = createRegion(targetBounds, perfArea.id, perfWorld.name)
+            performanceRegions += source
+            performanceRegions += target
+            val workload = when (size.label) {
+                "SMALL" -> "uniform-stone"
+                "MEDIUM" -> "mixed-oak-stairs"
+                else -> "container-rich-barrels"
+            }
+            when (size.label) {
+                "SMALL" -> Unit
+                "MEDIUM" -> {
+                    val stairData = Bukkit.createBlockData("minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]")
+                    for (blockIndex in 64 until count step 128) {
+                        val x = bounds.minX + (blockIndex % size.width).toInt()
+                        val y = bounds.minY + ((blockIndex / size.width) % size.height).toInt()
+                        val z = bounds.minZ + (blockIndex / (size.width.toLong() * size.height)).toInt()
+                        perfWorld.getBlockAt(x, y, z).setBlockData(stairData, false)
+                    }
+                }
+                else -> {
+                    for (blockIndex in 64 until count step 1024) {
+                        val x = bounds.minX + (blockIndex % size.width).toInt()
+                        val y = bounds.minY + ((blockIndex / size.width) % size.height).toInt()
+                        val z = bounds.minZ + (blockIndex / (size.width.toLong() * size.height)).toInt()
+                        val barrelBlock = perfWorld.getBlockAt(x, y, z)
+                        barrelBlock.setType(Material.BARREL, false)
+                        val barrel = barrelBlock.state as? Container ?: error("Performance fixture barrel did not produce a Container")
+                        barrel.inventory.setItem(0, ItemStack(Material.DIAMOND, 1 + ((blockIndex / 1024) % 64).toInt()))
+                        check(barrel.update(true, false))
+                    }
+                }
+            }
+
+            var heartbeatCount = 0
+            var maxHeartbeatNanos = 0L
+            val heartbeatGapsNanos = mutableListOf<Long>()
+            var lastHeartbeat = System.nanoTime()
+            val heartbeat = server.scheduler.runTaskTimer(this, Runnable {
+                val now = System.nanoTime()
+                val gap = now - lastHeartbeat
+                heartbeatGapsNanos += gap
+                maxHeartbeatNanos = maxOf(maxHeartbeatNanos, gap)
+                lastHeartbeat = now
+                heartbeatCount++
+            }, 1L, 1L)
+
+            val captureWallStart = System.nanoTime()
+            val backup = testBackupService.createSnapshot(source, perfWorld, ActionActor.System("paper-snapshot-matrix"),
+                CorrelationId.newId(), "e2e:performance-${size.label.lowercase()}")
+            await(backup, timeoutTicks = 20 * 360) { record ->
+                val captureMetadata = requireNotNull(record.captureMetadata) { "HCBK v3 capture metadata missing" }
+                check(captureMetadata.mode == systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCaptureMode.TICKWISE)
+                check(captureMetadata.capturedBlockCount == count)
+                val captureMillis = java.time.Duration.between(captureMetadata.startedAt, captureMetadata.completedAt).toMillis()
+                val encodeWriteMillis = java.time.Duration.between(captureMetadata.completedAt, requireNotNull(record.readyAt)).toMillis()
+                val captureWallMillis = (System.nanoTime() - captureWallStart) / 1_000_000
+                val decodeStart = System.nanoTime()
+                await(testBackupService.validateReadyBackup(record.id), timeoutTicks = 20 * 360) { validated ->
+                    val decodeMillis = (System.nanoTime() - decodeStart) / 1_000_000
+                    val applyRequestStartedAt = System.nanoTime()
+                    var applyStartedAt = 0L
+                    var applyFinishedAt = 0L
+                    var verifyFinishedAt = 0L
+                    testBackupService.applyBackupToTargetWithPhases(
+                        record.id, source, target, perfWorld, perfHomeWorld.id, CorrelationId.newId(),
+                        onProgress = null,
+                        onPhase = { phase ->
+                            when (phase) {
+                                PlotBackupApplyPhase.APPLY_STARTED -> applyStartedAt = System.nanoTime()
+                                PlotBackupApplyPhase.APPLY_COMPLETED -> applyFinishedAt = System.nanoTime()
+                                PlotBackupApplyPhase.VERIFY_COMPLETED -> verifyFinishedAt = System.nanoTime()
+                            }
+                        }
+                    ).whenComplete { applied, applyFailure -> server.scheduler.runTask(this, checkedRunnable {
+                        if (applyFailure != null) {
+                            heartbeat.cancel()
+                            fail(applyFailure)
+                            return@checkedRunnable
+                        }
+                        check(applied == count.toInt()) { "${size.label} apply count differed: $applied / $count" }
+                        check(applyStartedAt > 0 && applyFinishedAt >= applyStartedAt && verifyFinishedAt >= applyFinishedAt) {
+                            "${size.label} apply/verify phase timestamps are incomplete"
+                        }
+                        val applyReadValidateMillis = (applyStartedAt - applyRequestStartedAt) / 1_000_000
+                        val applyMillis = (applyFinishedAt - applyStartedAt) / 1_000_000
+                        val verifyMillis = (verifyFinishedAt - applyFinishedAt) / 1_000_000
+                        heartbeat.cancel()
+                        check(heartbeatCount > 0) { "${size.label} heartbeat instrumentation did not advance" }
+                        val raw = requireNotNull(record.uncompressedPayloadBytes)
+                        val ratio = record.payloadBytes.toDouble() / raw
+                        val sortedGaps = heartbeatGapsNanos.sorted()
+                        fun percentile(fraction: Double): Double =
+                            sortedGaps[((sortedGaps.size - 1) * fraction).toInt()].toDouble() / 1_000_000.0
+                        summaries += "${size.label}{blocks=$count,captureMs=$captureMillis,captureWallMs=$captureWallMillis,encodeWriteMs=$encodeWriteMillis,decodeValidateMs=$decodeMillis,applyReadValidateMs=$applyReadValidateMillis,applyMs=$applyMillis,verifyMs=$verifyMillis,rawBytes=$raw,zstdBytes=${record.payloadBytes},ratio=${"%.4f".format(java.util.Locale.ROOT, ratio)},batches=${(count + 191) / 192},heartbeatSamples=$heartbeatCount,medianHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.50))},p95HeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.95))},maxHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, maxHeartbeatNanos / 1_000_000.0)},workload=$workload}"
+                        next(index + 1)
+                    }) }
+                }
+            }
+        }
+        next(0)
     }
 
     private fun captureCoordinate(bounds: Bounds, index: Long): Triple<Int, Int, Int> {
@@ -951,7 +1129,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
                         val report = "$previousReport; merge=PASS; unlink=PASS; mergePartialFailureRecovery=PASS; safetyIntegrity=corrupt-payload-rejected; operationSafety=zstd-world+domain-v1; $safetyStats"
                         runDomainFailureRecovery(testWorld, MutationSafetyOperation.MERGE, report) { afterMergeDomain ->
                             runDomainFailureRecovery(testWorld, MutationSafetyOperation.UNLINK, afterMergeDomain) { afterUnlinkDomain ->
-                                finish(afterUnlinkDomain)
+                                runPerformanceMatrix(testWorld, afterUnlinkDomain)
                             }
                         }
                     }) }
@@ -1209,9 +1387,13 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         }
     }
 
-    private fun createRegion(bounds: Bounds): Region {
-        val region = Region(RegionId(UUID.randomUUID()), requireNotNull(world).name, RegionShape.CUBOID,
-            bounds, UUID.randomUUID(), areaId = area.id)
+    private fun createRegion(
+        bounds: Bounds,
+        areaId: systems.diath.homeclaim.core.model.AreaId = area.id,
+        worldName: String = requireNotNull(world).name
+    ): Region {
+        val region = Region(RegionId(UUID.randomUUID()), worldName, RegionShape.CUBOID,
+            bounds, UUID.randomUUID(), areaId = areaId)
         services.regionService.createRegion(region, bounds)
         return requireNotNull(services.regionService.getRegionById(region.id))
     }
@@ -1228,6 +1410,13 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         putContainer(x, base + 4, Material.BARREL, label, Material.GOLD_INGOT)
         putContainer(x, base + 6, Material.FURNACE, label, Material.IRON_INGOT)
         putContainer(x, base + 8, Material.PURPLE_SHULKER_BOX, label, Material.DIAMOND)
+        putContainer(x, base + 10, Material.BLAST_FURNACE, label, Material.COAL)
+        putContainer(x, base + 12, Material.SMOKER, label, Material.COOKED_BEEF)
+        putContainer(x, base + 14, Material.HOPPER, label, Material.REDSTONE)
+        putContainer(x, base + 16, Material.DROPPER, label, Material.ARROW)
+        putContainer(x, base + 18, Material.DISPENSER, label, Material.SNOWBALL)
+        putContainer(x, base + 20, Material.BREWING_STAND, label, Material.BLAZE_POWDER)
+        putContainer(x, base + 22, Material.CRAFTER, label, Material.COPPER_INGOT)
     }
 
     private fun putContainer(x: Int, y: Int, type: Material, label: String, item: Material) {
@@ -1255,7 +1444,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             BlockImage(block.blockData.asString, items)
         }
 
-    private fun <T> await(future: CompletableFuture<T>, done: (T) -> Unit) {
+    private fun <T> await(future: CompletableFuture<T>, done: (T) -> Unit) = await(future, 20 * 60, done)
+
+    private fun <T> await(future: CompletableFuture<T>, timeoutTicks: Int, done: (T) -> Unit) {
         var ticks = 0
         lateinit var task: BukkitTask
         task = server.scheduler.runTaskTimer(this, Runnable {
@@ -1263,9 +1454,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             if (future.isDone) {
                 task.cancel()
                 runCatching { done(future.get()) }.onFailure(::fail)
-            } else if (ticks > 20 * 60) {
+            } else if (ticks > timeoutTicks) {
                 task.cancel()
-                fail(IllegalStateException("E2E operation timed out after 60 seconds"))
+                fail(IllegalStateException("E2E operation timed out after ${timeoutTicks / 20} seconds"))
             }
         }, 1L, 1L)
     }
@@ -1283,11 +1474,13 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         services.regionService.deleteRegion(second.id)
         if (::third.isInitialized) services.regionService.deleteRegion(third.id)
         operationSafetyRegions.distinctBy { it.id }.forEach { services.regionService.deleteRegion(it.id) }
+        performanceRegions.distinctBy { it.id }.forEach { services.regionService.deleteRegion(it.id) }
         concurrencyRegion?.let { services.regionService.deleteRegion(it.id) }
         concurrencyTarget?.let { services.regionService.deleteRegion(it.id) }
         concurrencyLease?.close()
         concurrencyLease = null
         services.worldAreaService?.deleteArea(area.id)
+        performanceArea?.let { services.worldAreaService?.deleteArea(it.id) }
         runCatching { testBackupService.shutdown() }
         runCatching { safetyBundleStore.shutdown() }
         runCatching { testWorld.save() }
