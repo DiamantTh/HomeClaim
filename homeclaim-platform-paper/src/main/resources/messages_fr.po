@@ -88,3 +88,14 @@ msgstr "Arrêt du serveur - FAWE est requis !"
 msgid "fawe.detected"
 msgstr "FAWE détecté : {0}"
 
+msgid "plot.info_area"
+msgstr "§7Zone: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Statut: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Réclamé"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Non réclamé"

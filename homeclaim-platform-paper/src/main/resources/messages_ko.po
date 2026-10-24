@@ -88,3 +88,14 @@ msgstr "서버 종료 중 - FAWE가 필요합니다!"
 msgid "fawe.detected"
 msgstr "FAWE 감지됨: {0}"
 
+msgid "plot.info_area"
+msgstr "§7영역: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7상태: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "소유됨"
+
+msgid "plot.info_status_unclaimed"
+msgstr "미소유"

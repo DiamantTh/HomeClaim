@@ -409,6 +409,50 @@ tasks.register<Exec>("purpurWorldE2E") {
     }
 }
 
+tasks.register<Exec>("networkedPlayerE2E") {
+    group = "verification"
+    description = "Run two real offline-mode network players through HomeClaim commands and WebUX pairing on isolated Paper 26.3"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3",
+        rootProject.file("scripts/networked-player-e2e.py").absolutePath,
+        paperJar.absolutePath,
+        tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath
+    )
+    doFirst {
+        val java25 = javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        }.get().executablePath.asFile.absolutePath
+        environment("HOMECLAIM_E2E_JAVA", java25)
+    }
+    isIgnoreExitValue = false
+}
+
+tasks.register<Exec>("purpurNetworkedPlayerE2E") {
+    group = "verification"
+    description = "Run a real offline-mode Player login, plot-info and reset-confirmation smoke on isolated Purpur 26.3"
+    dependsOn(downloadPurpur, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3",
+        rootProject.file("scripts/networked-player-e2e.py").absolutePath,
+        purpurJar.get().asFile.absolutePath,
+        tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath
+    )
+    doFirst {
+        val java25 = javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        }.get().executablePath.asFile.absolutePath
+        environment("HOMECLAIM_E2E_JAVA", java25)
+        environment("HOMECLAIM_E2E_SERVER_KIND", "purpur")
+        environment("HOMECLAIM_E2E_MODE", "smoke")
+    }
+    isIgnoreExitValue = false
+}
+
 tasks.register<Exec>("paperDatabaseInterruptionE2E") {
     group = "verification"
     description = "Stop PostgreSQL and MariaDB while the real HomeClaim Paper plugin is running, then verify fail-closed and same-process recovery"

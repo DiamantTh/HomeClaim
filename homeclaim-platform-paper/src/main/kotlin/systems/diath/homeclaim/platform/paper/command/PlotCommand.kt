@@ -933,6 +933,10 @@ class PlotCommand(
         
         player.sendMessage(i18n.msg("plot.info_header"))
         player.sendMessage(i18n.msg("plot.info_id", regionId.value.toString()))
+        player.sendMessage(i18n.msg("plot.info_area", region.areaId.value.toString()))
+        val claimStatus = if (RegionOwnership.isUnclaimed(region.owner))
+            i18n.msg("plot.info_status_unclaimed") else i18n.msg("plot.info_status_claimed")
+        player.sendMessage(i18n.msg("plot.info_status", claimStatus))
         player.sendMessage(i18n.msg("plot.info_world", homeClaimWorldName(region) ?: region.world))
         player.sendMessage(i18n.msg("plot.info_size", width, depth))
         player.sendMessage(i18n.msg("plot.info_biome", biome))

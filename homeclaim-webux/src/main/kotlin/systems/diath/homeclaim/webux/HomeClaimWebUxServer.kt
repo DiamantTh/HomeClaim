@@ -622,7 +622,9 @@ class HomeClaimWebUxServer(
     }
 
     private suspend fun closeUserConnections(userId: String) {
-        userSessions[userId]?.toList()?.forEach { socket ->
+        // WebSocket disconnect can remove sessions concurrently with logout. Copy through the
+        // concurrent collection's array contract instead of size/iterator-based toList().
+        userSessions[userId]?.toTypedArray()?.forEach { socket ->
             runCatching { socket.close(CloseReason(CloseReason.Codes.NORMAL, "Logged out")) }
         }
     }

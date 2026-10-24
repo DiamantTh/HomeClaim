@@ -295,6 +295,18 @@ msgstr "§6§m──────────── §6§lPlot Info §6§m──�
 msgid "plot.info_id"
 msgstr "§7ID: §f{0}"
 
+msgid "plot.info_area"
+msgstr "§7Area: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Status: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Claimed"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Unclaimed"
+
 msgid "plot.info_world"
 msgstr "§7World: §f{0}"
 

@@ -88,3 +88,14 @@ msgstr "Сервер выключается - FAWE обязателен!"
 msgid "fawe.detected"
 msgstr "FAWE обнаружен: {0}"
 
+msgid "plot.info_area"
+msgstr "§7Область: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Статус: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Занят"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Свободен"

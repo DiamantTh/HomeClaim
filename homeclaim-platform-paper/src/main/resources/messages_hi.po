@@ -88,3 +88,14 @@ msgstr "सर्वर बंद हो रहा है - FAWE आवश्य
 msgid "fawe.detected"
 msgstr "FAWE पाया गया: {0}"
 
+msgid "plot.info_area"
+msgstr "§7क्षेत्र: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7स्थिति: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "दावा किया गया"
+
+msgid "plot.info_status_unclaimed"
+msgstr "दावा नहीं किया गया"

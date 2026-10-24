@@ -88,3 +88,14 @@ msgstr "Servidor desligando - FAWE é obrigatório!"
 msgid "fawe.detected"
 msgstr "FAWE detectado: {0}"
 
+msgid "plot.info_area"
+msgstr "§7Área: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Status: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Reivindicado"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Não reivindicado"

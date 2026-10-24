@@ -214,6 +214,18 @@ msgstr "§6=== Plot Info ==="
 msgid "plot.info_id"
 msgstr "§7ID: §f{0}..."
 
+msgid "plot.info_area"
+msgstr "§7エリア: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7状態: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "取得済み"
+
+msgid "plot.info_status_unclaimed"
+msgstr "未取得"
+
 msgid "plot.info_owner"
 msgstr "§7Owner: §f{0}"
 

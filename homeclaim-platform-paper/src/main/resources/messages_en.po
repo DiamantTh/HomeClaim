@@ -948,6 +948,18 @@ msgstr "§6=== Plot Info ==="
 msgid "plot.info_id"
 msgstr "§7ID: §f{0}..."
 
+msgid "plot.info_area"
+msgstr "§7Area: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Status: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Claimed"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Unclaimed"
+
 msgid "plot.info_not_for_sale"
 msgstr "Not to verkaufen"
 

@@ -5,7 +5,11 @@ import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.WorldCreator
+import org.bukkit.Location
 import org.bukkit.block.Container
+import org.bukkit.event.EventHandler
+import org.bukkit.event.Listener
+import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitTask
@@ -67,7 +71,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicReference
 
 /** Separate test artifact. It is not part of HomeClaim.jar and exposes no production command. */
-class PaperWorldE2EHarnessPlugin : JavaPlugin() {
+class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private val reportFile by lazy { dataFolder.toPath().resolve("result.txt") }
     private var world: World? = null
     private lateinit var homeClaimPlugin: HomeClaimPaperPlugin
@@ -92,9 +96,21 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
     private val operationSafetyRegions = mutableListOf<Region>()
     private val performanceRegions = mutableListOf<Region>()
     private var performanceArea: Area? = null
+    private var networkPlayerMode = false
+    private var networkPlayerReady = false
+    private val networkPlayerA = "HomeClaimTestA"
+    private val networkPlayerB = "HomeClaimTestB"
+    private val networkPlayerAId = UUID.nameUUIDFromBytes("OfflinePlayer:$networkPlayerA".toByteArray())
+    private val networkPlayerBId = UUID.nameUUIDFromBytes("OfflinePlayer:$networkPlayerB".toByteArray())
+    private val networkSnapshots = mutableMapOf<String, List<BlockImage>>()
+    private var networkForeign: Region? = null
+    private var networkRecoveryJobId: UUID? = null
+    private var networkRecoveryTarget: List<BlockImage>? = null
+    private var networkControlSequence = -1L
 
     override fun onEnable() {
         dataFolder.mkdirs()
+        server.pluginManager.registerEvents(this, this)
         server.scheduler.runTask(this, Runnable {
             runCatching { begin() }.onFailure(::fail)
         })
@@ -173,6 +189,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
 
         createFixtures(homeClaim, areas, testWorld)
 
+        if (System.getProperty("homeclaim.worlde2e.phase") == "network-player") {
+            beginNetworkPlayerE2E(testWorld)
+            return
+        }
+
         if (System.getProperty("homeclaim.worlde2e.phase") == "db-interruption") {
             runDatabaseInterruption(testWorld)
             return
@@ -208,15 +229,231 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
         second = createRegion(bounds(2))
         third = createRegion(bounds(4))
 
-        PlotWorldConfigStore(homeClaim).persistConfig(
+        val plotConfig = if (System.getProperty("homeclaim.worlde2e.phase") == "network-player") {
+            PlotWorldConfig(
+                worldName = testWorld.name,
+                plotSize = 64,
+                roadWidth = 0,
+                plotHeight = testWorld.maxHeight,
+                plotBlock = Material.AIR,
+                roadBlock = Material.AIR,
+                wallBlock = Material.AIR,
+                accentBlock = null,
+                minGenHeight = testWorld.minHeight,
+                resetBatchColumnsPerTick = 8
+            )
+        } else {
             PlotWorldConfig(
                 worldName = testWorld.name,
                 plotHeight = testWorld.maxHeight,
                 minGenHeight = testWorld.minHeight,
                 resetBatchColumnsPerTick = 8
             )
-        )
+        }
+        PlotWorldConfigStore(homeClaim).persistConfig(plotConfig)
     }
+
+    private fun beginNetworkPlayerE2E(testWorld: World) {
+        networkPlayerMode = true
+        services.regionService.updateRegion(first.copy(owner = networkPlayerAId))
+        services.regionService.updateRegion(second.copy(owner = networkPlayerAId))
+        services.regionService.updateRegion(third.copy(owner = networkPlayerAId))
+        networkForeign = createRegion(Bounds(20, 20, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
+            .also { services.regionService.updateRegion(it.copy(owner = networkPlayerBId)) }
+        testWorld.getChunkAt(networkForeign!!.bounds.minX shr 4, networkForeign!!.bounds.minZ shr 4)
+        operationSafetyRegions += requireNotNull(networkForeign)
+        logger.info("Network player fixture bounds: first=${first.bounds} second=${second.bounds} foreign=${requireNotNull(networkForeign).bounds}")
+        // Let RegionService's normal world initialization tasks finish before placing deterministic fixtures.
+        server.scheduler.runTaskLater(this, Runnable {
+            seed(first, "network-initial-source")
+            seed(second, "network-initial-target")
+            seed(third, "network-initial-third")
+            seed(requireNotNull(networkForeign), "network-initial-foreign")
+            networkSnapshots["initial-first"] = capture(testWorld, first.bounds.minX)
+            networkSnapshots["initial-foreign"] = capture(testWorld, requireNotNull(networkForeign).bounds.minX)
+            networkRecoveryTarget = capture(testWorld, second.bounds.minX)
+
+            val backup = backupService.createSnapshot(first, testWorld, ActionActor.System("network-player-e2e"),
+                CorrelationId.newId(), "network-player-e2e:restore-source")
+            await(backup) { readyBackup ->
+                check(readyBackup.status == PlotBackupStatus.READY && readyBackup.compression == PlotBackupCompression.ZSTD)
+                assertNetworkSnapshotUnchanged("Unrelated foreign fixture changed during source backup capture",
+                    testWorld, requireNotNull(networkForeign), networkSnapshots["initial-foreign"])
+                backupFailure.set(PlotBackupApplyKind.TRANSFER to 24)
+                val service = transferWithPhaseFault(null)
+                val plan = readyPlan(PlotTransferOperation.COPY, first, second)
+                await(service.execute(plan, testWorld, ActionActor.System("network-player-e2e-recovery-fixture"), CorrelationId.newId())) { result ->
+                    check(result is PlotTransferResult.Failed && result.recoveryRequired) {
+                        "Network E2E recovery fixture did not reach RECOVERY_REQUIRED: $result"
+                    }
+                    networkRecoveryJobId = result.jobId
+                    check(jobStore.findById(result.jobId)?.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                    assertNetworkSnapshotUnchanged("Network recovery fixture altered unrelated foreign plot",
+                        testWorld, requireNotNull(networkForeign), networkSnapshots["initial-foreign"])
+                    val networkData = dataFolder.toPath().resolve("network-player-state.txt")
+                    Files.writeString(networkData, listOf(
+                        "playerA=$networkPlayerA",
+                        "playerAId=$networkPlayerAId",
+                        "playerB=$networkPlayerB",
+                        "playerBId=$networkPlayerBId",
+                        "world=${testWorld.name}",
+                        "area=${area.id.value}",
+                        "first=${first.id.value}",
+                        "second=${second.id.value}",
+                        "third=${third.id.value}",
+                        "foreign=${requireNotNull(networkForeign).id.value}",
+                        "initialBackup=${readyBackup.id}",
+                        "recoveryJob=${result.jobId}"
+                    ).joinToString("\n") + "\n")
+                    networkPlayerReady = true
+                    writeResult("READY network-player-e2e protocol=777")
+                    startNetworkControlWatcher(testWorld)
+                }
+            }
+        }, 5L)
+    }
+
+    @EventHandler
+    fun onNetworkPlayerJoin(event: PlayerJoinEvent) {
+        if (!networkPlayerMode || !networkPlayerReady) return
+        val player = event.player
+        val targetRegion = when (player.name) {
+            networkPlayerA -> first
+            networkPlayerB -> second
+            else -> return
+        }
+        if (player.name == networkPlayerA) {
+            player.addAttachment(this, "homeclaim.plot.info", true)
+        }
+        if (player.name == networkPlayerB) {
+            listOf(
+                "homeclaim.admin.jobs.inspect",
+                "homeclaim.admin.jobs.recover",
+                "homeclaim.admin.jobs.resolve"
+            ).forEach { node -> player.addAttachment(this, node, true) }
+            logger.info("Network admin test permissions: inspect=${player.hasPermission("homeclaim.admin.jobs.inspect")} recover=${player.hasPermission("homeclaim.admin.jobs.recover")} resolve=${player.hasPermission("homeclaim.admin.jobs.resolve")}")
+        }
+        server.scheduler.runTask(this, Runnable {
+            player.allowFlight = true
+            player.isFlying = true
+            val at = Location(requireNotNull(world), targetRegion.bounds.minX + 0.5,
+                requireNotNull(world).minHeight + 32.0, targetRegion.bounds.minZ + 0.5)
+            check(player.teleport(at)) { "Could not place network test player ${player.name} in its plot" }
+            check(player.location.world?.uid == requireNotNull(world).uid)
+            check(player.location.blockX in targetRegion.bounds.minX..targetRegion.bounds.maxX)
+        })
+    }
+
+    private fun startNetworkControlWatcher(testWorld: World) {
+        val controlDir = dataFolder.toPath().resolve("network-control")
+        Files.createDirectories(controlDir)
+        val request = controlDir.resolve("request.txt")
+        val response = controlDir.resolve("response.txt")
+        var waiting = false
+        server.scheduler.runTaskTimer(this, Runnable {
+            if (!Files.exists(request)) return@Runnable
+            val line = runCatching { Files.readString(request).trim() }.getOrNull().orEmpty()
+            val split = line.split('|', limit = 2)
+            if (split.size != 2) return@Runnable
+            val sequence = split[0].toLongOrNull() ?: return@Runnable
+            if (sequence <= networkControlSequence || waiting) return@Runnable
+            networkControlSequence = sequence
+            waiting = true
+            val operation = split[1]
+            runCatching {
+                val message = when (operation) {
+                    "seed-copy" -> seedForNetwork("copy", "network-copy-source", "network-copy-target", testWorld)
+                    "seed-move" -> seedForNetwork("move", "network-move-source", "network-move-target", testWorld)
+                    "seed-swap" -> seedForNetwork("swap", "network-swap-source", "network-swap-target", testWorld)
+                    "mutate-target-state" -> {
+                        val region = requireNotNull(services.regionService.getRegionById(second.id))
+                        services.regionService.updateRegion(region.copy(metadata = region.metadata + ("networkTest" to "state-changed")))
+                        "target-signature-mutated"
+                    }
+                    "assert-unchanged" -> {
+                        check(capture(testWorld, second.bounds.minX) == networkSnapshots["copy-target"]) {
+                            "A rejected confirmation changed the target world"
+                        }
+                        "rejected-operation-left-target-unchanged"
+                    }
+                    "assert-foreign-denied" -> {
+                        val before = requireNotNull(networkSnapshots["initial-foreign"])
+                        val after = capture(testWorld, requireNotNull(networkForeign).bounds.minX)
+                        val changed = before.indices.filter { before[it] != after[it] }.take(5)
+                        check(changed.isEmpty()) {
+                            "A denied foreign-plot transfer changed the foreign plot at y=${changed.map { testWorld.minHeight + it }}; " +
+                                changed.joinToString { "${testWorld.minHeight + it}:${before[it]} -> ${after[it]}" }
+                        }
+                        "denied-foreign-plot-left-world-unchanged"
+                    }
+                    "assert-reset" -> {
+                        val resetImage = capture(testWorld, first.bounds.minX)
+                        val unexpected = resetImage.indexOfFirst { it.blockData != "minecraft:air" || it.items != null }
+                        check(unexpected < 0) {
+                            "Network /plot reset did not clear the plot at x=${first.bounds.minX},y=${testWorld.minHeight + unexpected},z=${first.bounds.minZ}: ${resetImage[unexpected]}"
+                        }
+                        "reset-world-empty"
+                    }
+                    "assert-reset-pending" -> {
+                        assertNetworkSnapshotUnchanged("Pending network reset mutated the plot before confirmation",
+                            testWorld, first, networkSnapshots["initial-first"])
+                        "pending-reset-left-world-unchanged"
+                    }
+                    "assert-copy" -> {
+                        assertNetworkSnapshotUnchanged("Network COPY source changed", testWorld, first, networkSnapshots["copy-source"])
+                        assertNetworkSnapshotUnchanged("Network COPY target differs from source", testWorld, second, networkSnapshots["copy-source"])
+                        "copy-world-matches-source"
+                    }
+                    "assert-move" -> {
+                        check(capture(testWorld, second.bounds.minX) == networkSnapshots["move-source"])
+                        check(capture(testWorld, first.bounds.minX).all { it.blockData == "minecraft:air" && it.items == null })
+                        "move-target-matches-source-source-cleared"
+                    }
+                    "assert-swap" -> {
+                        check(capture(testWorld, first.bounds.minX) == networkSnapshots["swap-target"])
+                        check(capture(testWorld, second.bounds.minX) == networkSnapshots["swap-source"])
+                        "swap-worlds-exchanged"
+                    }
+                    "assert-restore" -> {
+                        check(capture(testWorld, first.bounds.minX) == networkSnapshots["initial-first"])
+                        "restore-world-matches-original-snapshot"
+                    }
+                    "assert-recovery" -> {
+                        check(capture(testWorld, second.bounds.minX) == networkRecoveryTarget)
+                        check(jobStore.findById(requireNotNull(networkRecoveryJobId))?.status == PlotMutationJobStatus.RECOVERED)
+                        "admin-recovery-restored-target-and-released-job"
+                    }
+                    "assert-recovery-pending" -> {
+                        check(jobStore.findById(requireNotNull(networkRecoveryJobId))?.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                        check(capture(testWorld, second.bounds.minX) != networkRecoveryTarget) {
+                            "Recovery command mutated the world before confirmation"
+                        }
+                        "recovery-remains-pending-before-confirmation"
+                    }
+                    "finish" -> {
+                        "networked-command-confirmation-permission-pairing-pass"
+                    }
+                    "finish-smoke" -> "purpur-network-player-smoke-pass"
+                    else -> error("Unknown network E2E control operation: $operation")
+                }
+                if (operation == "finish") finish("PASS network-player protocol 777; plot info/reset/copy/move/swap/restore/recovery commands; actor binding; permissions; web pairing/websocket; disconnect")
+                else if (operation == "finish-smoke") finish("PASS purpur-network-player-smoke protocol 777; plot info/recovery/reset confirmation")
+                else {
+                    Files.writeString(response, "$sequence|PASS|$message\n")
+                    waiting = false
+                }
+            }.onFailure { failure -> fail(failure) }
+        }, 1L, 1L)
+    }
+
+    private fun seedForNetwork(key: String, sourceLabel: String, targetLabel: String, testWorld: World): String {
+        seed(first, sourceLabel)
+        seed(second, targetLabel)
+        networkSnapshots["$key-source"] = capture(testWorld, first.bounds.minX)
+        networkSnapshots["$key-target"] = capture(testWorld, second.bounds.minX)
+        return "$key-fixtures-ready"
+    }
+
 
     private fun prepareRestartRecovery(testWorld: World) {
         seed(first, "restart-source")
@@ -1614,6 +1851,16 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin() {
             }
             BlockImage(block.blockData.asString, items)
         }
+
+    private fun assertNetworkSnapshotUnchanged(message: String, testWorld: World, region: Region, expected: List<BlockImage>?) {
+        val actual = capture(testWorld, region.bounds.minX)
+        if (actual == expected) return
+        val index = (expected.orEmpty().indices + actual.indices).firstOrNull { expected?.getOrNull(it) != actual.getOrNull(it) }
+        val y = testWorld.minHeight + (index ?: 0)
+        error("$message region=${region.id} at ${region.bounds.minX},$y,${region.bounds.minZ}: " +
+            "before=${expected?.getOrNull(index ?: 0)} after=${actual.getOrNull(index ?: 0)}; " +
+            "source=${first.bounds} target=${second.bounds} foreign=${region.bounds}")
+    }
 
     private fun <T> await(future: CompletableFuture<T>, done: (T) -> Unit) = await(future, 20 * 60, done)
 

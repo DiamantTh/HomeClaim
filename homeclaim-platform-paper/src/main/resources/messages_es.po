@@ -214,6 +214,18 @@ msgstr "§6=== Info de Parcela ==="
 msgid "plot.info_id"
 msgstr "§7ID: §f{0}..."
 
+msgid "plot.info_area"
+msgstr "§7Área: §f{0}"
+
+msgid "plot.info_status"
+msgstr "§7Estado: §f{0}"
+
+msgid "plot.info_status_claimed"
+msgstr "Reclamado"
+
+msgid "plot.info_status_unclaimed"
+msgstr "Sin reclamar"
+
 msgid "plot.info_owner"
 msgstr "§7Dueño: §f{0}"
 
