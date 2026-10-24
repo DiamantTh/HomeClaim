@@ -57,7 +57,8 @@ wait_for_status() {
 
 run_dialect() {
     local dialect="$1" image="$2" db_port_internal="$3" driver="$4" container_suffix
-    local container volume server_dir report_dir password root_password host_port game_port
+    local container volume server_dir report_dir password root_password host_port db_bind_port game_port
+    local -a network_args=()
     container_suffix="$$-${RANDOM}"
     container="homeclaim-paper-db-${dialect,,}-${container_suffix}"
     volume="homeclaim-paper-db-${dialect,,}-data-${container_suffix}"
@@ -69,26 +70,49 @@ run_dialect() {
     rm -rf "$server_dir"
     mkdir -p "$server_dir/plugins" "$server_dir/config"
 
+    if [[ "$ENGINE" == podman ]]; then
+        db_bind_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+        network_args=(--network=host)
+    fi
     "$ENGINE" volume create "$volume" >/dev/null
     if [[ "$dialect" == POSTGRES ]]; then
-        "$ENGINE" run --detach --name "$container" \
-            --volume "$volume:/var/lib/postgresql/data" \
-            --env POSTGRES_DB=homeclaim_test --env POSTGRES_USER=homeclaim_test \
-            --env "POSTGRES_PASSWORD=$password" --publish "127.0.0.1::$db_port_internal" "$image" >/dev/null
+        if [[ "$ENGINE" == podman ]]; then
+            "$ENGINE" run --detach --name "$container" "${network_args[@]}" \
+                --volume "$volume:/var/lib/postgresql/data" \
+                --env POSTGRES_DB=homeclaim_test --env POSTGRES_USER=homeclaim_test \
+                --env "POSTGRES_PASSWORD=$password" "$image" -c listen_addresses=127.0.0.1 -p "$db_bind_port" >/dev/null
+        else
+            "$ENGINE" run --detach --name "$container" \
+                --volume "$volume:/var/lib/postgresql/data" \
+                --env POSTGRES_DB=homeclaim_test --env POSTGRES_USER=homeclaim_test \
+                --env "POSTGRES_PASSWORD=$password" --publish "127.0.0.1::$db_port_internal" "$image" >/dev/null
+        fi
     else
-        "$ENGINE" run --detach --name "$container" \
-            --volume "$volume:/var/lib/mysql" \
-            --env MARIADB_DATABASE=homeclaim_test --env MARIADB_USER=homeclaim_test \
-            --env "MARIADB_PASSWORD=$password" --env "MARIADB_ROOT_PASSWORD=$root_password" \
-            --publish "127.0.0.1::$db_port_internal" "$image" >/dev/null
+        if [[ "$ENGINE" == podman ]]; then
+            "$ENGINE" run --detach --name "$container" "${network_args[@]}" \
+                --volume "$volume:/var/lib/mysql" \
+                --env MARIADB_DATABASE=homeclaim_test --env MARIADB_USER=homeclaim_test \
+                --env "MARIADB_PASSWORD=$password" --env "MARIADB_ROOT_PASSWORD=$root_password" \
+                "$image" "--port=$db_bind_port" --bind-address=127.0.0.1 >/dev/null
+        else
+            "$ENGINE" run --detach --name "$container" \
+                --volume "$volume:/var/lib/mysql" \
+                --env MARIADB_DATABASE=homeclaim_test --env MARIADB_USER=homeclaim_test \
+                --env "MARIADB_PASSWORD=$password" --env "MARIADB_ROOT_PASSWORD=$root_password" \
+                --publish "127.0.0.1::$db_port_internal" "$image" >/dev/null
+        fi
     fi
 
-    host_port="$("$ENGINE" port "$container" "$db_port_internal/tcp")"
-    host_port="${host_port##*:}"
-    if [[ "$dialect" == POSTGRES ]]; then
-        wait_for_container "$container" 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+    if [[ "$ENGINE" == podman ]]; then
+        host_port="$db_bind_port"
     else
-        wait_for_container "$container" 'mariadb-admin ping -h 127.0.0.1 -uroot "-p$MARIADB_ROOT_PASSWORD" --silent'
+        host_port="$("$ENGINE" port "$container" "$db_port_internal/tcp")"
+        host_port="${host_port##*:}"
+    fi
+    if [[ "$dialect" == POSTGRES ]]; then
+        wait_for_container "$container" "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -p $host_port"
+    else
+        wait_for_container "$container" "mariadb-admin ping -h 127.0.0.1 -uroot \"-p\$MARIADB_ROOT_PASSWORD\" -P $host_port --silent"
     fi
 
     cp "$PAPER_JAR" "$server_dir/$(basename "$PAPER_JAR")"
@@ -127,6 +151,7 @@ EOF
         cd "$server_dir"
         HOMECLAIM_TEST_DB_CONTAINER_ENGINE="$ENGINE" HOMECLAIM_TEST_DB_CONTAINER="$container" \
             "$JAVA_BIN" -Dcom.mojang.eula.agree=true -Dhomeclaim.worlde2e.phase=db-interruption \
+            -Dhomeclaim.worlde2e.dbworldwrite.restartPaper="$([[ "$dialect" == POSTGRES ]] && echo true || echo false)" \
             -jar "$(basename "$PAPER_JAR")" nogui
     ) > "$report_dir/server.log" 2>&1 &
     SERVER_PID=$!
@@ -150,20 +175,56 @@ EOF
     wait_for_status "$status" DOWN_CHECKED "$report_dir/server.log"
     "$ENGINE" start "$container" >/dev/null
     if [[ "$dialect" == POSTGRES ]]; then
-        wait_for_container "$container" 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+            wait_for_container "$container" "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -p $host_port"
     else
-        wait_for_container "$container" 'mariadb-admin ping -h 127.0.0.1 -uroot "-p$MARIADB_ROOT_PASSWORD" --silent'
+            wait_for_container "$container" "mariadb-admin ping -h 127.0.0.1 -uroot \"-p\$MARIADB_ROOT_PASSWORD\" -P $host_port --silent"
     fi
     : > "$control/db-return"
-    local exit_code=0
-    wait "$SERVER_PID" || exit_code=$?
-    cp "$server_dir/plugins/HomeClaimWorldE2E/result.txt" "$report_dir/result.txt" 2>/dev/null || true
-    cp -r "$server_dir/logs" "$report_dir/server-logs" 2>/dev/null || true
-    if [[ $exit_code -ne 0 ]] || ! grep -q '^PASS full-Paper DB interruption' "$report_dir/result.txt"; then
-        tail -200 "$report_dir/server.log" >&2 || true
-        cat "$report_dir/result.txt" >&2 2>/dev/null || true
-        return 1
+
+    # The first scenario proves the pre-world-write fail-closed path. Its success callback
+    # proceeds into a controlled partial COPY write, then this controller cuts the same DB.
+    local worldwrite_status="$server_dir/plugins/HomeClaimWorldE2E/db-worldwrite-phase.txt"
+    local worldwrite_control="$server_dir/plugins/HomeClaimWorldE2E/db-worldwrite-control"
+    wait_for_status "$worldwrite_status" WORLD_PARTIAL_WRITE "$report_dir/server.log"
+    "$ENGINE" kill --signal KILL "$container" >/dev/null
+    mkdir -p "$worldwrite_control"
+    : > "$worldwrite_control/db-down-after-world-write"
+    wait_for_status "$worldwrite_status" WORLD_WRITE_FAILED "$report_dir/server.log"
+
+    if [[ "$dialect" == POSTGRES ]]; then
+        local exit_code=0
+        wait "$SERVER_PID" || exit_code=$?
+        [[ $exit_code -eq 0 ]] || { tail -200 "$report_dir/server.log" >&2 || true; return 1; }
+        "$ENGINE" start "$container" >/dev/null
+        wait_for_container "$container" "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -p $host_port"
+        (
+            cd "$server_dir"
+            HOMECLAIM_TEST_DB_CONTAINER_ENGINE="$ENGINE" HOMECLAIM_TEST_DB_CONTAINER="$container" \
+                "$JAVA_BIN" -Dcom.mojang.eula.agree=true -Dhomeclaim.worlde2e.phase=db-worldwrite-restart-verify \
+                -jar "$(basename "$PAPER_JAR")" nogui
+        ) > "$report_dir/restart-server.log" 2>&1 &
+        SERVER_PID=$!
+        local restart_exit=0
+        wait "$SERVER_PID" || restart_exit=$?
+        cp "$server_dir/plugins/HomeClaimWorldE2E/result.txt" "$report_dir/result.txt" 2>/dev/null || true
+        [[ $restart_exit -eq 0 ]] && grep -q '^PASS destructive DB outage partial COPY recovered after Paper process restart' "$report_dir/result.txt" || {
+            tail -200 "$report_dir/restart-server.log" >&2 || true
+            cat "$report_dir/result.txt" >&2 2>/dev/null || true
+            return 1
+        }
+    else
+        "$ENGINE" start "$container" >/dev/null
+        wait_for_container "$container" "mariadb-admin ping -h 127.0.0.1 -uroot \"-p\$MARIADB_ROOT_PASSWORD\" -P $host_port --silent"
+        local exit_code=0
+        wait "$SERVER_PID" || exit_code=$?
+        cp "$server_dir/plugins/HomeClaimWorldE2E/result.txt" "$report_dir/result.txt" 2>/dev/null || true
+        [[ $exit_code -eq 0 ]] && grep -q '^PASS destructive DB outage after partial COPY write' "$report_dir/result.txt" || {
+            tail -200 "$report_dir/server.log" >&2 || true
+            cat "$report_dir/result.txt" >&2 2>/dev/null || true
+            return 1
+        }
     fi
+    cp -r "$server_dir/logs" "$report_dir/server-logs" 2>/dev/null || true
     echo "$dialect $(cat "$report_dir/result.txt" | tr -d '\n')"
     cleanup
     trap - RETURN

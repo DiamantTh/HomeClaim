@@ -68,6 +68,7 @@ import java.nio.file.Files
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /** Separate test artifact. It is not part of HomeClaim.jar and exposes no production command. */
@@ -85,6 +86,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private lateinit var jobStore: PlotMutationJobStore
     private lateinit var conflicts: RegionMutationConflictCoordinator
     private val backupFailure = AtomicReference<Pair<PlotBackupApplyKind, Int>?>(null)
+    private val databaseWorldWriteBarrier = AtomicReference<DatabaseWorldWriteBarrier?>(null)
     private lateinit var homeWorld: HomeClaimWorld
     private lateinit var area: Area
     private lateinit var first: Region
@@ -93,6 +95,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private var concurrencyRegion: Region? = null
     private var concurrencyTarget: Region? = null
     private var concurrencyLease: RegionMutationConflictCoordinator.Lease? = null
+    private var databaseProbeRegion: Region? = null
     private val operationSafetyRegions = mutableListOf<Region>()
     private val performanceRegions = mutableListOf<Region>()
     private var performanceArea: Area? = null
@@ -157,6 +160,21 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             PlotBackupFaultInjector { kind, applied ->
                 val pending = backupFailure.get()
                 if (pending != null && pending.first == kind && applied >= pending.second && backupFailure.compareAndSet(pending, null)) {
+                    databaseWorldWriteBarrier.getAndSet(null)?.let { barrier ->
+                        require(kind == PlotBackupApplyKind.TRANSFER) { "Database world-write barrier only supports transfer apply" }
+                        barrier.onReached?.invoke()
+                        Files.writeString(barrier.statusFile, "${barrier.marker} applied=$applied\n")
+                        if (barrier.releaseFile == null) {
+                            // Crash tests kill this isolated process after the marker. Holding the
+                            // Paper thread prevents failure finalization from replacing the
+                            // durable APPLYING_TARGET write-ahead phase first.
+                            while (true) Thread.sleep(100)
+                        }
+                        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(120)
+                        while (!Files.exists(requireNotNull(barrier.releaseFile)) && System.nanoTime() < deadline) Thread.sleep(25)
+                        check(Files.exists(requireNotNull(barrier.releaseFile))) { "Timed out waiting for the external DB outage controller" }
+                        barrier.heartbeatAtRelease?.set(barrier.heartbeatTicks?.get() ?: 0)
+                    }
                     throw IllegalStateException("test-only injected $kind apply failure after $applied blocks")
                 }
             }
@@ -165,6 +183,12 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             ?: areas.getWorldByName(testWorld.name)?.let { areas.bindPlatformWorld(it.id, testWorld.uid, testWorld.name) }
             ?: areas.createWorld(testWorld.name, testWorld.uid)
         homeWorld = registeredWorld
+
+        if (System.getProperty("homeclaim.worlde2e.phase") == "world-identity-warmup") {
+            writeResult("PASS isolated test world identity initialized")
+            Bukkit.shutdown()
+            return
+        }
 
         when (System.getProperty("homeclaim.worlde2e.phase", "full")) {
             "merge-restart-verify" -> {
@@ -178,6 +202,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             }
             "restart-verify" -> {
                 verifyRestartRecovery(testWorld, areas)
+                return
+            }
+            "db-worldwrite-restart-verify" -> {
+                verifyDatabaseWorldWriteRestart(testWorld, areas)
                 return
             }
             "restart-prepare" -> {
@@ -196,6 +224,17 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
         if (System.getProperty("homeclaim.worlde2e.phase") == "db-interruption") {
             runDatabaseInterruption(testWorld)
+            return
+        }
+
+        if (System.getProperty("homeclaim.worlde2e.phase") == "db-destructive-outage") {
+            runDestructiveDatabaseWorldWrite(testWorld,
+                dataFolder.toPath().resolve("db-worldwrite-phase.txt"), "standalone destructive DB outage")
+            return
+        }
+
+        if (System.getProperty("homeclaim.worlde2e.phase") == "db-worldwrite-crash-prepare") {
+            prepareDatabaseWorldWriteCrash(testWorld)
             return
         }
 
@@ -857,7 +896,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                                     it.compression == PlotBackupCompression.ZSTD && !it.checksumSha256.isNullOrBlank() }) {
                                     "Post-reconnect reset did not retain its READY ZSTD safety backup"
                                 }
-                                finish("PASS full-Paper DB interruption read=rejected reset=failed-before-world-write reconnect=ok resetAfterReturn=completed dbWaitPolls=$elapsedWait")
+                                runDestructiveDatabaseWorldWrite(testWorld, status,
+                                    "prewriteReconnectPolls=$elapsedWait")
                             }
                         }
                     }.onFailure(::fail)
@@ -870,6 +910,232 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 })
             }
         }, 1L, 10L)
+    }
+
+    private fun runDestructiveDatabaseWorldWrite(testWorld: World, initialStatus: java.nio.file.Path, previous: String) {
+        // The pre-write outage scenario intentionally holds a recovery probe on the second
+        // fixture region; use the third, independent region as this partial-write target.
+        databaseProbeRegion = second
+        second = third
+        seed(first, "db-worldwrite-source")
+        seed(second, "db-worldwrite-target")
+        val sourceBefore = capture(testWorld, first.bounds.minX)
+        val targetBefore = capture(testWorld, second.bounds.minX)
+        val controlDir = dataFolder.toPath().resolve("db-worldwrite-control")
+        val statusFile = dataFolder.toPath().resolve("db-worldwrite-phase.txt")
+        val stateFile = dataFolder.toPath().resolve("db-worldwrite-restart-state.txt")
+        Files.createDirectories(controlDir)
+        val heartbeatTicks = AtomicInteger()
+        val heartbeatAtRelease = AtomicInteger(-1)
+        val heartbeat = server.scheduler.runTaskTimer(this, Runnable { heartbeatTicks.incrementAndGet() }, 1L, 1L)
+        databaseWorldWriteBarrier.set(DatabaseWorldWriteBarrier(
+            statusFile = statusFile,
+            releaseFile = controlDir.resolve("db-down-after-world-write"),
+            marker = "WORLD_PARTIAL_WRITE",
+            heartbeatTicks = heartbeatTicks,
+            heartbeatAtRelease = heartbeatAtRelease
+        ))
+        backupFailure.set(PlotBackupApplyKind.TRANSFER to 100)
+        val service = transferWithPhaseFault(null)
+        val plan = readyPlan(PlotTransferOperation.COPY, first, second)
+        await(service.execute(plan, testWorld, ActionActor.System("paper-db-destructive-outage-e2e"), CorrelationId.newId()), 20 * 120) { result ->
+            heartbeat.cancel()
+            service.shutdown()
+            check(result is PlotTransferResult.Failed && result.recoveryRequired) {
+                "Transfer after partial DB-outage world write was not classified recovery-required: $result"
+            }
+            val jobId = (result as PlotTransferResult.Failed).jobId
+            check(capture(testWorld, first.bounds.minX) == sourceBefore) { "Partial outage COPY changed its source" }
+            check(capture(testWorld, second.bounds.minX) != targetBefore) { "Outage fault did not leave a partial target write" }
+            val conflict = conflicts.checkAvailable(listOf(first.id, second.id))
+            check(conflict is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired && conflict.jobId == jobId) {
+                "Local recovery blocker was not retained while the DB was unavailable: $conflict"
+            }
+            val releaseTick = heartbeatAtRelease.get()
+            check(releaseTick >= 0 && heartbeatTicks.get() > 0) {
+                "Paper heartbeat instrumentation did not run around the partial world write"
+            }
+            val heartbeatAfterRelease = heartbeatTicks.get() - releaseTick
+            val stateLines = buildList {
+                add("first=${first.id.value}")
+                add("second=${second.id.value}")
+                add("probeRegion=${requireNotNull(databaseProbeRegion).id.value}")
+                add("job=$jobId")
+                add("prewriteReconnect=$previous")
+                addAll(encodeSnapshot(sourceBefore).map { "source=$it" })
+                addAll(encodeSnapshot(targetBefore).map { "target=$it" })
+            }
+            Files.writeString(stateFile, stateLines.joinToString("\n") + "\n")
+            Files.writeString(statusFile, "WORLD_WRITE_FAILED job=$jobId heartbeatTicks=$heartbeatAfterRelease\n")
+            if (System.getProperty("homeclaim.worlde2e.dbworldwrite.restartPaper") == "true") {
+                writeResult("PREPARED DB_WORLD_WRITE_RECOVERY job=$jobId")
+                Bukkit.shutdown()
+                return@await
+            }
+            awaitDestructiveDatabaseReturn(testWorld, controlDir, statusFile, stateFile, jobId)
+        }
+    }
+
+    private fun prepareDatabaseWorldWriteCrash(testWorld: World) {
+        seed(first, "db-worldwrite-crash-source")
+        seed(second, "db-worldwrite-crash-target")
+        val sourceBefore = capture(testWorld, first.bounds.minX)
+        val targetBefore = capture(testWorld, second.bounds.minX)
+        // Establish the pre-mutation durable world image before the later hard process stop.
+        testWorld.save()
+        val statusFile = dataFolder.toPath().resolve("db-worldwrite-phase.txt")
+        val stateFile = dataFolder.toPath().resolve("db-worldwrite-restart-state.txt")
+        databaseWorldWriteBarrier.set(DatabaseWorldWriteBarrier(
+            statusFile = statusFile,
+            releaseFile = null,
+            marker = "WORLD_PARTIAL_WRITE_CRASH",
+            onReached = {
+                val activeJobId = requireNotNull(services.dataSource).connection.use { connection ->
+                    connection.prepareStatement(
+                        "SELECT id FROM plot_mutation_jobs WHERE operation = ? AND status IN (?, ?) AND region_ids LIKE ? AND region_ids LIKE ? ORDER BY created_at DESC LIMIT 1"
+                    ).use { statement ->
+                        statement.setString(1, PlotTransferOperation.COPY.name)
+                        statement.setString(2, PlotMutationJobStatus.QUEUED.name)
+                        statement.setString(3, PlotMutationJobStatus.RUNNING.name)
+                        statement.setString(4, "%${first.id.value}%")
+                        statement.setString(5, "%${second.id.value}%")
+                        statement.executeQuery().use { result -> check(result.next()); UUID.fromString(result.getString(1)) }
+                    }
+                }
+                Files.writeString(stateFile, "job=$activeJobId\n", java.nio.file.StandardOpenOption.APPEND)
+            }
+        ))
+        backupFailure.set(PlotBackupApplyKind.TRANSFER to 100)
+        val plan = readyPlan(PlotTransferOperation.COPY, first, second)
+        val stateLines = buildList {
+            add("first=${first.id.value}")
+            add("second=${second.id.value}")
+            addAll(encodeSnapshot(sourceBefore).map { "source=$it" })
+            addAll(encodeSnapshot(targetBefore).map { "target=$it" })
+        }
+        Files.writeString(stateFile, stateLines.joinToString("\n") + "\n")
+        transferWithPhaseFault(null).execute(
+            plan, testWorld, ActionActor.System("paper-sqlite-write-crash-e2e"), CorrelationId.newId()
+        )
+    }
+
+    private fun awaitDestructiveDatabaseReturn(
+        testWorld: World,
+        controlDir: java.nio.file.Path,
+        statusFile: java.nio.file.Path,
+        stateFile: java.nio.file.Path,
+        jobId: UUID
+    ) {
+        var attempts = 0
+        var watcher: BukkitTask? = null
+        val accepted = java.util.concurrent.atomic.AtomicBoolean(false)
+        watcher = server.scheduler.runTaskTimerAsynchronously(this, Runnable {
+            attempts++
+            runCatching {
+                requireNotNull(services.dataSource).connection.use { connection ->
+                    connection.createStatement().use { it.executeQuery("SELECT 1").use { result -> check(result.next()) } }
+                }
+            }.onSuccess {
+                if (!accepted.compareAndSet(false, true)) return@onSuccess
+                watcher?.cancel()
+                server.scheduler.runTask(this, Runnable {
+                    runCatching {
+                        val classified = jobStore.markInterruptedAsRecoveryRequired()
+                        check(classified >= 1) { "DB-return phase did not classify the durable interrupted write intent" }
+                        val job = requireNotNull(jobStore.findById(jobId))
+                        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                        check(job.details.orEmpty().contains("phase=APPLYING_TARGET")) {
+                            "The durable transfer write-ahead phase was lost: ${job.details}"
+                        }
+                        check(job.error.orEmpty().contains("restartClassification=world_mutation_phase_uncertain") ||
+                            job.error.orEmpty().contains("test-only injected") ||
+                            job.error.orEmpty().contains("Interrupted during or after a world mutation phase")) {
+                            "The interrupted world mutation was not conservatively classified: ${job.error}"
+                        }
+                        check(conflicts.checkAvailable(job.regionIds) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired)
+                        val state = Files.readAllLines(stateFile)
+                        val sourceBefore = decodeSnapshot(state.filter { it.startsWith("source=") }.map { it.substringAfter('=') })
+                        val targetBefore = decodeSnapshot(state.filter { it.startsWith("target=") }.map { it.substringAfter('=') })
+                        check(capture(testWorld, first.bounds.minX) == sourceBefore)
+                        check(capture(testWorld, second.bounds.minX) != targetBefore)
+                        val recoveryPlan = PlotMutationRecoveryPlanner.plan(job, PlotMutationRecoveryAction.RESTORE_TARGET)
+                            as? PlotMutationRecoveryPlanResult.Ready ?: error("Safety backup mapping unavailable after DB return")
+                        check(recoveryPlan.targets.size == 1 && recoveryPlan.targets.single().regionId == second.id)
+                        val backupsBefore = backupService.validateReadyBackup(recoveryPlan.targets.single().backupId)
+                        await(backupsBefore) { backup ->
+                            check(backup.status == PlotBackupStatus.READY && backup.compression == PlotBackupCompression.ZSTD)
+                            val auditsBefore = completedRestoreAuditCount()
+                            recover(jobId, PlotMutationRecoveryAction.RESTORE_TARGET) {
+                                check(capture(testWorld, first.bounds.minX) == sourceBefore)
+                                check(capture(testWorld, second.bounds.minX) == targetBefore)
+                                check(jobStore.findById(jobId)?.status == PlotMutationJobStatus.RECOVERED)
+                                check(conflicts.checkAvailable(listOf(first.id, second.id)) == null)
+                                check(completedRestoreAuditCount() > auditsBefore) { "Recovery restore audit did not persist after DB return" }
+                                finish("PASS destructive DB outage after partial COPY write; durable APPLYING_TARGET reclassified; same-Paper reconnect and explicit restore-target recovery").also {
+                                    Files.writeString(statusFile, "PASS destructive DB outage same-process-recovery attempts=$attempts\n")
+                                }
+                            }
+                        }
+                    }.onFailure(::fail)
+                })
+            }
+            if (attempts > 240) {
+                watcher?.cancel()
+                server.scheduler.runTask(this, Runnable { fail(IllegalStateException("Pool did not reconnect after destructive world-write outage")) })
+            }
+        }, 1L, 10L)
+    }
+
+    private fun verifyDatabaseWorldWriteRestart(
+        testWorld: World,
+        areas: systems.diath.homeclaim.core.service.WorldAreaService
+    ) {
+        val state = Files.readAllLines(dataFolder.toPath().resolve("db-worldwrite-restart-state.txt"))
+        fun optionalValue(key: String) = state.firstOrNull { it.startsWith("$key=") }?.substringAfter('=')
+        fun value(key: String) = optionalValue(key) ?: error("Missing $key in durable world-write restart fixture")
+        first = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(value("first")))))
+        second = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(value("second")))))
+        databaseProbeRegion = optionalValue("probeRegion")?.let { id ->
+            requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(id))))
+        }
+        area = requireNotNull(areas.getArea(first.areaId))
+        val jobId = UUID.fromString(value("job"))
+        val sourceBefore = decodeSnapshot(state.filter { it.startsWith("source=") }.map { it.substringAfter('=') })
+        val targetBefore = decodeSnapshot(state.filter { it.startsWith("target=") }.map { it.substringAfter('=') })
+        val job = requireNotNull(jobStore.findById(jobId)) { "Interrupted destructive DB job was not loaded after Paper restart" }
+        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED) { "Restart classified partial DB outage as ${job.status}" }
+        check(job.details.orEmpty().contains("phase=APPLYING_TARGET")) { "Restart lost durable transfer write intent: ${job.details}" }
+        check(job.error.orEmpty().contains("restartClassification=world_mutation_phase_uncertain") ||
+            job.error.orEmpty().contains("Interrupted during or after a world mutation phase")) {
+            "Restart did not classify the uncertain write phase conservatively: ${job.error}"
+        }
+        check(conflicts.checkAvailable(job.regionIds) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired)
+        check(capture(testWorld, first.bounds.minX) == sourceBefore) { "Paper restart changed the COPY source" }
+        val afterRestartTarget = capture(testWorld, second.bounds.minX)
+        check(afterRestartTarget.indices.all { afterRestartTarget[it] == targetBefore[it] || afterRestartTarget[it] == sourceBefore[it] }) {
+            "Paper restart target contains data outside the observed pre/post-write snapshots"
+        }
+        val plan = PlotMutationRecoveryPlanner.plan(job, PlotMutationRecoveryAction.RESTORE_TARGET)
+            as? PlotMutationRecoveryPlanResult.Ready ?: error("Restarted DB outage job lost its safety-backup mapping")
+        check(plan.targets.single().regionId == second.id)
+        await(backupService.validateReadyBackup(plan.targets.single().backupId)) { backup ->
+            check(backup.status == PlotBackupStatus.READY && backup.compression == PlotBackupCompression.ZSTD)
+            recover(jobId, PlotMutationRecoveryAction.RESTORE_TARGET) {
+                check(capture(testWorld, first.bounds.minX) == sourceBefore)
+                check(capture(testWorld, second.bounds.minX) == targetBefore)
+                check(jobStore.findById(jobId)?.status == PlotMutationJobStatus.RECOVERED)
+                check(conflicts.checkAvailable(listOf(first.id, second.id)) == null)
+                finish("PASS destructive DB outage partial COPY recovered after Paper process restart with DB returned")
+            }
+        }
+    }
+
+    private fun completedRestoreAuditCount(): Int = requireNotNull(services.dataSource).connection.use { connection ->
+        connection.prepareStatement("SELECT COUNT(*) FROM audit_log WHERE action_key = ? AND status = ?").use { statement ->
+            statement.setString(1, "homeclaim:region_restore")
+            statement.setString(2, "COMPLETED")
+            statement.executeQuery().use { result -> check(result.next()); result.getInt(1) }
+        }
     }
 
     private fun runRestore(testWorld: World) {
@@ -1890,6 +2156,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         val testWorld = requireNotNull(world)
         services.regionService.deleteRegion(first.id)
         services.regionService.deleteRegion(second.id)
+        databaseProbeRegion?.let { services.regionService.deleteRegion(it.id) }
         if (::third.isInitialized) services.regionService.deleteRegion(third.id)
         operationSafetyRegions.distinctBy { it.id }.forEach { services.regionService.deleteRegion(it.id) }
         performanceRegions.distinctBy { it.id }.forEach { services.regionService.deleteRegion(it.id) }
@@ -1931,6 +2198,15 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         @Suppress("UNCHECKED_CAST")
         return field.get(target) as T
     }
+
+    private data class DatabaseWorldWriteBarrier(
+        val statusFile: java.nio.file.Path,
+        val releaseFile: java.nio.file.Path?,
+        val marker: String,
+        val heartbeatTicks: AtomicInteger? = null,
+        val heartbeatAtRelease: AtomicInteger? = null,
+        val onReached: (() -> Unit)? = null
+    )
 
     private data class BlockImage(val blockData: String, val items: List<String?>?)
 }

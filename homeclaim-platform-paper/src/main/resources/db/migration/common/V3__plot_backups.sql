@@ -22,8 +22,8 @@ CREATE TABLE plot_backups (
     payload_bytes BIGINT NOT NULL DEFAULT 0,
     checksum_sha256 VARCHAR(64),
     error TEXT,
-    created_at TIMESTAMP NOT NULL,
-    ready_at TIMESTAMP
+    created_at TIMESTAMP(3) NOT NULL,
+    ready_at TIMESTAMP(3)
 );
 
 CREATE INDEX idx_plot_backups_region_created ON plot_backups(region_id, created_at);

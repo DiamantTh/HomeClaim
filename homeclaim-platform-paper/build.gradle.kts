@@ -4,6 +4,7 @@ import java.net.URI
 import java.net.URL
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.util.concurrent.TimeUnit
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -318,9 +319,9 @@ tasks.register<Exec>("paperWorldE2E") {
     val serverDir = layout.buildDirectory.dir("paper-world-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/paper-world-e2e").get().asFile
     val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
-    val javaExecutable = providers.environmentVariable("JAVA_HOME")
-        .map { "$it/bin/java" }
-        .orElse("java")
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
     doFirst {
         delete(serverDir)
         delete(reportDir)
@@ -347,7 +348,7 @@ tasks.register<Exec>("paperWorldE2E") {
         )
     }
     workingDir(serverDir)
-    commandLine(javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
+    commandLine(javaExecutable, "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
     isIgnoreExitValue = true
     doLast {
         val logsDir = serverDir.resolve("logs")
@@ -370,9 +371,9 @@ tasks.register<Exec>("purpurWorldE2E") {
     val serverDir = layout.buildDirectory.dir("purpur-world-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/purpur-world-e2e").get().asFile
     val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
-    val javaExecutable = providers.environmentVariable("JAVA_HOME")
-        .map { "$it/bin/java" }
-        .orElse("java")
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
     doFirst {
         delete(serverDir)
         delete(reportDir)
@@ -393,7 +394,7 @@ tasks.register<Exec>("purpurWorldE2E") {
         )
     }
     workingDir(serverDir)
-    commandLine(javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-jar", purpurJar.get().asFile.name, "nogui")
+    commandLine(javaExecutable, "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true", "-jar", purpurJar.get().asFile.name, "nogui")
     isIgnoreExitValue = true
     doLast {
         val logsDir = serverDir.resolve("logs")
@@ -467,6 +468,12 @@ tasks.register<Exec>("paperDatabaseInterruptionE2E") {
     )
 }
 
+tasks.register("destructiveDbOutageE2E") {
+    group = "verification"
+    description = "Verify partial transfer writes and explicit recovery across PostgreSQL and MariaDB outages in Paper"
+    dependsOn("paperDatabaseInterruptionE2E")
+}
+
 tasks.register("paperSnapshotPerformance") {
     group = "verification"
     description = "Run the real-Paper snapshot capture/apply/verify size matrix as part of the mutation E2E"
@@ -480,9 +487,9 @@ tasks.register("paperWorldRestartRecoveryE2E") {
     val serverDir = layout.buildDirectory.dir("paper-world-restart-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/paper-world-restart-e2e").get().asFile
     val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
-    val javaExecutable = providers.environmentVariable("JAVA_HOME")
-        .map { "$it/bin/java" }
-        .orElse("java")
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
     doLast {
         delete(serverDir)
         delete(reportDir)
@@ -510,7 +517,7 @@ tasks.register("paperWorldRestartRecoveryE2E") {
         val phases = listOf("merge-restart-prepare", "merge-restart-verify", "restart-prepare", "restart-verify")
         phases.forEach { phase ->
             val process = ProcessBuilder(
-                javaExecutable.get(), "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
+                javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
                 "-jar", paperJar.name, "nogui"
             ).directory(serverDir).inheritIO().start()
             val exitCode = process.waitFor()
@@ -531,6 +538,132 @@ tasks.register("paperWorldRestartRecoveryE2E") {
         println(phases.filter { it.endsWith("verify") }.joinToString("; ") { phase ->
             reportDir.resolve("$phase-result.txt").readText().trim()
         })
+        delete(serverDir)
+    }
+}
+
+tasks.register("purpurRestartRecoveryE2E") {
+    group = "verification"
+    description = "Verify transfer recovery across a real Purpur process restart"
+    dependsOn(downloadPurpur, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("purpur-restart-recovery-e2e/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/purpur-restart-recovery-e2e").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
+    doLast {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        copy { from(purpurJar); into(serverDir) }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+        listOf("restart-prepare", "restart-verify").forEach { phase ->
+            val process = ProcessBuilder(
+                javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
+                "-jar", purpurJar.get().asFile.name, "nogui"
+            ).directory(serverDir).inheritIO().start()
+            val exitCode = process.waitFor()
+            val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+            val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+            val logsDir = serverDir.resolve("logs")
+            if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("$phase-logs")) }
+            check(exitCode == 0) { "Purpur $phase process exited with code $exitCode: $result" }
+            val expected = if (phase == "restart-prepare") "PREPARED" else "PASS restart recovery"
+            check(result.startsWith(expected)) { "Purpur $phase failed: $result" }
+            reportDir.resolve("$phase-result.txt").writeText(result)
+        }
+        println(reportDir.resolve("restart-verify-result.txt").readText().trim())
+        delete(serverDir)
+    }
+}
+
+tasks.register("paperWorldCrashRecoveryE2E") {
+    group = "verification"
+    description = "Hard-stop Paper during a controlled partial transfer write and recover from its durable intent after restart"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("paper-world-crash-recovery-e2e/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/paper-world-crash-recovery-e2e").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
+    doLast {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        copy { from(paperJar); into(serverDir) }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+        val warmupLog = reportDir.resolve("world-warmup.log")
+        val warmup = ProcessBuilder(
+            javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=world-identity-warmup",
+            "-jar", paperJar.name, "nogui"
+        ).directory(serverDir).redirectErrorStream(true).redirectOutput(warmupLog).start()
+        check(warmup.waitFor(5, TimeUnit.MINUTES)) {
+            warmup.destroyForcibly()
+            "Paper world identity warmup timed out: ${warmupLog.readText()}"
+        }
+        check(warmup.exitValue() == 0 && serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+            .readText().startsWith("PASS isolated test world identity initialized")) {
+            "Paper world identity warmup failed: ${warmupLog.readText()}"
+        }
+        val prepareLog = reportDir.resolve("prepare.log")
+        val prepare = ProcessBuilder(
+            javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=db-worldwrite-crash-prepare",
+            "-jar", paperJar.name, "nogui"
+        ).directory(serverDir).redirectErrorStream(true).redirectOutput(prepareLog).start()
+        val marker = serverDir.resolve("plugins/HomeClaimWorldE2E/db-worldwrite-phase.txt")
+        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
+        while (!marker.isFile || !marker.readText().startsWith("WORLD_PARTIAL_WRITE_CRASH")) {
+            check(!marker.isFile || !marker.readText().startsWith("BARRIER_ERROR")) {
+                "Paper could not persist the crash barrier job reference: ${marker.readText()}"
+            }
+            check(prepare.isAlive) { "Paper crash-prepare exited before the partial-write barrier: ${prepareLog.readText()}" }
+            check(System.nanoTime() < deadline) { "Timed out waiting for the real Paper partial-write barrier: ${prepareLog.readText()}" }
+            Thread.sleep(250)
+        }
+        prepare.destroyForcibly()
+        check(prepare.waitFor(30, TimeUnit.SECONDS)) { "Could not stop the Paper crash-prepare process" }
+        val verifyLog = reportDir.resolve("verify.log")
+        val verify = ProcessBuilder(
+            javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=db-worldwrite-restart-verify",
+            "-jar", paperJar.name, "nogui"
+        ).directory(serverDir).redirectErrorStream(true).redirectOutput(verifyLog).start()
+        check(verify.waitFor(5, TimeUnit.MINUTES)) {
+            verify.destroyForcibly()
+            "Paper recovery verification timed out: ${verifyLog.readText()}"
+        }
+        val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+        check(verify.exitValue() == 0 && result.startsWith("PASS destructive DB outage partial COPY recovered after Paper process restart")) {
+            "Paper restart recovery failed: $result\n${verifyLog.readText()}"
+        }
+        reportDir.resolve("result.txt").writeText(result)
+        println(result.trim())
         delete(serverDir)
     }
 }

@@ -125,7 +125,8 @@ internal object PlotBackupFormat {
         require(record.worldId == indexed.worldId && record.paperWorldId == indexed.paperWorldId) { "Backup world identity does not match its index" }
         require(record.areaId == indexed.areaId && record.bounds == indexed.bounds) { "Backup scope does not match its index" }
         require(record.createdAt == indexed.createdAt && record.createdByKind == indexed.createdByKind && record.createdByRef == indexed.createdByRef) {
-            "Backup provenance does not match its index"
+            "Backup provenance does not match its index (createdAt manifest=${record.createdAt}, index=${indexed.createdAt}; " +
+                "createdByKind manifest=${record.createdByKind}, index=${indexed.createdByKind}; cause manifest=${record.cause}, index=${indexed.cause})"
         }
         require(record.cause == indexed.cause && record.blockCount == indexed.blockCount) { "Backup manifest does not match its index" }
         require(payloadSize == indexed.payloadBytes && expectedDigest.joinToString("") { "%02x".format(it) } == indexed.checksumSha256) { "Backup integrity metadata does not match its index" }

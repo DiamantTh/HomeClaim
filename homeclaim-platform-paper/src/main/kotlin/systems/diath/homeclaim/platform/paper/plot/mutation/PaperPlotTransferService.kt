@@ -308,15 +308,33 @@ class PaperPlotTransferService(
         val phase = if (recoveryRequired) "RECOVERY_REQUIRED" else "FAILED"
         val details = details(task, phase).encode()
         val message = "${failure.message ?: failure.javaClass.simpleName}; $details"
-        runCatching { jobs.updateDetails(task.job.id, details) }
-        runCatching { jobs.finish(task.job.id, status, task.completedUnits, task.totalSteps, message) }
-            .onFailure { journalFailure -> plugin.logger.log(Level.SEVERE, "Could not finalize transfer job ${task.job.id}", journalFailure) }
-        runCatching { audit(task.request, AuditStatus.FAILED, message) }
-            .onFailure { auditFailure -> plugin.logger.log(Level.SEVERE, "Could not audit transfer failure ${task.job.id}", auditFailure) }
-        task.lease.close()
         task.scheduledTask?.cancel()
-        activeTasks.remove(task)
-        task.result.complete(PlotTransferResult.Failed(task.job.id, message, recoveryRequired))
+        // A database outage can make journal writes wait for the pool connection timeout. Keep
+        // the active region lease while persisting the outcome, but do not block Paper's tick.
+        // For a partial world write, the previously persisted APPLYING_TARGET / later phase is
+        // the durable write-ahead intent; the terminal error field carries the failure details.
+        val persistFailure = Runnable {
+            if (!recoveryRequired) {
+                runCatching { jobs.updateDetails(task.job.id, details) }
+                    .onFailure { journalFailure -> plugin.logger.log(Level.SEVERE, "Could not update failed transfer details ${task.job.id}", journalFailure) }
+            }
+            runCatching { jobs.finish(task.job.id, status, task.completedUnits, task.totalSteps, message) }
+                .onFailure { journalFailure -> plugin.logger.log(Level.SEVERE, "Could not finalize transfer job ${task.job.id}", journalFailure) }
+            runCatching { audit(task.request, AuditStatus.FAILED, message) }
+                .onFailure { auditFailure -> plugin.logger.log(Level.SEVERE, "Could not audit transfer failure ${task.job.id}", auditFailure) }
+            onServer {
+                task.lease.close()
+                activeTasks.remove(task)
+                task.result.complete(PlotTransferResult.Failed(task.job.id, message, recoveryRequired))
+            }
+        }
+        runCatching { Bukkit.getScheduler().runTaskAsynchronously(plugin, persistFailure) }
+            .onFailure { schedulingFailure ->
+                plugin.logger.log(Level.SEVERE, "Could not schedule transfer failure journal ${task.job.id}", schedulingFailure)
+                task.lease.close()
+                activeTasks.remove(task)
+                task.result.complete(PlotTransferResult.Failed(task.job.id, message, recoveryRequired))
+            }
     }
 
     private fun audit(request: ActionRequest, status: AuditStatus, detail: String? = null) {

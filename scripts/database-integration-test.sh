@@ -9,10 +9,13 @@ PG_NAME="homeclaim-pg-it-${SUFFIX}"
 MARIADB_NAME="homeclaim-mariadb-it-${SUFFIX}"
 
 engine=""
+engine_kind=""
 if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
     engine="podman"
+    engine_kind="podman"
 elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     engine="docker"
+    engine_kind="docker"
 else
     cat >&2 <<'EOF'
 No working Docker or Podman runtime was detected. The database integration task
@@ -33,20 +36,42 @@ pg_password="$(openssl rand -hex 24)"
 mariadb_password="$(openssl rand -hex 24)"
 mariadb_root_password="$(openssl rand -hex 24)"
 
-"$engine" run --detach --name "$PG_NAME" \
-    --env POSTGRES_DB=homeclaim_test \
-    --env POSTGRES_USER=homeclaim_test \
-    --env "POSTGRES_PASSWORD=${pg_password}" \
-    --publish 127.0.0.1::5432 \
-    "$PG_IMAGE" >/dev/null
+pg_internal_port=5432
+mariadb_internal_port=3306
+if [[ "$engine_kind" == podman ]]; then
+    # This Podman installation has no usable pasta/slirp network. Use random ports
+    # on loopback only; never expose disposable databases on external interfaces.
+    network_args=(--network=host)
+    pg_internal_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+    mariadb_internal_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+    "$engine" run --detach --name "$PG_NAME" "${network_args[@]}" \
+        --env POSTGRES_DB=homeclaim_test \
+        --env POSTGRES_USER=homeclaim_test \
+        --env "POSTGRES_PASSWORD=${pg_password}" \
+        "$PG_IMAGE" -c listen_addresses=127.0.0.1 -p "$pg_internal_port" >/dev/null
 
-"$engine" run --detach --name "$MARIADB_NAME" \
-    --env MARIADB_DATABASE=homeclaim_test \
-    --env MARIADB_USER=homeclaim_test \
-    --env "MARIADB_PASSWORD=${mariadb_password}" \
-    --env "MARIADB_ROOT_PASSWORD=${mariadb_root_password}" \
-    --publish 127.0.0.1::3306 \
-    "$MARIADB_IMAGE" >/dev/null
+    "$engine" run --detach --name "$MARIADB_NAME" "${network_args[@]}" \
+        --env MARIADB_DATABASE=homeclaim_test \
+        --env MARIADB_USER=homeclaim_test \
+        --env "MARIADB_PASSWORD=${mariadb_password}" \
+        --env "MARIADB_ROOT_PASSWORD=${mariadb_root_password}" \
+        "$MARIADB_IMAGE" "--port=$mariadb_internal_port" --bind-address=127.0.0.1 >/dev/null
+else
+    "$engine" run --detach --name "$PG_NAME" \
+        --env POSTGRES_DB=homeclaim_test \
+        --env POSTGRES_USER=homeclaim_test \
+        --env "POSTGRES_PASSWORD=${pg_password}" \
+        --publish 127.0.0.1::5432 \
+        "$PG_IMAGE" >/dev/null
+
+    "$engine" run --detach --name "$MARIADB_NAME" \
+        --env MARIADB_DATABASE=homeclaim_test \
+        --env MARIADB_USER=homeclaim_test \
+        --env "MARIADB_PASSWORD=${mariadb_password}" \
+        --env "MARIADB_ROOT_PASSWORD=${mariadb_root_password}" \
+        --publish 127.0.0.1::3306 \
+        "$MARIADB_IMAGE" >/dev/null
+fi
 
 published_port() {
     local mapping
@@ -54,8 +79,13 @@ published_port() {
     printf '%s\n' "${mapping##*:}"
 }
 
-pg_port="$(published_port "$PG_NAME" 5432/tcp)"
-mariadb_port="$(published_port "$MARIADB_NAME" 3306/tcp)"
+if [[ "$engine_kind" == podman ]]; then
+    pg_port="$pg_internal_port"
+    mariadb_port="$mariadb_internal_port"
+else
+    pg_port="$(published_port "$PG_NAME" 5432/tcp)"
+    mariadb_port="$(published_port "$MARIADB_NAME" 3306/tcp)"
+fi
 
 wait_for_service() {
     local name="$1" command="$2" attempt
@@ -70,8 +100,8 @@ wait_for_service() {
     return 1
 }
 
-wait_for_service "$PG_NAME" 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-wait_for_service "$MARIADB_NAME" 'mariadb-admin ping -h 127.0.0.1 -uroot "-p$MARIADB_ROOT_PASSWORD" --silent'
+wait_for_service "$PG_NAME" "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -p $pg_port"
+wait_for_service "$MARIADB_NAME" "mariadb-admin ping -h 127.0.0.1 -uroot \"-p\$MARIADB_ROOT_PASSWORD\" -P $mariadb_port --silent"
 
 cd "$ROOT_DIR"
 export HOMECLAIM_TEST_POSTGRES_JDBC_URL="jdbc:postgresql://127.0.0.1:${pg_port}/homeclaim_test"
