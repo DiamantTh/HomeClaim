@@ -5,6 +5,9 @@ import java.net.URL
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.TimeUnit
+import java.util.UUID
+import java.security.MessageDigest
+import java.time.Instant
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -312,21 +315,80 @@ val paperWorldE2EJar = tasks.register<Jar>("paperWorldE2EJar") {
     from(paperWorldE2E.output)
 }
 
+val requiredWorldE2EScenarios = setOf(
+    "copy", "move", "swap", "reset", "restore", "copy-recovery", "move-recovery",
+    "swap-recovery", "restore-recovery", "merge", "unlink", "merge-recovery",
+    "unlink-recovery", "bundle-corruption-rejected", "container-roundtrip",
+    "unsupported-tilestate-fail-closed", "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+)
+
+fun sha256(file: java.io.File): String = MessageDigest.getInstance("SHA-256")
+    .digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+
+fun validateWorldE2EResult(
+    resultFile: java.io.File,
+    runId: String,
+    expectedSha: String,
+    expectedServerPrefix: String,
+    requiredScenarios: Set<String> = requiredWorldE2EScenarios
+) {
+    check(resultFile.isFile) { "Missing machine-readable E2E result: $resultFile" }
+    @Suppress("UNCHECKED_CAST")
+    val result = JsonSlurper().parse(resultFile) as? Map<String, Any?>
+        ?: error("E2E result is not a JSON object: $resultFile")
+    check(result["contractVersion"] == 1) { "Unsupported E2E result contract version: ${result["contractVersion"]}" }
+    check(result["runId"] == runId) { "E2E result runId mismatch: ${result["runId"]} != $runId" }
+    check(result["overallStatus"] == "PASSED") { "E2E overallStatus is not PASSED: ${result["overallStatus"]}; ${result["failureDiagnostics"]}" }
+    check((result["serverType"] as? String)?.startsWith(expectedServerPrefix) == true) {
+        "Unexpected E2E server type: ${result["serverType"]}"
+    }
+    check((result["serverVersion"] as? String)?.isNotBlank() == true) { "E2E result has no server build/version" }
+    check(result["pluginSha256"] == expectedSha) {
+        "E2E loaded plugin SHA-256 mismatch: ${result["pluginSha256"]} != $expectedSha"
+    }
+    val startedAt: Instant? = (result["startedAt"] as? String)?.let { timestamp -> runCatching { Instant.parse(timestamp) }.getOrNull() }
+    val completedAt: Instant? = (result["completedAt"] as? String)?.let { timestamp -> runCatching { Instant.parse(timestamp) }.getOrNull() }
+    check(startedAt != null && completedAt != null && !completedAt.isBefore(startedAt)) {
+        "E2E result has invalid run timestamps"
+    }
+    val scenarios = (result["scenarios"] as? List<*>)?.mapNotNull { it as? Map<*, *> }
+        ?: error("E2E result scenarios are missing or malformed")
+    val names = scenarios.map { it["name"] as? String ?: error("E2E scenario omitted its name") }
+    check(names.size == names.toSet().size) { "E2E result contains duplicate scenario names" }
+    check((result["failureDiagnostics"] as? List<*>)?.isEmpty() == true) {
+        "Passing E2E result contains failure diagnostics: ${result["failureDiagnostics"]}"
+    }
+    val passedNames = scenarios.filter { it["status"] == "PASSED" }.mapNotNull { it["name"] as? String }.toSet()
+    check(passedNames.containsAll(requiredScenarios)) {
+        "Required E2E scenarios did not pass: ${requiredScenarios - passedNames}"
+    }
+}
+
 tasks.register<Exec>("paperWorldE2E") {
     group = "verification"
     description = "Run HomeClaim mutation scenarios in a disposable real Paper 26.3 server"
-    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar, tasks.test)
     val serverDir = layout.buildDirectory.dir("paper-world-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/paper-world-e2e").get().asFile
     val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
     val javaExecutable = javaToolchains.launcherFor {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().executablePath.asFile.absolutePath
+    var runId = ""
+    var expectedPluginSha = ""
+    var consoleOut: java.io.OutputStream? = null
+    var consoleErr: java.io.OutputStream? = null
     doFirst {
         delete(serverDir)
         delete(reportDir)
         serverDir.mkdirs()
         reportDir.mkdirs()
+        runId = UUID.randomUUID().toString()
+        expectedPluginSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
+        consoleOut = reportDir.resolve("server-console.out.log").outputStream()
+        consoleErr = reportDir.resolve("server-console.err.log").outputStream()
+        standardOutput = consoleOut
+        errorOutput = consoleErr
         copy {
             from(paperJar)
             into(serverDir)
@@ -346,20 +408,28 @@ tasks.register<Exec>("paperWorldE2E") {
             "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
+        commandLine("timeout", "--signal=TERM", "--kill-after=30s", "30m", javaExecutable,
+            "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true",
+            "-Dhomeclaim.worlde2e.runId=$runId", "-Dhomeclaim.worlde2e.pluginSha256=$expectedPluginSha",
+            "-jar", paperJar.name, "nogui")
     }
     workingDir(serverDir)
-    commandLine(javaExecutable, "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true", "-jar", paperJar.name, "nogui")
     isIgnoreExitValue = true
     doLast {
+        consoleOut?.close()
+        consoleErr?.close()
         val logsDir = serverDir.resolve("logs")
         if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
         val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val jsonResult = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
         val exitCode = executionResult.get().exitValue
         val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
-        delete(serverDir)
         check(exitCode == 0) { "Paper E2E server exited with code $exitCode; report: $result" }
         check(result.startsWith("PASS")) { "Paper World E2E failed: $result" }
+        validateWorldE2EResult(jsonResult, runId, expectedPluginSha, "Paper")
         reportDir.resolve("result.txt").writeText(result)
+        copy { from(jsonResult); into(reportDir) }
+        delete(serverDir)
         println(result.trim())
     }
 }
@@ -367,18 +437,28 @@ tasks.register<Exec>("paperWorldE2E") {
 tasks.register<Exec>("purpurWorldE2E") {
     group = "verification"
     description = "Run the HomeClaim mutation scenarios in a disposable real Purpur 26.3 server"
-    dependsOn(downloadPurpur, tasks.shadowJar, paperWorldE2EJar)
+    dependsOn(downloadPurpur, tasks.shadowJar, paperWorldE2EJar, tasks.test)
     val serverDir = layout.buildDirectory.dir("purpur-world-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/purpur-world-e2e").get().asFile
     val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
     val javaExecutable = javaToolchains.launcherFor {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().executablePath.asFile.absolutePath
+    var runId = ""
+    var expectedPluginSha = ""
+    var consoleOut: java.io.OutputStream? = null
+    var consoleErr: java.io.OutputStream? = null
     doFirst {
         delete(serverDir)
         delete(reportDir)
         serverDir.mkdirs()
         reportDir.mkdirs()
+        runId = UUID.randomUUID().toString()
+        expectedPluginSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
+        consoleOut = reportDir.resolve("server-console.out.log").outputStream()
+        consoleErr = reportDir.resolve("server-console.err.log").outputStream()
+        standardOutput = consoleOut
+        errorOutput = consoleErr
         copy { from(purpurJar); into(serverDir) }
         copy {
             from(tasks.shadowJar.get().archiveFile)
@@ -392,20 +472,28 @@ tasks.register<Exec>("purpurWorldE2E") {
             "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
+        commandLine("timeout", "--signal=TERM", "--kill-after=30s", "30m", javaExecutable,
+            "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true",
+            "-Dhomeclaim.worlde2e.runId=$runId", "-Dhomeclaim.worlde2e.pluginSha256=$expectedPluginSha",
+            "-jar", purpurJar.get().asFile.name, "nogui")
     }
     workingDir(serverDir)
-    commandLine(javaExecutable, "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true", "-jar", purpurJar.get().asFile.name, "nogui")
     isIgnoreExitValue = true
     doLast {
+        consoleOut?.close()
+        consoleErr?.close()
         val logsDir = serverDir.resolve("logs")
         if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
         val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val jsonResult = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
         val exitCode = executionResult.get().exitValue
         val result = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
-        delete(serverDir)
         check(exitCode == 0) { "Purpur E2E server exited with code $exitCode; report: $result" }
         check(result.startsWith("PASS")) { "Purpur World E2E failed: $result" }
+        validateWorldE2EResult(jsonResult, runId, expectedPluginSha, "Purpur")
         reportDir.resolve("result.txt").writeText(result)
+        copy { from(jsonResult); into(reportDir) }
+        delete(serverDir)
         println(result.trim())
     }
 }
@@ -429,6 +517,42 @@ tasks.register<Exec>("networkedPlayerE2E") {
         environment("HOMECLAIM_E2E_JAVA", java25)
     }
     isIgnoreExitValue = false
+}
+
+tasks.register("worldE2EParity") {
+    group = "verification"
+    description = "Compare the required Paper and Purpur world E2E scenario outcomes"
+    doLast {
+        val paperResult = layout.buildDirectory.file("reports/paper-world-e2e/e2e-result.json").get().asFile
+        val purpurResult = layout.buildDirectory.file("reports/purpur-world-e2e/e2e-result.json").get().asFile
+        @Suppress("UNCHECKED_CAST")
+        fun scenarios(file: java.io.File): Map<String, String> {
+            val json = JsonSlurper().parse(file) as Map<String, Any?>
+            check(json["overallStatus"] == "PASSED") { "$file does not contain a passing result: ${json["overallStatus"]}" }
+            check((json["pluginSha256"] as? String)?.matches(Regex("[0-9a-f]{64}")) == true) {
+                "$file does not identify a production plugin artifact"
+            }
+            return (json["scenarios"] as List<*>).mapNotNull { it as? Map<*, *> }
+                .associate { (it["name"] as String) to (it["status"] as String) }
+        }
+        val paperScenarios = scenarios(paperResult)
+        val purpurScenarios = scenarios(purpurResult)
+        check(paperScenarios.values.all { it == "PASSED" } && purpurScenarios.values.all { it == "PASSED" }) {
+            "Paper/Purpur parity reports contain a non-passing scenario: Paper=$paperScenarios Purpur=$purpurScenarios"
+        }
+        check(paperScenarios == purpurScenarios) {
+            "Paper/Purpur world E2E scenario parity differs: Paper=$paperScenarios Purpur=$purpurScenarios"
+        }
+        check(paperScenarios.keys.containsAll(requiredWorldE2EScenarios)) {
+            "Paper/Purpur parity omitted required scenarios: ${requiredWorldE2EScenarios - paperScenarios.keys}"
+        }
+        val paperJson = JsonSlurper().parse(paperResult) as Map<*, *>
+        val purpurJson = JsonSlurper().parse(purpurResult) as Map<*, *>
+        check(paperJson["pluginSha256"] == purpurJson["pluginSha256"]) {
+            "Paper and Purpur reports identify different HomeClaim artifacts"
+        }
+        println("Paper/Purpur scenario parity: ${paperScenarios.size} scenarios PASSED")
+    }
 }
 
 tasks.register<Exec>("purpurNetworkedPlayerE2E") {
@@ -474,10 +598,67 @@ tasks.register("destructiveDbOutageE2E") {
     dependsOn("paperDatabaseInterruptionE2E")
 }
 
-tasks.register("paperSnapshotPerformance") {
+tasks.register<Exec>("paperSnapshotPerformance") {
     group = "verification"
-    description = "Run the real-Paper snapshot capture/apply/verify size matrix as part of the mutation E2E"
-    dependsOn("paperWorldE2E")
+    description = "Run a standalone real-Paper medium snapshot capture/apply/verify sanity case"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("paper-snapshot-performance/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/paper-snapshot-performance").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
+    var runId = ""
+    var expectedPluginSha = ""
+    var consoleOut: java.io.OutputStream? = null
+    var consoleErr: java.io.OutputStream? = null
+    doFirst {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        runId = UUID.randomUUID().toString()
+        expectedPluginSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
+        consoleOut = reportDir.resolve("server-console.out.log").outputStream()
+        consoleErr = reportDir.resolve("server-console.err.log").outputStream()
+        standardOutput = consoleOut
+        errorOutput = consoleErr
+        copy { from(paperJar); into(serverDir) }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val port = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$port\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+        commandLine("timeout", "--signal=TERM", "--kill-after=30s", "20m", javaExecutable,
+            "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true",
+            "-Dhomeclaim.worlde2e.phase=performance-only", "-Dhomeclaim.worlde2e.runId=$runId",
+            "-Dhomeclaim.worlde2e.pluginSha256=$expectedPluginSha", "-jar", paperJar.name, "nogui")
+    }
+    workingDir(serverDir)
+    isIgnoreExitValue = true
+    doLast {
+        consoleOut?.close()
+        consoleErr?.close()
+        val logsDir = serverDir.resolve("logs")
+        if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
+        val exitCode = executionResult.get().exitValue
+        val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val jsonFile = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
+        val summary = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+        check(exitCode == 0 && summary.startsWith("PASS")) { "Paper performance task failed ($exitCode): $summary" }
+        validateWorldE2EResult(jsonFile, runId, expectedPluginSha, "Paper", setOf("medium-performance-matrix"))
+        copy { from(jsonFile); into(reportDir) }
+        reportDir.resolve("result.txt").writeText(summary)
+        delete(serverDir)
+        println(summary.trim())
+    }
 }
 
 tasks.register("paperWorldRestartRecoveryE2E") {

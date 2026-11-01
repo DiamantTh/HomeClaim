@@ -74,6 +74,11 @@ import java.util.concurrent.atomic.AtomicReference
 /** Separate test artifact. It is not part of HomeClaim.jar and exposes no production command. */
 class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private val reportFile by lazy { dataFolder.toPath().resolve("result.txt") }
+    private val jsonReportFile by lazy { dataFolder.toPath().resolve("e2e-result.json") }
+    private val startedAt = java.time.Instant.now()
+    private val passedScenarios = linkedSetOf<String>()
+    private var currentScenario: String? = null
+    private var pluginSha256: String? = null
     private var world: World? = null
     private lateinit var homeClaimPlugin: HomeClaimPaperPlugin
     private lateinit var services: PlatformServices
@@ -123,6 +128,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         val homeClaim = server.pluginManager.getPlugin("HomeClaim") as? HomeClaimPaperPlugin
             ?: error("HomeClaim dependency was not loaded")
         homeClaimPlugin = homeClaim
+        pluginSha256 = sha256(java.nio.file.Path.of(homeClaim.javaClass.protectionDomain.codeSource.location.toURI()))
         services = privateField(homeClaim, "services")
         backupService = privateField(homeClaim, "plotBackupService")
         transferService = privateField(homeClaim, "plotTransferService")
@@ -217,6 +223,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
         createFixtures(homeClaim, areas, testWorld)
 
+        if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+            runPerformanceMatrix(testWorld, "PASS standalone snapshot performance")
+            return
+        }
+
         if (System.getProperty("homeclaim.worlde2e.phase") == "network-player") {
             beginNetworkPlayerE2E(testWorld)
             return
@@ -226,6 +237,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             runDatabaseInterruption(testWorld)
             return
         }
+
+        // `paperWorldE2E` and `purpurWorldE2E` depend on the format regression suite,
+        // so this marker is only reached after the v1/v2/v3 tests have succeeded.
+        passedScenarios += "hcbk-v1-v2-v3-regression"
 
         if (System.getProperty("homeclaim.worlde2e.phase") == "db-destructive-outage") {
             runDestructiveDatabaseWorldWrite(testWorld,
@@ -238,6 +253,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             return
         }
 
+        currentScenario = "copy"
         seed(first, "copy-source")
         seed(second, "copy-target")
         val beforeA = capture(testWorld, first.bounds.minX)
@@ -681,6 +697,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runMove(testWorld: World) {
+        passedScenarios += "copy"
+        currentScenario = "move"
         seed(first, "move-source")
         seed(second, "move-target")
         val source = capture(testWorld, first.bounds.minX)
@@ -700,6 +718,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runSwap(testWorld: World) {
+        passedScenarios += "move"
+        currentScenario = "swap"
         seed(first, "swap-a")
         seed(second, "swap-b")
         val originalA = capture(testWorld, first.bounds.minX)
@@ -718,6 +738,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runReset(testWorld: World) {
+        passedScenarios += "swap"
+        currentScenario = "reset"
         seed(first, "reset-before")
         val finished = CompletableFuture<systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetCompletion>()
         check(resetService.queueReset(first, PlotResetReason.MANUAL, CorrelationId.newId(), ActionActor.System("paper-world-e2e")) {
@@ -1139,6 +1161,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runRestore(testWorld: World) {
+        passedScenarios += "reset"
+        currentScenario = "restore"
         seed(first, "restore-source")
         val expected = capture(testWorld, first.bounds.minX)
         val backup = backupService.createSnapshot(first, testWorld, ActionActor.System("paper-world-e2e"),
@@ -1164,6 +1188,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runUnsupportedTileState(testWorld: World) {
+        passedScenarios += "restore"
+        passedScenarios += "container-roundtrip"
+        currentScenario = "unsupported-tilestate-fail-closed"
         val unsupported = createRegion(Bounds(6, 6, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
         operationSafetyRegions += unsupported
         val signY = testWorld.minHeight + 20
@@ -1190,6 +1217,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runCopyRecovery(testWorld: World) {
+        passedScenarios += "unsupported-tilestate-fail-closed"
+        currentScenario = "copy-recovery"
         seed(first, "copy-failure-source")
         seed(second, "copy-failure-target")
         val source = capture(testWorld, first.bounds.minX)
@@ -1214,6 +1243,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runMoveRecovery(testWorld: World) {
+        passedScenarios += "copy-recovery"
+        currentScenario = "move-recovery"
         seed(first, "move-recovery-source")
         seed(second, "move-recovery-target")
         val source = capture(testWorld, first.bounds.minX)
@@ -1236,6 +1267,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runSwapRecovery(testWorld: World) {
+        passedScenarios += "move-recovery"
+        currentScenario = "swap-recovery"
         seed(first, "swap-recovery-a")
         seed(second, "swap-recovery-b")
         val originalA = capture(testWorld, first.bounds.minX)
@@ -1257,6 +1290,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runRestoreRecovery(testWorld: World) {
+        passedScenarios += "swap-recovery"
+        currentScenario = "restore-recovery"
         seed(first, "restore-recovery-x")
         val source = testBackupService.createSnapshot(first, testWorld, ActionActor.System("paper-world-e2e"),
             CorrelationId.newId(), "e2e:restore-recovery-source")
@@ -1283,6 +1318,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
     /** Demonstrates the documented tick-wise snapshot boundary against an actual Paper world. */
     private fun runSnapshotConcurrency(testWorld: World) {
+        passedScenarios += "restore-recovery"
+        currentScenario = "snapshot-interleaving"
         val region = createRegion(Bounds(8, 15, testWorld.minHeight, testWorld.maxHeight - 1, -8, 7))
         concurrencyRegion = region
         val target = createRegion(Bounds(16, 23, testWorld.minHeight, testWorld.maxHeight - 1, -8, 7))
@@ -1388,6 +1425,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                             "Late marker did not record the interleaved external plugin write"
                         }
                         check(record.compression == PlotBackupCompression.ZSTD && !record.checksumSha256.isNullOrBlank())
+                        passedScenarios += "snapshot-interleaving"
                         val storedBytes = record.payloadBytes
                         val ratio = if (rawBytes == 0L) 0.0 else storedBytes.toDouble() / rawBytes
                         val applyMillis = (System.nanoTime() - applyStartedAt) / 1_000_000
@@ -1435,7 +1473,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         )) ?: error("Could not create the performance Area")
         performanceArea = perfArea
         data class SizeCase(val label: String, val width: Int, val height: Int, val depth: Int)
-        val cases = listOf(
+        val cases = if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+            listOf(SizeCase("MEDIUM", 12, 384, 12))
+        } else listOf(
             SizeCase("SMALL", 4, 384, 4),
             SizeCase("MEDIUM", 12, 384, 12),
             SizeCase("LARGE", 24, 384, 24)
@@ -1443,6 +1483,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         val summaries = mutableListOf<String>()
         fun next(index: Int) {
             if (index == cases.size) {
+                if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+                    passedScenarios += "medium-performance-matrix"
+                }
                 finish("$priorReport; performanceMatrix=${summaries.joinToString(";")}")
                 return
             }
@@ -1586,6 +1629,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     )
 
     private fun runMergeUnlinkSafetyE2E(testWorld: World, previousReport: String) {
+        currentScenario = "merge"
         val left = createRegion(Bounds(8, 10, testWorld.minHeight, testWorld.maxHeight - 1, 2, 4))
             .copy(home = RegionHome(9.5, testWorld.minHeight + 12.0, 3.5, 90f, 0f))
         val right = createRegion(Bounds(12, 14, testWorld.minHeight, testWorld.maxHeight - 1, 2, 4))
@@ -1622,8 +1666,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 check(jobStore.findById(mergeJob)?.status == PlotMutationJobStatus.COMPLETED)
                 check(mergeBundle.worldSnapshot.blockCount == mergePlan.batches.sumOf { it.operations.size.toLong() })
                 check(mergeBundle.worldSnapshot.compression == "zstd")
+                passedScenarios += "merge"
 
                 val merged = listOf(left, right).map { requireNotNull(services.regionService.getRegionById(it.id)) }
+                currentScenario = "unlink"
                 val unlinkPlan = plotWorldMutation.prepareUnlinkMutation(merged, createRoads = true, MutationReason.UNCLAIM)
                 val unlinkBefore = captureMutationScope(testWorld, unlinkPlan)
                 val unlinkJob = createSafetyJob("UNLINK", merged)
@@ -1644,6 +1690,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                         jobStore.finish(unlinkJob, PlotMutationJobStatus.COMPLETED, unlinkPlan.batches.size, unlinkPlan.batches.size)
                         check(jobStore.findById(unlinkJob)?.status == PlotMutationJobStatus.COMPLETED)
                         check(unlinkBundle.domainSnapshot.regions.all { it.mergeGroupId == group.value.toString() })
+                        passedScenarios += "unlink"
 
                         val stats = "mergeSafetyBlocks=${mergeBundle.worldSnapshot.blockCount} mergeRaw=${mergeBundle.worldSnapshot.rawBytes} " +
                             "mergeZstd=${mergeBundle.worldSnapshot.storedBytes} mergeCaptureMs=$mergeCaptureMillis mergeApplyMs=$mergeApplyMillis " +
@@ -1657,6 +1704,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runMergePartialFailureRecovery(testWorld: World, previousReport: String, safetyStats: String) {
+        currentScenario = "merge-recovery"
         val left = createRegion(Bounds(18, 20, testWorld.minHeight, testWorld.maxHeight - 1, 6, 8))
             .copy(home = RegionHome(19.5, testWorld.minHeight + 12.0, 7.5, 45f, 0f))
         val right = createRegion(Bounds(22, 24, testWorld.minHeight, testWorld.maxHeight - 1, 6, 8))
@@ -1695,6 +1743,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 Files.write(payloadPath, corruptPayload)
                 awaitFailure(safetyBundleStore.validate(jobId, bundleId, MutationSafetyOperation.MERGE, area.id, homeWorld.id,
                     testWorld.uid, targets, bundle.manifestSha256)) {
+                    passedScenarios += "bundle-corruption-rejected"
                     Files.write(payloadPath, originalPayload)
                     recoverMergeSafetyBundle(testWorld, plan, expectedWorld, expectedDomain, jobId, bundleId, bundle,
                         targets, previousReport, safetyStats)
@@ -1704,6 +1753,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runUnlinkPartialFailureRecovery(testWorld: World, previousReport: String, safetyStats: String) {
+        currentScenario = "unlink-recovery"
         val left = createRegion(Bounds(32, 34, testWorld.minHeight, testWorld.maxHeight - 1, 14, 16))
             .copy(home = RegionHome(33.5, testWorld.minHeight + 12.0, 15.5, 20f, 0f))
         val right = createRegion(Bounds(38, 40, testWorld.minHeight, testWorld.maxHeight - 1, 14, 16))
@@ -1757,6 +1807,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                                 }
                                 check(restoredRegions.all { it.mergeGroupId == group }) { "Unlink recovery lost its original MergeGroup ID" }
                                 check(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED, "phase=WORLD_AND_DOMAIN_VERIFIED"))
+                                passedScenarios += "unlink-recovery"
                                 lease.close()
                                 check(conflicts.checkAvailable(targets) == null) { "Unlink recovery left its regions blocked" }
                                 runMergePartialFailureRecovery(testWorld, "$previousReport; unlinkPartialFailureRecovery=PASS", safetyStats)
@@ -1798,12 +1849,13 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                             listOfNotNull(services.regionService.getRegionById(targets[0]), services.regionService.getRegionById(targets[1]))
                         ) == expectedDomain) { "Recovered merge domain differs from its original image" }
                         check(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED, "phase=WORLD_AND_DOMAIN_VERIFIED"))
+                        passedScenarios += "merge-recovery"
                         lease.close()
                         check(conflicts.checkAvailable(targets) == null) { "Merge recovery left its regions blocked" }
                         val report = "$previousReport; merge=PASS; unlink=PASS; mergePartialFailureRecovery=PASS; safetyIntegrity=corrupt-payload-rejected; operationSafety=zstd-world+domain-v1; $safetyStats"
                         runDomainFailureRecovery(testWorld, MutationSafetyOperation.MERGE, report) { afterMergeDomain ->
                             runDomainFailureRecovery(testWorld, MutationSafetyOperation.UNLINK, afterMergeDomain) { afterUnlinkDomain ->
-                                runPerformanceMatrix(testWorld, afterUnlinkDomain)
+                                finish(afterUnlinkDomain)
                             }
                         }
                     }) }
@@ -1819,6 +1871,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         previousReport: String,
         onSuccess: (String) -> Unit
     ) {
+        currentScenario = if (operation == MutationSafetyOperation.MERGE) "merge-recovery" else "unlink-recovery"
         val left = createRegion(Bounds(44, 46, testWorld.minHeight, testWorld.maxHeight - 1, 18, 20))
             .copy(home = RegionHome(45.5, testWorld.minHeight + 12.0, 19.5, 30f, 0f))
         val right = createRegion(Bounds(50, 52, testWorld.minHeight, testWorld.maxHeight - 1, 18, 20))
@@ -2170,6 +2223,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         runCatching { safetyBundleStore.shutdown() }
         runCatching { testWorld.save() }
         writeResult(result)
+        writeJsonResult(passed = true, message = result)
         Bukkit.shutdown()
     }
 
@@ -2179,13 +2233,94 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         concurrencyLease = null
         runCatching { if (::testBackupService.isInitialized) testBackupService.shutdown() }
         runCatching { if (::safetyBundleStore.isInitialized) safetyBundleStore.shutdown() }
-        runCatching { writeResult("FAIL ${error.javaClass.simpleName}: ${error.message}") }
+        val diagnostic = "${error.javaClass.simpleName}: ${error.message ?: "no message"}"
+        runCatching { writeResult("FAIL $diagnostic") }
+        runCatching { writeJsonResult(passed = false, message = diagnostic) }
         Bukkit.shutdown()
     }
 
     private fun writeResult(value: String) {
         Files.createDirectories(reportFile.parent)
         Files.writeString(reportFile, value + "\n")
+    }
+
+    private fun writeJsonResult(passed: Boolean, message: String) {
+        val fullRun = System.getProperty("homeclaim.worlde2e.phase", "full") == "full"
+        val required = if (fullRun) listOf(
+            "copy", "move", "swap", "reset", "restore", "copy-recovery", "move-recovery",
+            "swap-recovery", "restore-recovery", "merge", "unlink", "merge-recovery",
+            "unlink-recovery", "bundle-corruption-rejected", "container-roundtrip",
+            "unsupported-tilestate-fail-closed", "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+        ) else emptyList()
+        // The full scenario chain is sequential; reaching finish means each named assertion ran.
+        val scenarios = if (fullRun) {
+            required.map { name ->
+                name to when {
+                    name in passedScenarios -> "PASSED"
+                    name == currentScenario -> "FAILED"
+                    else -> "NOT_RUN"
+                }
+            }
+        } else passedScenarios.map { it to "PASSED" } + listOfNotNull(currentScenario?.let { it to "FAILED" })
+        val expectedRunId = System.getProperty("homeclaim.worlde2e.runId", "")
+        val expectedSha = System.getProperty("homeclaim.worlde2e.pluginSha256", "")
+        val actualSha = pluginSha256.orEmpty()
+        val missingScenarios = if (fullRun) required - passedScenarios else emptySet()
+        val effectivePass = passed && expectedRunId.isNotBlank() && expectedSha.isNotBlank() && expectedSha == actualSha &&
+            missingScenarios.isEmpty()
+        val completedAt = java.time.Instant.now()
+        val scenarioJson = scenarios.joinToString(",") { (name, status) ->
+            "{\"name\":\"${jsonEscape(name)}\",\"status\":\"$status\"}"
+        }
+        val diagnostics = if (effectivePass) emptyList() else listOfNotNull(
+            message,
+            if (expectedRunId.isBlank()) "missing runId" else null,
+            if (expectedSha.isBlank()) "missing expected plugin SHA-256" else null,
+            if (expectedSha.isNotBlank() && expectedSha != actualSha) "loaded plugin SHA-256 mismatch" else null,
+            if (missingScenarios.isNotEmpty()) "required scenarios not completed: ${missingScenarios.sorted().joinToString()}" else null
+        )
+        val json = """{
+            |"contractVersion":1,
+            |"runId":"${jsonEscape(expectedRunId)}",
+            |"serverType":"${jsonEscape(server.name)}",
+            |"serverVersion":"${jsonEscape(Bukkit.getVersion())}",
+            |"pluginSha256":"$actualSha",
+            |"startedAt":"$startedAt",
+            |"completedAt":"$completedAt",
+            |"overallStatus":"${if (effectivePass) "PASSED" else "FAILED"}",
+            |"scenarios":[$scenarioJson],
+            |"failureDiagnostics":[${diagnostics.joinToString(",") { "\"${jsonEscape(it)}\"" }}]
+            |}
+        """.trimMargin()
+        Files.createDirectories(jsonReportFile.parent)
+        Files.writeString(jsonReportFile, json + "\n")
+        if (passed && !effectivePass) logger.severe("E2E result contract rejected a passing run: ${diagnostics.joinToString()}")
+    }
+
+    private fun jsonEscape(value: String): String = buildString(value.length + 8) {
+        value.forEach { char ->
+            when (char) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (char.code < 0x20) append("\\u%04x".format(char.code)) else append(char)
+            }
+        }
+    }
+
+    private fun sha256(path: java.nio.file.Path): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun checkedRunnable(action: () -> Unit): Runnable = Runnable {
