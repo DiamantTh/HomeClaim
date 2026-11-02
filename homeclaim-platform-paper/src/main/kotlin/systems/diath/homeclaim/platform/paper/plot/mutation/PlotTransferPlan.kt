@@ -4,6 +4,7 @@ import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.AreaId
 import systems.diath.homeclaim.core.model.WorldId
 import java.util.UUID
+import java.security.MessageDigest
 
 enum class PlotTransferOperation { COPY, MOVE, SWAP }
 
@@ -109,7 +110,10 @@ data class PlotTransferJournalDetails(
     val actorKind: String? = null,
     val actorRef: String? = null,
     val sourceChanged: Boolean = false,
-    val targetChanged: Boolean = false
+    val targetChanged: Boolean = false,
+    val completionProof: String? = null,
+    val sourceDomainSha256: String? = null,
+    val targetDomainSha256: String? = null
 ) {
     /** Stable line format for the job diagnostics column; values are enum names or UUIDs. */
     fun encode(): String = buildString {
@@ -126,8 +130,28 @@ data class PlotTransferJournalDetails(
         actorRef?.let { appendLine("actorRef=$it") }
         appendLine("sourceChanged=$sourceChanged")
         appendLine("targetChanged=$targetChanged")
+        sourceDomainSha256?.let { appendLine("sourceDomainSha256=$it") }
+        targetDomainSha256?.let { appendLine("targetDomainSha256=$it") }
+        completionProof?.let { appendLine("completion=$it") }
         append("phase=$phase")
     }
+}
+
+/** Stable fingerprint for the Region domain record, excluding runtime-only world contents. */
+fun regionDomainFingerprint(region: Region): String {
+    val canonical = listOf(
+        region.id.value.toString(), region.areaId.value.toString(), region.world, region.shape.toString(),
+        region.bounds.toString(), region.owner.toString(),
+        region.roles.trusted.map { it.toString() }.sorted().joinToString(","),
+        region.roles.members.map { it.toString() }.sorted().joinToString(","),
+        region.roles.banned.map { it.toString() }.sorted().joinToString(","),
+        region.flags.entries.sortedBy { it.key.toString() }.joinToString("|") { "${it.key}=${it.value}" },
+        region.limits.entries.sortedBy { it.key.toString() }.joinToString("|") { "${it.key}=${it.value}" },
+        region.metadata.toSortedMap().entries.joinToString("|") { "${it.key}=${it.value}" },
+        region.home.toString(), region.mergeGroupId?.value?.toString().orEmpty(), region.price.toString()
+    ).joinToString("\n")
+    return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }
 
 sealed interface PlotTransferResult {

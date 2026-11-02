@@ -9,6 +9,7 @@ import systems.diath.homeclaim.core.model.Bounds
 import systems.diath.homeclaim.core.model.MergeGroupId
 import systems.diath.homeclaim.core.model.Region
 import systems.diath.homeclaim.core.model.RegionId
+import systems.diath.homeclaim.core.model.RegionRoles
 import systems.diath.homeclaim.core.model.RegionShape
 import systems.diath.homeclaim.core.model.WorldId
 import java.util.UUID
@@ -85,6 +86,20 @@ class PlotTransferPlanTest {
         assertTrue(detail.contains("actorKind=PLAYER"))
         assertTrue(detail.contains("targetChanged=true"))
         assertTrue(detail.contains("phase=APPLYING_SECONDARY"))
+    }
+
+    @Test
+    fun `region domain fingerprint is deterministic and covers mutable domain fields`() {
+        val trustedA = UUID.randomUUID()
+        val trustedB = UUID.randomUUID()
+        val base = region(Bounds(0, 15, 0, 255, 0, 15)).copy(
+            roles = RegionRoles(trusted = linkedSetOf(trustedA, trustedB))
+        )
+        val sameStateDifferentIterationOrder = base.copy(roles = RegionRoles(trusted = linkedSetOf(trustedB, trustedA)))
+
+        assertEquals(regionDomainFingerprint(base), regionDomainFingerprint(sameStateDifferentIterationOrder))
+        assertTrue(regionDomainFingerprint(base) != regionDomainFingerprint(base.copy(metadata = mapOf("alias" to "changed"))))
+        assertTrue(regionDomainFingerprint(base) != regionDomainFingerprint(base.copy(owner = UUID.randomUUID())))
     }
 
     private fun region(

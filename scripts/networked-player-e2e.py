@@ -110,7 +110,9 @@ def configure_server(paper_jar: Path, plugin_jar: Path, companion_jar: Path, por
 def lines_of_log(log_path: Path, count: int = 120) -> str:
     if not log_path.exists():
         return "(no Paper log was written)"
-    return "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-count:])
+    # Paper's interactive console can emit multi-megabyte prompt lines when a
+    # client test fails. Keep diagnostics useful without flooding Gradle output.
+    return log_path.read_bytes()[-24_000:].decode("utf-8", errors="replace")
 
 
 def start_server(paper_jar: Path, plugin_jar: Path, companion_jar: Path, java: str, log_path: Path) -> tuple[subprocess.Popen, int, int]:
@@ -485,6 +487,48 @@ async def run_scenarios(host: str, port: int, web_port: int, process: subprocess
     await control(18, "assert-copy", 90)
     first = await connect_player(PLAYER_A, host, port)
 
+    # A separate test-only transfer fails only after its full world comparison and
+    # durable completion marker. The real Paper admin command may then finalize it
+    # without writing blocks.
+    verified_job = (await control(20, "prepare-verified-copy", 90)).split("verified-copy-job=", 1)[1]
+    await second.command(f"/plot jobs inspect {verified_job}")
+    await second.next_message(lambda message: "Status: RECOVERY_REQUIRED" in message, 10)
+    await second.command(f"/plot jobs recover {verified_job} validate-and-finalize")
+    await second.next_message(lambda message: "within 30 seconds" in message, 10)
+    await control(21, f"assert-finalize-blocked:{verified_job}")
+    await second.command("/plot confirm")
+    await second.next_message(lambda message: "finalized after exact read-only world and domain verification" in message, 30)
+    await control(22, f"assert-finalize-complete:{verified_job}")
+
+    # Intent without the distinct durable completion marker must never be enough,
+    # even if the user requests the same confirmed action.
+    intent_job = (await control(23, "create-intent-only-copy")).split("intent-copy-job=", 1)[1]
+    await second.command(f"/plot jobs recover {intent_job} validate-and-finalize")
+    await second.next_message(lambda message: "no safe recorded backup" in message.lower(), 10)
+    await control(24, f"assert-finalize-blocked:{intent_job}")
+
+    async def reject_finalization(control_sequence: int, mutation: str, expected_phase: str) -> None:
+        candidate = (await control(control_sequence, "prepare-verified-copy", 90)).split("verified-copy-job=", 1)[1]
+        await control(control_sequence + 1, f"{mutation}:{candidate}")
+        await second.command(f"/plot jobs recover {candidate} validate-and-finalize")
+        await second.next_message(lambda message: "within 30 seconds" in message, 10)
+        await second.command("/plot confirm")
+        await second.next_message(lambda message: f"Finalization rejected at {expected_phase}" in message, 30)
+        await control(control_sequence + 2, f"assert-finalize-blocked:{candidate}")
+
+    await reject_finalization(25, "mutate-finalize-world", "WORLD_DRIFT")
+    await reject_finalization(28, "mutate-finalize-container", "WORLD_DRIFT")
+    await reject_finalization(31, "mutate-finalize-domain", "DOMAIN_DRIFT")
+    await reject_finalization(34, "corrupt-finalize-backup", "BACKUP_INTEGRITY_FAILED")
+
+    await first.command(f"/plot jobs resolve {intent_job} acknowledge")
+    await first.next_message(lambda message: "Keine permission" in message, 10)
+    await second.command(f"/plot jobs resolve {intent_job} acknowledge")
+    await second.next_message(lambda message: "within 30 seconds" in message, 10)
+    await second.command("/plot confirm")
+    await second.next_message(lambda message: "Job acknowledged" in message, 15)
+    await control(37, f"assert-acknowledged:{intent_job}")
+
     # Exercise the real in-game one-time pairing with this connected Player UUID.
     await first.command("/homeclaim web login")
     code_message = await first.next_message(lambda message: "Web-Login-Code" in message, 10)
@@ -529,7 +573,7 @@ async def run_scenarios(host: str, port: int, web_port: int, process: subprocess
 
     await first.close()
     await second.close()
-    result = await control(19, "finish")
+    result = await control(38, "finish")
     if not result.startswith("PASS"):
         raise AssertionError(result)
 

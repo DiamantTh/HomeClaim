@@ -401,6 +401,43 @@ class DatabaseDialectRuntimeTest {
             assertTrue(jobStore.finishRecovery(operationJobId, PlotMutationJobStatus.RECOVERED,
                 "${jobStore.findById(operationJobId)?.details}\nrecoveryPhase=WORLD_AND_DOMAIN_VERIFIED"))
 
+            val verifiedCopyId = UUID.randomUUID()
+            val verifiedCopyDetails = "format=homeclaim-transfer-v1\noperation=COPY\n" +
+                "sourceRegion=${firstId.value}\ntargetRegion=${secondId.value}\n" +
+                "sourceBackup=${UUID.randomUUID()}\ntargetSafetyBackup=${UUID.randomUUID()}\n" +
+                "completion=TRANSFER_WORLD_VERIFIED_V1\nphase=RECOVERY_REQUIRED"
+            jobStore.create(PlotMutationJobRecord(
+                id = verifiedCopyId, correlationId = CorrelationId.newId(), operation = "COPY", worldId = world.id,
+                areaId = area.id, worldName = world.name, regionIds = listOf(firstId, secondId), backend = "runtime-test",
+                status = PlotMutationJobStatus.QUEUED, details = verifiedCopyDetails
+            ))
+            jobStore.markRunning(verifiedCopyId)
+            jobStore.updateDetails(verifiedCopyId, verifiedCopyDetails)
+            jobStore.finish(verifiedCopyId, PlotMutationJobStatus.RECOVERY_REQUIRED, 1, 1, "terminal write interrupted")
+            assertTrue(jobStore.beginRecovery(verifiedCopyId, "${verifiedCopyDetails}\nrecoveryAction=VALIDATE_AND_FINALIZE"))
+            assertTrue(jobStore.finalizeVerifiedCopy(verifiedCopyId,
+                "${verifiedCopyDetails}\nrecoveryAction=VALIDATE_AND_FINALIZE\nrecoveryPhase=VALIDATED_FINALIZED"))
+            val finalizedCopy = requireNotNull(jobStore.findById(verifiedCopyId))
+            assertEquals(PlotMutationJobStatus.COMPLETED, finalizedCopy.status)
+            assertEquals(finalizedCopy.totalUnits, finalizedCopy.completedUnits)
+
+            val intentOnlyCopyId = UUID.randomUUID()
+            jobStore.create(PlotMutationJobRecord(
+                id = intentOnlyCopyId, correlationId = CorrelationId.newId(), operation = "COPY", worldId = world.id,
+                areaId = area.id, worldName = world.name, regionIds = listOf(firstId, secondId), backend = "runtime-test",
+                status = PlotMutationJobStatus.QUEUED,
+                details = "format=homeclaim-transfer-v1\noperation=COPY\nphase=APPLYING_TARGET"
+            ))
+            jobStore.markRunning(intentOnlyCopyId)
+            jobStore.updateDetails(intentOnlyCopyId,
+                "format=homeclaim-transfer-v1\noperation=COPY\nphase=APPLYING_TARGET")
+            jobStore.finish(intentOnlyCopyId, PlotMutationJobStatus.RECOVERY_REQUIRED, 1, 1, "write intent only")
+            assertTrue(jobStore.beginRecovery(intentOnlyCopyId,
+                "format=homeclaim-transfer-v1\noperation=COPY\nphase=APPLYING_TARGET\nrecoveryAction=VALIDATE_AND_FINALIZE"))
+            assertEquals(false, jobStore.finalizeVerifiedCopy(intentOnlyCopyId,
+                "phase=VALIDATED_FINALIZED"))
+            assertEquals(PlotMutationJobStatus.RECOVERY_IN_PROGRESS, jobStore.findById(intentOnlyCopyId)?.status)
+
             // Runtime wiring gives the canonical operation service the same audit sink as
             // the repositories and REST adapter, so the operation lifecycle is persisted
             // without falling back to the repository's compatibility audit.

@@ -79,6 +79,7 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecovery
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanResult
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanner
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferResult
+import systems.diath.homeclaim.platform.paper.plot.mutation.regionDomainFingerprint
 import org.bukkit.NamespacedKey
 import io.papermc.paper.registry.RegistryAccess
 import io.papermc.paper.registry.RegistryKey
@@ -1837,9 +1838,11 @@ class PlotCommand(
             return
         }
         val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
+        val validateFinalize = action == PlotMutationRecoveryAction.VALIDATE_AND_FINALIZE
         if (action != PlotMutationRecoveryAction.ACKNOWLEDGE &&
             (operationOriginal && (safetyBundleId(job) == null || safetyBundleManifestSha256(job) == null) ||
-                !operationOriginal && recoveryTargets(job, action).isNullOrEmpty())) {
+                validateFinalize && verifiedCopyTargets(job).isNullOrEmpty() ||
+                !operationOriginal && !validateFinalize && recoveryTargets(job, action).isNullOrEmpty())) {
             player.sendMessage("§cThis job has no safe recorded backup for that recovery action.")
             return
         }
@@ -1851,6 +1854,8 @@ class PlotCommand(
         pendingConfirmations.create(actor, operationKey, target, recoveryStateSignature(job), correlationId = correlation)
         if (action == PlotMutationRecoveryAction.ACKNOWLEDGE) {
             player.sendMessage("§cThis only acknowledges manual repair. HomeClaim will not verify or change the world.")
+        } else if (validateFinalize) {
+            player.sendMessage("§eThis will re-verify the recorded COPY snapshots and Region metadata. It will not write any world blocks.")
         } else if (operationOriginal) {
             player.sendMessage("§cThis will restore the recorded world pre-image and merge/home domain state from the validated safety bundle.")
         } else {
@@ -1861,7 +1866,7 @@ class PlotCommand(
     }
 
     private fun confirmJobRecovery(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
-        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|RESTORE_OPERATION_ORIGINAL|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
+        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|RESTORE_OPERATION_ORIGINAL|VALIDATE_AND_FINALIZE|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
         val jobId = match?.groupValues?.get(1)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val action = match?.groupValues?.get(2)?.let { runCatching { PlotMutationRecoveryAction.valueOf(it) }.getOrNull() }
         val store = mutationJobStore ?: run { pendingConfirmations.invalidate(actor); player.sendMessage("§cPersistent mutation-job storage is unavailable."); return }
@@ -1874,6 +1879,7 @@ class PlotCommand(
         }
         val acknowledgement = action == PlotMutationRecoveryAction.ACKNOWLEDGE
         val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
+        val validateFinalize = action == PlotMutationRecoveryAction.VALIDATE_AND_FINALIZE
         val expectedOperation = if (acknowledgement) HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE
             else HomeClaimOperationActions.REGION_RECOVERY
         if (pending.operation != expectedOperation) {
@@ -1882,7 +1888,11 @@ class PlotCommand(
             return
         }
         if (!Permissions.checkWithMessage(player, if (acknowledgement) Permissions.ADMIN_JOBS_RESOLVE else Permissions.ADMIN_JOBS_RECOVER)) return
-        val targets = if (acknowledgement) emptyList() else recoveryTargets(job, action).orEmpty()
+        val targets = when {
+            acknowledgement -> emptyList()
+            validateFinalize -> verifiedCopyTargets(job).orEmpty()
+            else -> recoveryTargets(job, action).orEmpty()
+        }
         if (!acknowledgement && !operationOriginal && targets.isEmpty()) {
             pendingConfirmations.invalidate(actor)
             player.sendMessage("§cA safe backup mapping is no longer available for this action.")
@@ -1936,6 +1946,10 @@ class PlotCommand(
                 "Recovery was not started because ATTEMPTED audit failed: ${auditStartFailure.message}") }
             lease.close()
             player.sendMessage("§cRecovery was not started because its audit could not be recorded; the plot remains blocked.")
+            return
+        }
+        if (validateFinalize) {
+            finalizeVerifiedCopy(player, job, action, actor, pending.correlationId, request, lease, targets)
             return
         }
         if (operationOriginal) {
@@ -2031,6 +2045,133 @@ class PlotCommand(
                 )
             }
         }
+    }
+
+    private data class VerifiedCopyEvidence(
+        val source: Region,
+        val target: Region,
+        val sourceBackupId: UUID,
+        val targetSafetyBackupId: UUID,
+        val paperWorldId: UUID,
+        val sourceDomainSha256: String,
+        val targetDomainSha256: String
+    )
+
+    private fun verifiedCopyEvidence(job: PlotMutationJobRecord): VerifiedCopyEvidence? {
+        if (job.status != PlotMutationJobStatus.RECOVERY_REQUIRED || job.operation != "COPY") return null
+        val fields = job.details.orEmpty().lineSequence().mapNotNull { line ->
+            val equals = line.indexOf('=')
+            if (equals <= 0) null else line.substring(0, equals) to line.substring(equals + 1)
+        }.toMap()
+        if (fields["completion"] != "TRANSFER_WORLD_VERIFIED_V1") return null
+        fun uuid(name: String) = fields[name]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        val sourceId = uuid("sourceRegion")?.let(::RegionId) ?: return null
+        val targetId = uuid("targetRegion")?.let(::RegionId) ?: return null
+        val sourceBackup = uuid("sourceBackup") ?: return null
+        val targetSafety = uuid("targetSafetyBackup") ?: return null
+        val paperWorldId = uuid("paperWorldId") ?: return null
+        val sourceHash = fields["sourceDomainSha256"]?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null
+        val targetHash = fields["targetDomainSha256"]?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null
+        if (job.regionIds.toSet() != setOf(sourceId, targetId)) return null
+        val source = regionService.getRegionById(sourceId) ?: return null
+        val target = regionService.getRegionById(targetId) ?: return null
+        if (source.areaId != job.areaId || target.areaId != job.areaId) return null
+        return VerifiedCopyEvidence(source, target, sourceBackup, targetSafety, paperWorldId, sourceHash, targetHash)
+    }
+
+    private fun verifiedCopyTargets(job: PlotMutationJobRecord): List<RecoveryTarget>? {
+        val evidence = verifiedCopyEvidence(job) ?: return null
+        // The source snapshot is the expected image on both sides of a COPY.
+        return listOf(RecoveryTarget(evidence.source, evidence.sourceBackupId),
+            RecoveryTarget(evidence.target, evidence.sourceBackupId))
+    }
+
+    private fun finalizeVerifiedCopy(
+        player: Player,
+        job: PlotMutationJobRecord,
+        action: PlotMutationRecoveryAction,
+        actor: ActionActor,
+        correlationId: CorrelationId,
+        request: ActionRequest,
+        lease: RegionMutationConflictCoordinator.Lease,
+        targets: List<RecoveryTarget>
+    ) {
+        val store = mutationJobStore
+        val backups = backupService
+        val evidence = verifiedCopyEvidence(job)
+        val world = evidence?.let { org.bukkit.Bukkit.getWorld(it.paperWorldId) }
+        val expectedWorldId = job.worldId
+        val fail = { phase: String, reason: String ->
+            val persistFailure = Runnable {
+                runCatching { store?.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                    recoveryDetails(job, action, actor, correlationId, phase), reason) }
+                    .onFailure { org.bukkit.Bukkit.getLogger().severe("Could not preserve verified-finalization blocker ${job.id}: ${it.message}") }
+                runCatching { auditOperation(request, AuditStatus.FAILED, "validatedFinalization=false; phase=$phase; $reason", targets.size) }
+                onPaper {
+                    if (player.isOnline) player.sendMessage("§cFinalization rejected at $phase: $reason. The job remains blocked.")
+                    lease.close()
+                }
+            }
+            runCatching { org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(
+                org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), persistFailure
+            ) }.onFailure { schedulingFailure ->
+                org.bukkit.Bukkit.getLogger().severe("Could not schedule verified-finalization failure persistence for ${job.id}: ${schedulingFailure.message}")
+                lease.close()
+            }
+        }
+        if (store == null || backups == null || evidence == null || world == null || world.uid != evidence.paperWorldId || expectedWorldId == null) {
+            fail("EVIDENCE_UNAVAILABLE", "durable COPY proof, backup service, or original world binding is unavailable")
+            return
+        }
+        if (regionDomainFingerprint(evidence.source) != evidence.sourceDomainSha256 ||
+            regionDomainFingerprint(evidence.target) != evidence.targetDomainSha256) {
+            fail("DOMAIN_DRIFT", "a source or target Region record differs from the durable operation fingerprint")
+            return
+        }
+        player.sendMessage("§7Validating HCBK integrity and comparing the current source and target without writing blocks…")
+        backups.validateReadyBackup(evidence.sourceBackupId)
+            .thenCombine(backups.validateReadyBackup(evidence.targetSafetyBackupId)) { sourceBackup, safetyBackup ->
+                require(sourceBackup.regionId == evidence.source.id && sourceBackup.areaId == job.areaId &&
+                    sourceBackup.worldId == expectedWorldId && sourceBackup.paperWorldId == evidence.paperWorldId) {
+                    "Source snapshot identity or world binding changed"
+                }
+                require(safetyBackup.regionId == evidence.target.id && safetyBackup.areaId == job.areaId &&
+                    safetyBackup.worldId == expectedWorldId && safetyBackup.paperWorldId == evidence.paperWorldId) {
+                    "Target safety snapshot identity or world binding changed"
+                }
+                sourceBackup
+            }.whenComplete { sourceBackup, backupFailure -> onPaper {
+                if (backupFailure != null || sourceBackup == null) {
+                    fail("BACKUP_INTEGRITY_FAILED", backupFailure?.cause?.message ?: backupFailure?.message ?: "backup validation failed")
+                    return@onPaper
+                }
+                backups.verifyBackupAtTarget(evidence.sourceBackupId, evidence.source, evidence.source, world,
+                    expectedWorldId, correlationId)
+                    .thenCombine(backups.verifyBackupAtTarget(evidence.sourceBackupId, evidence.source, evidence.target, world,
+                        expectedWorldId, correlationId)) { sourceCount, targetCount -> sourceCount to targetCount }
+                    .whenComplete { verifiedCounts, verifyFailure -> onPaper {
+                        if (verifyFailure != null || verifiedCounts == null) {
+                            fail("WORLD_DRIFT", verifyFailure?.cause?.message ?: verifyFailure?.message ?: "world comparison failed")
+                            return@onPaper
+                        }
+                        val details = recoveryDetails(job, action, actor, correlationId, "VALIDATED_FINALIZED")
+                        val finalize = Runnable {
+                            val finalized = runCatching { store.finalizeVerifiedCopy(job.id, details) }.getOrDefault(false)
+                            if (finalized) runCatching { auditOperation(request, AuditStatus.COMPLETED,
+                                "validatedFinalization=true; originalJobId=${job.id}; verifiedBlocks=${verifiedCounts.first + verifiedCounts.second}; worldMutation=false",
+                                targets.size) }
+                                .onFailure { org.bukkit.Bukkit.getLogger().warning("Verified COPY ${job.id} finalized but audit append failed: ${it.message}") }
+                            onPaper {
+                                if (finalized && player.isOnline) player.sendMessage("§aCOPY job ${job.id} was finalized after exact read-only world and domain verification; no blocks were changed.")
+                                if (!finalized) fail("TERMINAL_PERSISTENCE_FAILED", "verified completion marker was not accepted by the persistent job store")
+                                else lease.close()
+                            }
+                        }
+                        runCatching { org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(
+                            org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), finalize
+                        ) }.onFailure { fail("TERMINAL_PERSISTENCE_FAILED", it.message ?: "could not schedule terminal persistence") }
+                    } }
+            } }
     }
 
     private fun safetyBundleId(job: PlotMutationJobRecord): UUID? = job.details.orEmpty().lineSequence()

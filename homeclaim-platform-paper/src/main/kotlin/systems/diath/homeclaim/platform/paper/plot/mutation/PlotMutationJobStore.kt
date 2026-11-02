@@ -72,6 +72,9 @@ interface PlotMutationJobStore {
 
     /** Persists the recovery outcome while retaining the original mutation job. */
     fun finishRecovery(id: UUID, status: PlotMutationJobStatus, recoveryDetails: String, error: String? = null): Boolean = false
+
+    /** Finalizes only a COPY job carrying its durable post-write world verification proof. */
+    fun finalizeVerifiedCopy(id: UUID, details: String): Boolean = false
 }
 
 class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutationJobStore {
@@ -288,6 +291,32 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             record.copy(status = status, details = recoveryDetails, error = error, updatedAt = Instant.now(),
                 completedAt = if (status == PlotMutationJobStatus.RECOVERY_REQUIRED) null else Instant.now())
                 .also(::updateRecoveryIndex)
+        }
+        return changed
+    }
+
+    override fun finalizeVerifiedCopy(id: UUID, details: String): Boolean {
+        require(details.length <= MAX_DETAILS_LENGTH)
+        val changed = dataSource.connection.use { connection ->
+            connection.prepareStatement("""
+                UPDATE plot_mutation_jobs
+                SET status = ?, completed_units = total_units, details = ?, error = NULL, updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND operation = ? AND status = ?
+                  AND details LIKE ?
+            """.trimIndent()).use { statement ->
+                statement.setString(1, PlotMutationJobStatus.COMPLETED.name)
+                statement.setString(2, details)
+                statement.setObject(3, id)
+                statement.setString(4, "COPY")
+                statement.setString(5, PlotMutationJobStatus.RECOVERY_IN_PROGRESS.name)
+                statement.setString(6, "%completion=TRANSFER_WORLD_VERIFIED_V1%")
+                statement.executeUpdate() == 1
+            }
+        }
+        if (changed) knownJobs.computeIfPresent(id) { _, record ->
+            record.copy(status = PlotMutationJobStatus.COMPLETED, completedUnits = record.totalUnits, details = details, error = null,
+                updatedAt = Instant.now(), completedAt = Instant.now()).also(::updateRecoveryIndex)
         }
         return changed
     }

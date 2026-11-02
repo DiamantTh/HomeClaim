@@ -158,7 +158,7 @@ class PaperPlotTransferService(
             }
             task.completedUnits = 3
             if (task.plan.operation == PlotTransferOperation.COPY) {
-                complete(task)
+                verifyAndComplete(task)
             } else if (task.plan.operation == PlotTransferOperation.MOVE) {
                 updatePhase(task, "CLEANING_SOURCE") {
                     faultInjector.beforePhase(PlotTransferPhase.SOURCE_CLEANUP)
@@ -172,7 +172,7 @@ class PaperPlotTransferService(
                         task.plan.worldId, task.correlationId
                     ) { applied -> if (applied > 0) { task.worldMutated = true; task.sourceChanged = true } }.whenComplete { _, secondFailure -> onServer {
                         if (secondFailure != null) fail(task, unwrap(secondFailure), true)
-                        else { task.completedUnits = 4; complete(task) }
+                        else { task.completedUnits = 4; verifyAndComplete(task) }
                     } }
                 }
             }
@@ -197,7 +197,7 @@ class PaperPlotTransferService(
             task.scheduledTask = null
             if (error != null) { fail(task, error, true); return }
             task.completedUnits = 4
-            complete(task)
+            verifyAndComplete(task)
         }
         try {
             taskHandle = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
@@ -269,35 +269,69 @@ class PaperPlotTransferService(
         } catch (failure: Throwable) { fail(task, failure, task.completedUnits > 0) }
     }
 
+    private fun verifyAndComplete(task: TransferTask) {
+        val proof = "TRANSFER_WORLD_VERIFIED_V1"
+        val verified = details(task, "WORLD_VERIFIED").copy(completionProof = proof).encode()
+        // Keep JDBC off Paper's tick. Terminalization cannot begin until this durable
+        // post-verification write succeeds and its callback returns to the server thread.
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, Runnable {
+                val failure = runCatching { jobs.updateDetails(task.job.id, verified) }.exceptionOrNull()
+                onServer {
+                    if (failure != null) fail(task, failure, partial = true)
+                    else {
+                        task.completionProof = proof
+                        try {
+                            faultInjector.beforePhase(PlotTransferPhase.AFTER_VERIFIED_BEFORE_TERMINAL)
+                            complete(task)
+                        } catch (injected: Throwable) {
+                            fail(task, injected, partial = true)
+                        }
+                    }
+                }
+            })
+        } catch (failure: Throwable) {
+            fail(task, failure, partial = true)
+        }
+    }
+
     private fun complete(task: TransferTask) {
         if (!task.completed.compareAndSet(false, true)) return
-        val detail = details(task, "COMPLETED").encode()
-        val terminalFailure = runCatching {
-            jobs.updateDetails(task.job.id, detail)
-            jobs.finish(task.job.id, PlotMutationJobStatus.COMPLETED, task.totalSteps, task.totalSteps)
-        }.exceptionOrNull()
-        task.lease.close()
+        val detail = details(task, "COMPLETED").copy(completionProof = task.completionProof).encode()
         task.scheduledTask?.cancel()
-        activeTasks.remove(task)
-        if (terminalFailure != null) {
-            val failure = terminalFailure
-            val persisted = runCatching { jobs.findById(task.job.id) }.getOrNull()
-            if (persisted?.status == PlotMutationJobStatus.COMPLETED) {
-                val auditError = runCatching { audit(task.request, AuditStatus.COMPLETED, detail) }.exceptionOrNull()
-                task.result.complete(PlotTransferResult.Completed(task.job.id, task.sourceBackupId, task.targetBackupId))
-                if (auditError != null) plugin.logger.log(Level.SEVERE, "Transfer ${task.job.id} completed but terminal audit failed", auditError)
-                return
+        val persist = Runnable {
+            var terminalFailure = runCatching {
+                jobs.updateDetails(task.job.id, detail)
+                jobs.finish(task.job.id, PlotMutationJobStatus.COMPLETED, task.totalSteps, task.totalSteps)
+            }.exceptionOrNull()
+            if (terminalFailure != null && runCatching { jobs.findById(task.job.id) }.getOrNull()?.status != PlotMutationJobStatus.COMPLETED) {
+                val failure = requireNotNull(terminalFailure)
+                runCatching { jobs.finish(task.job.id, PlotMutationJobStatus.RECOVERY_REQUIRED, task.completedUnits, task.totalSteps,
+                    "World transfer verified but terminal journal finalization failed: ${failure.message}; $detail") }
+                    .onFailure { plugin.logger.log(Level.SEVERE, "Could not mark transfer ${task.job.id} as recovery required", it) }
+            } else if (terminalFailure != null) {
+                terminalFailure = null
             }
-            runCatching { jobs.finish(task.job.id, PlotMutationJobStatus.RECOVERY_REQUIRED, task.completedUnits, task.totalSteps,
-                "World transfer completed but terminal journal finalization failed: ${failure.message}; $detail") }
-                .onFailure { plugin.logger.log(Level.SEVERE, "Could not mark transfer ${task.job.id} as recovery required", it) }
-            runCatching { audit(task.request, AuditStatus.FAILED,
-                "World transfer completed, but terminal journal finalization failed: ${failure.message}; $detail") }
-            task.result.complete(PlotTransferResult.Failed(task.job.id, "Transfer completed in world, but final state needs inspection", true))
-        } else {
-            val auditError = runCatching { audit(task.request, AuditStatus.COMPLETED, detail) }.exceptionOrNull()
-            task.result.complete(PlotTransferResult.Completed(task.job.id, task.sourceBackupId, task.targetBackupId))
-            if (auditError != null) plugin.logger.log(Level.SEVERE, "Transfer ${task.job.id} completed but terminal audit failed", auditError)
+            val finalFailure = terminalFailure
+            val auditError = runCatching {
+                audit(task.request, if (finalFailure == null) AuditStatus.COMPLETED else AuditStatus.FAILED,
+                    if (finalFailure == null) detail else "World transfer verified, but terminal journal finalization failed: ${finalFailure.message}; $detail")
+            }.exceptionOrNull()
+            onServer {
+                task.lease.close()
+                activeTasks.remove(task)
+                if (finalFailure == null) {
+                    task.result.complete(PlotTransferResult.Completed(task.job.id, task.sourceBackupId, task.targetBackupId))
+                    if (auditError != null) plugin.logger.log(Level.SEVERE, "Transfer ${task.job.id} completed but terminal audit failed", auditError)
+                } else task.result.complete(PlotTransferResult.Failed(task.job.id,
+                    "Transfer completed in world, but final state needs inspection", true))
+            }
+        }
+        runCatching { Bukkit.getScheduler().runTaskAsynchronously(plugin, persist) }.onFailure { schedulingFailure ->
+            task.lease.close()
+            activeTasks.remove(task)
+            task.result.complete(PlotTransferResult.Failed(task.job.id,
+                "Transfer completed in world, but terminal persistence could not be scheduled: ${schedulingFailure.message}", true))
         }
     }
 
@@ -306,7 +340,7 @@ class PaperPlotTransferService(
         val recoveryRequired = partial || task.worldMutated
         val status = if (recoveryRequired) PlotMutationJobStatus.RECOVERY_REQUIRED else PlotMutationJobStatus.FAILED
         val phase = if (recoveryRequired) "RECOVERY_REQUIRED" else "FAILED"
-        val details = details(task, phase).encode()
+        val details = details(task, phase).copy(completionProof = task.completionProof).encode()
         val message = "${failure.message ?: failure.javaClass.simpleName}; $details"
         task.scheduledTask?.cancel()
         // A database outage can make journal writes wait for the pool connection timeout. Keep
@@ -343,7 +377,8 @@ class PaperPlotTransferService(
 
     private fun details(task: TransferTask, phase: String) = details(
         task.plan, task.actor, task.world, task.sourceBackupId, task.targetBackupId, phase,
-        sourceChanged = task.sourceChanged, targetChanged = task.targetChanged
+        sourceChanged = task.sourceChanged, targetChanged = task.targetChanged,
+        completionProof = task.completionProof
     )
 
     private fun details(
@@ -354,7 +389,8 @@ class PaperPlotTransferService(
         targetBackupId: UUID,
         phase: String,
         sourceChanged: Boolean = false,
-        targetChanged: Boolean = false
+        targetChanged: Boolean = false,
+        completionProof: String? = null
     ) = PlotTransferJournalDetails(
         operation = plan.operation,
         sourceRegionId = plan.source.id.value,
@@ -368,7 +404,10 @@ class PaperPlotTransferService(
         actorKind = actor.kind,
         actorRef = actor.stableId,
         sourceChanged = sourceChanged,
-        targetChanged = targetChanged
+        targetChanged = targetChanged,
+        completionProof = completionProof,
+        sourceDomainSha256 = regionDomainFingerprint(plan.source),
+        targetDomainSha256 = regionDomainFingerprint(plan.target)
     )
 
     private fun request(
@@ -450,6 +489,7 @@ class PaperPlotTransferService(
         @Volatile var worldMutated: Boolean = false,
         @Volatile var sourceChanged: Boolean = false,
         @Volatile var targetChanged: Boolean = false,
+        @Volatile var completionProof: String? = null,
         @Volatile var scheduledTask: BukkitTask? = null,
         val completed: AtomicBoolean = AtomicBoolean()
     )
@@ -460,7 +500,7 @@ class PaperPlotTransferService(
 }
 
 /** Narrow dependency-injection seam for isolated integration tests; production always uses [NONE]. */
-enum class PlotTransferPhase { SOURCE_CLEANUP, SECONDARY_APPLY }
+enum class PlotTransferPhase { SOURCE_CLEANUP, SECONDARY_APPLY, AFTER_VERIFIED_BEFORE_TERMINAL }
 
 fun interface PlotTransferFaultInjector {
     fun beforePhase(phase: PlotTransferPhase)

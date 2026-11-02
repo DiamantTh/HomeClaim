@@ -172,6 +172,18 @@ class PaperPlotBackupService(
         backupId, source, target, world, expectedWorldId, correlationId, onProgress, null
     )
 
+    /** Read-only full comparison of a READY backup against a same-sized target region. */
+    fun verifyBackupAtTarget(
+        backupId: UUID,
+        source: Region,
+        target: Region,
+        world: World,
+        expectedWorldId: systems.diath.homeclaim.core.model.WorldId,
+        correlationId: CorrelationId
+    ): CompletableFuture<Int> = applyBackupToTargetInternal(
+        backupId, source, target, world, expectedWorldId, correlationId, null, null, true
+    )
+
     /** Test/diagnostic variant with explicit phase callbacks; the ordinary transfer API remains source-compatible. */
     fun applyBackupToTargetWithPhases(
         backupId: UUID,
@@ -182,13 +194,29 @@ class PaperPlotBackupService(
         correlationId: CorrelationId,
         onProgress: ((Int) -> Unit)?,
         onPhase: ((PlotBackupApplyPhase) -> Unit)?
+    ): CompletableFuture<Int> = applyBackupToTargetInternal(
+        backupId, source, target, world, expectedWorldId, correlationId, onProgress, onPhase, false
+    )
+
+    private fun applyBackupToTargetInternal(
+        backupId: UUID,
+        source: Region,
+        target: Region,
+        world: World,
+        expectedWorldId: systems.diath.homeclaim.core.model.WorldId,
+        correlationId: CorrelationId,
+        onProgress: ((Int) -> Unit)?,
+        onPhase: ((PlotBackupApplyPhase) -> Unit)?,
+        verifyOnly: Boolean
     ): CompletableFuture<Int> {
         val result = CompletableFuture<Int>()
         // Read Paper properties while called from the server thread; the worker only retains immutable values.
         val paperWorldId = world.uid
         val minHeight = world.minHeight
         val maxHeight = world.maxHeight
-        val task = ApplyTask(backupId, source, target, world, paperWorldId, minHeight, maxHeight, correlationId, result, onProgress, onPhase)
+        val task = ApplyTask(backupId, source, target, world, paperWorldId, minHeight, maxHeight, correlationId, result, onProgress, onPhase).also {
+            it.verifying = verifyOnly
+        }
         if (closed.get()) return CompletableFuture.failedFuture(IllegalStateException("Backup service is shutting down"))
         applies += task
         result.whenComplete { _, _ -> applies.remove(task) }
@@ -224,8 +252,10 @@ class PaperPlotBackupService(
                     task.header = PlotBackupFormat.validate(file, record)
                     task.input = PlotBackupFormat.openPayload(file, requireNotNull(task.header))
                     io.execute { runOnServer {
-                        task.onPhase?.invoke(PlotBackupApplyPhase.APPLY_STARTED)
-                        applyTransferBatch(task, targetBounds)
+                        if (verifyOnly) verifyTransferBatch(task, targetBounds) else {
+                            task.onPhase?.invoke(PlotBackupApplyPhase.APPLY_STARTED)
+                            applyTransferBatch(task, targetBounds)
+                        }
                     } }
                 } catch (failure: Throwable) {
                     result.completeExceptionally(failure)
@@ -338,7 +368,7 @@ class PaperPlotBackupService(
                                 }
                             }
                             task.applied += expected.size
-                            applyTransferBatch(task, targetBounds)
+                            verifyTransferBatch(task, targetBounds)
                         } catch (failure: Throwable) {
                             failApply(task, failure)
                         }

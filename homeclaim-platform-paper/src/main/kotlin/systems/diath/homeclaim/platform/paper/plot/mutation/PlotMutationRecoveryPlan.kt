@@ -3,7 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import systems.diath.homeclaim.core.model.RegionId
 import java.util.UUID
 
-enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, RESTORE_OPERATION_ORIGINAL, ACKNOWLEDGE }
+enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, RESTORE_OPERATION_ORIGINAL, VALIDATE_AND_FINALIZE, ACKNOWLEDGE }
 
 data class PlotMutationRecoveryTarget(val regionId: RegionId, val backupId: UUID)
 

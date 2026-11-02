@@ -113,6 +113,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private val networkSnapshots = mutableMapOf<String, List<BlockImage>>()
     private var networkForeign: Region? = null
     private var networkRecoveryJobId: UUID? = null
+    private var networkFixtureX = 28
     private var networkRecoveryTarget: List<BlockImage>? = null
     private var networkControlSequence = -1L
 
@@ -261,6 +262,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             check(result is PlotTransferResult.Completed) { "COPY did not complete: $result" }
             val completed = result as PlotTransferResult.Completed
             check(jobStore.findById(completed.jobId)?.status == PlotMutationJobStatus.COMPLETED) { "COPY job is not terminal COMPLETED" }
+            check(jobStore.findById(completed.jobId)?.details?.contains("completion=TRANSFER_WORLD_VERIFIED_V1") == true) {
+                "COPY terminalization omitted its durable post-verification completion proof"
+            }
             check(conflicts.checkAvailable(listOf(first.id, second.id)) == null) { "COPY did not release its reservation" }
             check(capture(testWorld, first.bounds.minX) == beforeA) { "COPY changed its source" }
             check(capture(testWorld, second.bounds.minX) == beforeA) { "COPY target differs from source snapshot" }
@@ -416,6 +420,119 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             waiting = true
             val operation = split[1]
             runCatching {
+                if (operation == "prepare-verified-copy") {
+                    val sourceX = networkFixtureX
+                    networkFixtureX += 4
+                    startVerifiedCopyCandidate(sourceX) { jobId ->
+                        Files.writeString(response, "$sequence|PASS|verified-copy-job=$jobId\n")
+                        waiting = false
+                    }
+                    return@runCatching
+                }
+                if (operation == "create-intent-only-copy") {
+                    val source = createNetworkFixtureRegion(networkFixtureX, "intent-source")
+                    val target = createNetworkFixtureRegion(networkFixtureX + 2, "intent-target")
+                    networkFixtureX += 4
+                    val jobId = UUID.randomUUID()
+                    val details = "format=homeclaim-transfer-v1\noperation=COPY\nsourceRegion=${source.id.value}\n" +
+                        "targetRegion=${target.id.value}\nphase=APPLYING_TARGET\npaperWorldId=${testWorld.uid}"
+                    jobStore.create(PlotMutationJobRecord(jobId, CorrelationId.newId(), "COPY", homeWorld.id, area.id,
+                        testWorld.name, listOf(source.id, target.id), "network-test-only", PlotMutationJobStatus.QUEUED,
+                        totalUnits = 1, details = details))
+                    jobStore.markRunning(jobId)
+                    jobStore.updateDetails(jobId, details)
+                    jobStore.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, 1, "test-only write intent without completion proof")
+                    Files.writeString(response, "$sequence|PASS|intent-copy-job=$jobId\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("mutate-finalize-world:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    val target = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "targetRegion")))
+                    testWorld.getBlockAt(target.bounds.minX, testWorld.minHeight + 10, target.bounds.minZ).setType(Material.DIRT, false)
+                    Files.writeString(response, "$sequence|PASS|verified-copy-world-drift-created\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("mutate-finalize-container:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    val source = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "sourceRegion")))
+                    val chest = (source.bounds.minY..source.bounds.maxY).asSequence()
+                        .map { y -> testWorld.getBlockAt(source.bounds.minX, y, source.bounds.minZ).state }
+                        .filterIsInstance<Container>()
+                        .firstOrNull() ?: error("Verified COPY source chest fixture is missing")
+                    val snapshotInventory = chest.snapshotInventory
+                    snapshotInventory.clear()
+                    snapshotInventory.setItem(3, org.bukkit.inventory.ItemStack(Material.DIRT, 1))
+                    check(chest.update(true, false))
+                    val persistedInventory = testWorld.getBlockAt(source.bounds.minX, chest.y, source.bounds.minZ).state as? Container
+                        ?: error("Container drift mutation removed the source chest")
+                    check(persistedInventory.snapshotInventory.getItem(3)?.type == Material.DIRT) {
+                        "Container drift mutation did not persist to the source BlockState"
+                    }
+                    Files.writeString(response, "$sequence|PASS|verified-copy-container-drift-created\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("mutate-finalize-domain:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    val target = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "targetRegion")))
+                    services.regionService.updateRegion(target.copy(metadata = target.metadata + ("finalizeDrift" to UUID.randomUUID().toString())))
+                    Files.writeString(response, "$sequence|PASS|verified-copy-domain-drift-created\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("corrupt-finalize-backup:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    val fields = jobFields(job)
+                    val source = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "sourceRegion")))
+                    val backupId = UUID.fromString(requireNotNull(fields["sourceBackup"]))
+                    val path = homeClaimPlugin.dataFolder.toPath().resolve("backups/${area.id.value}/${source.id.value}/$backupId.hcbackup")
+                    val bytes = Files.readAllBytes(path)
+                    check(bytes.isNotEmpty())
+                    bytes[bytes.lastIndex] = (bytes.last().toInt() xor 0x01).toByte()
+                    Files.write(path, bytes)
+                    Files.writeString(response, "$sequence|PASS|verified-copy-backup-corruption-created\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("assert-finalize-complete:")) {
+                    val jobId = UUID.fromString(operation.substringAfter(':'))
+                    val job = requireNotNull(jobStore.findById(jobId))
+                    check(job.status == PlotMutationJobStatus.COMPLETED)
+                    check(job.completedUnits == job.totalUnits) { "Finalized COPY job was terminal but had incomplete progress ${job.completedUnits}/${job.totalUnits}" }
+                    val source = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "sourceRegion")))
+                    val target = requireNotNull(services.regionService.getRegionById(jobFieldRegion(job, "targetRegion")))
+                    check(capture(testWorld, source.bounds.minX) == capture(testWorld, target.bounds.minX))
+                    Files.writeString(response, "$sequence|PASS|verified-copy-finalized-read-only\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("assert-finalize-blocked:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED) { "Rejected finalization cleared the blocker: ${job.status}" }
+                    Files.writeString(response, "$sequence|PASS|verified-finalization-remains-blocked\n")
+                    waiting = false
+                    return@runCatching
+                }
+                if (operation.startsWith("assert-acknowledged:")) {
+                    val job = requireNotNull(jobStore.findById(UUID.fromString(operation.substringAfter(':'))))
+                    check(job.status == PlotMutationJobStatus.ACKNOWLEDGED) { "Manual acknowledgement reported ${job.status}" }
+                    check(conflicts.checkAvailable(job.regionIds) !is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired) {
+                        "Acknowledged job left a recovery blocker"
+                    }
+                    check(systems.diath.homeclaim.core.store.JdbcAuditService(requireNotNull(services.dataSource))
+                        .findForTarget(job.regionIds.first().value, java.time.Instant.EPOCH, 100)
+                        .any {
+                            it.action == systems.diath.homeclaim.core.policy.HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE.value &&
+                                it.actorId == networkPlayerBId
+                        }) {
+                        "Acknowledgement audit did not retain the live admin Player UUID"
+                    }
+                    Files.writeString(response, "$sequence|PASS|live-acknowledgement-acknowledged-not-recovered\n")
+                    waiting = false
+                    return@runCatching
+                }
                 val message = when (operation) {
                     "seed-copy" -> seedForNetwork("copy", "network-copy-source", "network-copy-target", testWorld)
                     "seed-move" -> seedForNetwork("move", "network-move-source", "network-move-target", testWorld)
@@ -491,7 +608,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                     "finish-smoke" -> "purpur-network-player-smoke-pass"
                     else -> error("Unknown network E2E control operation: $operation")
                 }
-                if (operation == "finish") finish("PASS network-player protocol 777; plot info/reset/copy/move/swap/restore/recovery commands; actor binding; permissions; web pairing/websocket; disconnect")
+                if (operation == "finish") finish("PASS network-player protocol 777; plot info/reset/copy/move/swap/restore/recovery commands; verified COPY finalization + intent/world/container/domain/integrity rejection; ACKNOWLEDGE is separate from RECOVERED; actor binding; permissions; web pairing/websocket; disconnect")
                 else if (operation == "finish-smoke") finish("PASS purpur-network-player-smoke protocol 777; plot info/recovery/reset confirmation")
                 else {
                     Files.writeString(response, "$sequence|PASS|$message\n")
@@ -508,6 +625,56 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         networkSnapshots["$key-target"] = capture(testWorld, second.bounds.minX)
         return "$key-fixtures-ready"
     }
+
+    private fun createNetworkFixtureRegion(x: Int, label: String): Region {
+        val testWorld = requireNotNull(world)
+        testWorld.getChunkAt(x shr 4, 0)
+        val region = createRegion(Bounds(x, x, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
+        services.regionService.updateRegion(region.copy(owner = networkPlayerAId))
+        val current = requireNotNull(services.regionService.getRegionById(region.id))
+        seed(current, label)
+        operationSafetyRegions += current
+        return current
+    }
+
+    private fun startVerifiedCopyCandidate(sourceX: Int, done: (UUID) -> Unit) {
+        val testWorld = requireNotNull(world)
+        val source = createNetworkFixtureRegion(sourceX, "verified-source-$sourceX")
+        val target = createNetworkFixtureRegion(sourceX + 2, "verified-target-$sourceX")
+        server.scheduler.runTaskLater(this, Runnable {
+            // Region creation can schedule Paper chunk initialization; write the deterministic
+            // fixture after those delayed tasks so the backup contains a real container.
+            seed(source, "verified-source-$sourceX")
+            seed(target, "verified-target-$sourceX")
+            putContainer(sourceX, testWorld.minHeight + 12, Material.CHEST, "verified-source-$sourceX", Material.EMERALD)
+            check(testWorld.getBlockAt(sourceX, testWorld.minHeight + 12, 0).state is Container) {
+                "Verified COPY source chest fixture was not created"
+            }
+            val service = transferWithPhaseFault(PlotTransferPhase.AFTER_VERIFIED_BEFORE_TERMINAL)
+            val result = service.execute(readyPlan(PlotTransferOperation.COPY, source, target), testWorld,
+                ActionActor.System("network-finalization-fixture"), CorrelationId.newId())
+            await(result) { transferResult ->
+                check(transferResult is PlotTransferResult.Failed && transferResult.recoveryRequired) {
+                    "Verified-but-not-terminal COPY fixture did not become recoverable: $transferResult"
+                }
+                val job = requireNotNull(jobStore.findById(transferResult.jobId))
+                check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                check(job.details.orEmpty().contains("completion=TRANSFER_WORLD_VERIFIED_V1")) {
+                    "Transfer did not durably persist its post-verification proof: ${job.details}"
+                }
+                check(capture(testWorld, source.bounds.minX) == capture(testWorld, target.bounds.minX))
+                done(job.id)
+            }
+        }, 5L)
+    }
+
+    private fun jobFields(job: PlotMutationJobRecord): Map<String, String> = job.details.orEmpty().lineSequence().mapNotNull { line ->
+        val separator = line.indexOf('=')
+        if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
+    }.toMap()
+
+    private fun jobFieldRegion(job: PlotMutationJobRecord, key: String): RegionId =
+        RegionId(UUID.fromString(requireNotNull(jobFields(job)[key])))
 
 
     private fun prepareRestartRecovery(testWorld: World) {
@@ -706,6 +873,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             check(result is PlotTransferResult.Completed) { "MOVE did not complete: $result" }
             val completed = result as PlotTransferResult.Completed
             check(jobStore.findById(completed.jobId)?.status == PlotMutationJobStatus.COMPLETED) { "MOVE job is not terminal COMPLETED" }
+            check(jobStore.findById(completed.jobId)?.details?.contains("completion=TRANSFER_WORLD_VERIFIED_V1") == true) {
+                "MOVE terminalization omitted its durable post-cleanup verification proof"
+            }
             check(conflicts.checkAvailable(listOf(first.id, second.id)) == null) { "MOVE did not release its reservation" }
             verifyReadyBackup(completed.sourceBackupId) { verifyReadyBackup(completed.targetBackupId) {
             check(capture(testWorld, second.bounds.minX) == source) { "MOVE target was not written from the source snapshot" }
@@ -728,6 +898,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             check(result is PlotTransferResult.Completed) { "SWAP did not complete: $result" }
             val completed = result as PlotTransferResult.Completed
             check(jobStore.findById(completed.jobId)?.status == PlotMutationJobStatus.COMPLETED) { "SWAP job is not terminal COMPLETED" }
+            check(jobStore.findById(completed.jobId)?.details?.contains("completion=TRANSFER_WORLD_VERIFIED_V1") == true) {
+                "SWAP terminalization omitted its durable post-both-sides verification proof"
+            }
             check(conflicts.checkAvailable(listOf(first.id, second.id)) == null) { "SWAP did not release its reservation" }
             verifyReadyBackup(completed.sourceBackupId) { verifyReadyBackup(completed.targetBackupId) {
             check(capture(testWorld, first.bounds.minX) == originalB) { "SWAP first side does not match B's original snapshot" }
