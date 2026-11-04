@@ -46,10 +46,10 @@ crafter.
 Other `TileState` types fail closed before a destructive operation can begin.
 The tested supported container matrix is chest, barrel, furnace, blast furnace,
 smoker, hopper, dropper, dispenser, shulker box, brewing stand, and crafter.
-Sign and banner are explicitly exercised and fail closed. Hanging signs,
-additional banner states, skull/player heads, beacons, jukeboxes, lecterns, and
-any other non-container `TileState` follow the same generic fail-closed guard;
-they are source-reviewed, not individually asserted by the E2E fixture. For
+Sign and banner are explicitly exercised and fail closed. Hanging sign,
+player head, beacon, jukebox, and lectern now have individual Paper and Purpur
+world fixtures that verify fail-closed capture and type/position diagnostics.
+Other non-container `TileState` types follow the same generic guard. For
 ordinary non-`TileState` blocks, tile metadata is not applicable and
 `BlockData` is the captured state.
 
@@ -57,12 +57,16 @@ ordinary non-`TileState` blocks, tile metadata is not applicable and
 | --- | --- | --- |
 | Chest, barrel, furnace, blast furnace, smoker, hopper, dropper, dispenser, shulker box, brewing stand, crafter | `SUPPORTED` | Generic `Container` inventory serialization; real Paper roundtrip coverage in the world E2E. ItemStack bytes include Bukkit-serialized item metadata, subject to Minecraft-version compatibility. |
 | Sign and banner | `FAIL_CLOSED` | Real Paper fixture verifies backup rejection before destructive mutation. |
-| Hanging sign, skull/player head, beacon, jukebox, lectern, other non-container TileState | `FAIL_CLOSED` | Generic non-Container TileState guard rejects the backup; this exact type list has source review, not a separate per-type world fixture. |
+| Hanging sign, player head, beacon, jukebox, lectern, other non-container TileState | `FAIL_CLOSED` | Generic non-Container TileState guard; named types now have real Paper/Purpur fixtures. |
 | Ordinary block without TileState | `NOT_APPLICABLE` | Material and serialized `BlockData` are captured. |
 
 Entities, players, biomes, scheduled block/fluid ticks, and unsupported tile
-metadata are not captured. Item serialization is not a promise of cross-version
-restoration for every future Minecraft item schema.
+metadata are not captured in HCBK. Plot biome changes use the independent
+versioned `BiomeSnapshotV1` safety contract described in
+[`BIOME_SNAPSHOT_FORMAT.md`](BIOME_SNAPSHOT_FORMAT.md); this does not add a
+`BIOMES` capability to HCBK or make COPY/MOVE/SWAP transfer biomes. Item
+serialization is not a promise of cross-version restoration for every future
+Minecraft item schema.
 
 ## Integrity and resource bounds
 
@@ -78,27 +82,10 @@ off the Paper thread; world capture, apply, and verify are scheduled in bounded
 batches on the Paper server thread. Capture has one append batch in flight, so
 the producer cannot build an unbounded queue in memory.
 
-Biome snapshots are intentionally separate work. Paper 26.3 exposes 3D biome
-access through `RegionAccessor#getBiome(x,y,z)` and `setBiome(x,y,z, biome)`;
-the deprecated `World#getBiome(x,z)` explicitly documents that biomes are now
-3-dimensional. Paper's 26.3 implementation maps block coordinates through
-`QuartPos.fromBlock`, so persisted biome storage is at quart resolution: one
-stored value per 4×4×4 block cell. The API returns a biome for block coordinates,
-not an independently addressable plot fragment; cells at negative coordinates
-must use the same floor-based quart mapping. A correct recovery payload would
-need to record complete biome-cell coordinates, registry keys, HomeClaim and
-Paper world bindings, checksum, and a scope that includes every cell touched by
-the writer. Arbitrary plot edges do not align to biome cells, so capturing
-complete cells can extend outside the plot and overlap a neighboring plot's
-reservation. The active
-`/plot biome` writer still uses the legacy 2D column setter and has no persisted
-pre-image. HCBK v3 is strictly framed and cannot be extended in place. Step 21B
-therefore keeps `BIOMES` out of its capability set and adds no biome payload or
-recovery claim; a later implementation needs a separately versioned format and
-an explicit full-cell mutation/reservation contract. The reviewed API surface
-does not itself specify a portable plot-to-cell clipping rule or datapack
-registry migration contract. An unknown registry key must fail closed rather
-than restore as a default biome.
+HCBK v3 remains strictly framed and does not contain biome payloads. Paper
+biome cells use the separate `BiomeSnapshotV1` format and its cell-aligned
+`/plot biome` contract; see [`BIOME_SNAPSHOT_FORMAT.md`](BIOME_SNAPSHOT_FORMAT.md).
+Unknown registry keys fail closed rather than restoring as a default biome.
 
 Entities and pending scheduled ticks likewise remain outside HCBK. The public
 entity API does not by itself define safe identity/duplicate handling,

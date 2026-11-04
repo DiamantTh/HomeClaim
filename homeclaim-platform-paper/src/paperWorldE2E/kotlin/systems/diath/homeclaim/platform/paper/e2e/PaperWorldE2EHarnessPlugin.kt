@@ -7,6 +7,8 @@ import org.bukkit.World
 import org.bukkit.WorldCreator
 import org.bukkit.Location
 import org.bukkit.block.Container
+import io.papermc.paper.registry.RegistryAccess
+import io.papermc.paper.registry.RegistryKey
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerJoinEvent
@@ -53,6 +55,10 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobRecor
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryAction
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryPlanResult
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationRecoveryPlanner
+import systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.BiomeCell
+import systems.diath.homeclaim.platform.paper.plot.mutation.BiomeCellScope
+import systems.diath.homeclaim.platform.paper.plot.mutation.BiomeSnapshotV1
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferFaultInjector
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPhase
 import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator
@@ -211,6 +217,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 verifyRestartRecovery(testWorld, areas)
                 return
             }
+            "biome-restart-verify" -> {
+                verifyBiomeRecoveryRestart(testWorld, areas)
+                return
+            }
             "db-worldwrite-restart-verify" -> {
                 verifyDatabaseWorldWriteRestart(testWorld, areas)
                 return
@@ -218,6 +228,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             "restart-prepare" -> {
                 createFixtures(homeClaim, areas, testWorld)
                 prepareRestartRecovery(testWorld)
+                return
+            }
+            "biome-restart-prepare" -> {
+                createFixtures(homeClaim, areas, testWorld)
+                prepareBiomeRecoveryRestart(testWorld)
                 return
             }
         }
@@ -718,6 +733,119 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             check(capture(testWorld, second.bounds.minX) == expectedTarget) { "Restart recovery did not restore the persisted target safety snapshot" }
             check(jobStore.findById(jobId)?.status == PlotMutationJobStatus.RECOVERED)
             finish("PASS restart recovery persisted-job classified blocked and restored after real server restart")
+        }
+    }
+
+    private fun prepareBiomeRecoveryRestart(testWorld: World) {
+        val minY = Math.floorDiv(testWorld.minHeight + 20, 4) * 4
+        val region = createRegion(Bounds(-8, -1, minY, minY + 7, -8, -1))
+        val cells = BiomeCellScope.cells(listOf(region))
+        cells.map { Math.floorDiv(it.blockX(), 16) to Math.floorDiv(it.blockZ(), 16) }.distinct().forEach { (chunkX, chunkZ) ->
+            testWorld.getChunkAt(chunkX, chunkZ)
+            testWorld.addPluginChunkTicket(chunkX, chunkZ, this)
+        }
+        val registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
+        val plains = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("plains")))
+        val ocean = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("ocean")))
+        val forest = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("forest")))
+        val original = cells.mapIndexed { index, cell ->
+            val biome = if (index % 2 == 0) plains else ocean
+            testWorld.setBiome(cell.blockX(), cell.blockY(), cell.blockZ(), biome)
+            "${cell.quartX},${cell.quartY},${cell.quartZ},${biome.key}"
+        }
+        val mutation = PaperBiomeMutationService(this, requireNotNull(services.worldAreaService), jobStore, cellsPerTick = 1)
+        val operation = mutation.apply(listOf(region), forest, CorrelationId.newId(), ActionActor.System("paper-biome-restart"))
+        lateinit var monitor: BukkitTask
+        monitor = server.scheduler.runTaskTimer(this, Runnable {
+            val changed = cells.count { testWorld.getBiome(it.blockX(), it.blockY(), it.blockZ()).key == forest.key }
+            if (changed in 1 until cells.size) {
+                monitor.cancel()
+                mutation.shutdown()
+            }
+        }, 1L, 1L)
+        operation.whenComplete { _, failure ->
+            monitor.cancel()
+            mutation.shutdown()
+            server.scheduler.runTask(this, Runnable {
+                runCatching {
+                    check(failure != null) { "Biome mutation completed; restart fixture partial-write barrier did not fire" }
+                    val job = jobStore.findRecoveryRequiredForRegions(listOf(region.id)).firstOrNull { it.operation == "BIOME" }
+                        ?: error("Biome restart fixture did not persist a recovery job")
+                    check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                    val state = buildList {
+                        add(homeWorld.id.value.toString())
+                        add(region.id.value.toString())
+                        add(job.id.toString())
+                        add(testWorld.uid.toString())
+                        addAll(original)
+                    }.joinToString("\n") + "\n"
+                    Files.writeString(dataFolder.toPath().resolve("biome-restart-state.txt"), state)
+                    writeResult("PREPARED BIOME_RECOVERY_REQUIRED ${job.id}")
+                    Bukkit.shutdown()
+                }.onFailure(::fail)
+            })
+        }
+    }
+
+    private fun verifyBiomeRecoveryRestart(testWorld: World, areas: systems.diath.homeclaim.core.service.WorldAreaService) {
+        val state = Files.readAllLines(dataFolder.toPath().resolve("biome-restart-state.txt"))
+        require(state.size >= 6) { "Missing persisted biome restart fixture" }
+        val worldId = systems.diath.homeclaim.core.model.WorldId(UUID.fromString(state[0]))
+        val region = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(state[1]))))
+        val jobId = UUID.fromString(state[2])
+        val paperWorldId = UUID.fromString(state[3])
+        check(testWorld.uid == paperWorldId)
+        val job = requireNotNull(jobStore.findById(jobId)) { "Interrupted biome job was not loaded after server restart" }
+        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED) { "Biome restart recovery status was ${job.status}" }
+        check(conflicts.checkAvailable(listOf(region.id)) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired) {
+            "Restart did not reconstruct the biome recovery blocker"
+        }
+        val fields = job.details.orEmpty().lineSequence().mapNotNull { line ->
+            val split = line.indexOf('='); if (split <= 0) null else line.substring(0, split) to line.substring(split + 1)
+        }.toMap()
+        val snapshotId = UUID.fromString(fields.getValue("snapshotId"))
+        val sha256 = fields.getValue("snapshotSha256")
+        val expected = state.drop(4).associate { line ->
+            val fields = line.split(',', limit = 4)
+            BiomeCell(fields[0].toInt(), fields[1].toInt(), fields[2].toInt()) to fields[3]
+        }
+        expected.keys.map { Math.floorDiv(it.blockX(), 16) to Math.floorDiv(it.blockZ(), 16) }.distinct().forEach { (chunkX, chunkZ) ->
+            testWorld.getChunkAt(chunkX, chunkZ)
+            testWorld.addPluginChunkTicket(chunkX, chunkZ, this)
+        }
+        val actor = ActionActor.System("paper-biome-restart-recovery")
+        val correlation = CorrelationId.newId()
+        val lease = when (val attempt = conflicts.reserveRecovery(jobId, listOf(region.id), actor, correlation)) {
+            is ReservationAttempt.Acquired -> attempt.lease
+            is ReservationAttempt.Conflict -> error("Could not reserve biome restart recovery: ${attempt.conflict}")
+        }
+        val details = job.details.orEmpty() + "\nrecoveryAction=RESTORE_BIOME_ORIGINAL\nrecoveryPhase=IN_PROGRESS"
+        check(jobStore.beginRecovery(jobId, details)) { "Could not persist biome recovery intent after restart" }
+        val recovery = PaperBiomeMutationService(this, areas, jobStore, cellsPerTick = 2)
+        recovery.restoreOriginal(snapshotId, sha256, testWorld, worldId, listOf(region), paperWorldId).whenComplete { count, failure ->
+            recovery.shutdown()
+            server.scheduler.runTask(this, Runnable {
+                runCatching {
+                    if (failure != null) throw failure
+                    check(count == expected.size) { "Biome restart recovery restored $count/${expected.size} cells" }
+                    expected.forEach { (cell, key) ->
+                        check(testWorld.getBiome(cell.blockX(), cell.blockY(), cell.blockZ()).key.toString() == key) {
+                            "Biome restart recovery mismatch at quart ${cell.quartX},${cell.quartY},${cell.quartZ}"
+                        }
+                    }
+                    check(jobStore.finishRecovery(jobId, PlotMutationJobStatus.RECOVERED,
+                        details + "\nrecoveryPhase=BIOME_RESTORED_AND_VERIFIED")) { "Could not finalize biome restart recovery" }
+                    lease.close()
+                    check(conflicts.checkAvailable(listOf(region.id)) == null) { "Biome recovery blocker remained after restart recovery" }
+                    testWorld.removePluginChunkTickets(this)
+                    // The runner deletes this disposable database/world. Deleting a Region here
+                    // would enqueue an unrelated border repaint during server shutdown.
+                    runCatching { testWorld.save() }
+                    val result = "PASS biome partial mutation was blocked and restored from its checksummed snapshot after a real Paper process restart"
+                    writeResult(result)
+                    Bukkit.shutdown()
+                }.onFailure { lease.close(); fail(it) }
+            })
         }
     }
 
@@ -1355,8 +1483,113 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 check(backups.any { it.cause == "restore_safety" && it.status == PlotBackupStatus.READY }) {
                     "Restore did not retain its READY safety backup"
                 }
-                runUnsupportedTileState(testWorld)
+                runBiomeSnapshot(testWorld) { runUnsupportedTileState(testWorld) }
             }
+        }
+    }
+
+    private fun runBiomeSnapshot(testWorld: World, done: () -> Unit) {
+        currentScenario = "biome-partial-recovery"
+        check(BiomeCell.fromBlock(-1, -5, -4) == BiomeCell(-1, -2, -1)) { "Negative block-to-quart mapping did not floor correctly" }
+        val minY = Math.floorDiv(testWorld.minHeight + 20, 4) * 4
+        val region = createRegion(Bounds(-8, -1, minY, minY + 15, -8, -1))
+        operationSafetyRegions += region
+        val cells = BiomeCellScope.cells(listOf(region))
+        cells.map { Math.floorDiv(it.blockX(), 16) to Math.floorDiv(it.blockZ(), 16) }.distinct()
+            .forEach { (chunkX, chunkZ) ->
+                testWorld.getChunkAt(chunkX, chunkZ)
+                testWorld.addPluginChunkTicket(chunkX, chunkZ, this)
+            }
+        check(cells.size == 16 && cells.any { it.quartX < 0 && it.quartZ < 0 } && cells.map { it.quartY }.toSet().size == 4) {
+            "Biome scope did not cover negative X/Z and multiple 3D quart layers: ${cells.size}"
+        }
+        val boundary = createRegion(Bounds(-19, -10, minY, minY + 15, 8, 17))
+        operationSafetyRegions += boundary
+        val boundaryCells = BiomeCellScope.cells(listOf(boundary))
+        check(boundaryCells.isNotEmpty() && boundaryCells.all { cell ->
+            (cell.blockX()..cell.blockX() + 3).all { it in boundary.bounds.minX..boundary.bounds.maxX } &&
+                (cell.blockY()..cell.blockY() + 3).all { it in boundary.bounds.minY..boundary.bounds.maxY } &&
+                (cell.blockZ()..cell.blockZ() + 3).all { it in boundary.bounds.minZ..boundary.bounds.maxZ }
+        }) { "A boundary-split biome cell was included in the mutation scope" }
+        check(boundaryCells.none { it.quartX == -5 || it.quartX == -3 || it.quartZ == 4 }) {
+            "Boundary cell outside the complete-cell interior was not excluded"
+        }
+
+        val registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
+        fun biome(name: String) = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft(name))) { "Missing vanilla test biome $name" }
+        val originalKeys = cells.associateWith { cell ->
+            val value = when {
+                cell.quartY % 3 == 0 -> biome("plains")
+                cell.quartX % 2 == 0 -> biome("desert")
+                else -> biome("ocean")
+            }
+            testWorld.setBiome(cell.blockX(), cell.blockY(), cell.blockZ(), value)
+            value.key.toString()
+        }
+        val beforeFiles = dataFolder.toPath().resolve("biome-snapshots").toFile().listFiles()?.filter { it.extension == "hcbs" }
+            ?.map { it.name }?.toSet().orEmpty()
+        val mutation = PaperBiomeMutationService(this, requireNotNull(services.worldAreaService), jobStore, cellsPerTick = 2)
+        val forest = biome("forest")
+        val operation = mutation.apply(listOf(region), forest, CorrelationId.newId(), ActionActor.System("paper-world-e2e-biome"))
+        lateinit var monitor: BukkitTask
+        monitor = server.scheduler.runTaskTimer(this, Runnable {
+            val changed = cells.count { testWorld.getBiome(it.blockX(), it.blockY(), it.blockZ()).key == forest.key }
+            if (changed in 1 until cells.size) {
+                monitor.cancel()
+                mutation.shutdown() // Real cancellation path after a deterministic partial Paper write.
+            }
+        }, 1L, 1L)
+        operation.whenComplete { _, mutationFailure ->
+            monitor.cancel()
+            mutation.shutdown()
+            if (mutationFailure == null) { fail(IllegalStateException("Biome mutation completed; the partial-write barrier did not fire")); return@whenComplete }
+            server.scheduler.runTask(this, Runnable {
+                runCatching {
+                    val job = jobStore.findRecoveryRequiredForRegions(listOf(region.id)).firstOrNull { it.operation == "BIOME" }
+                        ?: error("Partial biome mutation did not persist a RECOVERY_REQUIRED job")
+                    check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED) { "Biome partial job status was ${job.status}" }
+                    check(conflicts.checkAvailable(listOf(region.id)) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired) {
+                        "Partial biome mutation did not block its Region"
+                    }
+                    val fields = job.details.orEmpty().lineSequence().mapNotNull { line ->
+                        val split = line.indexOf('='); if (split <= 0) null else line.substring(0, split) to line.substring(split + 1)
+                    }.toMap()
+                    val newFiles = dataFolder.toPath().resolve("biome-snapshots").toFile().listFiles()
+                        ?.filter { it.extension == "hcbs" && it.name !in beforeFiles }.orEmpty()
+                    check(newFiles.size == 1) { "Expected one durable biome pre-image, found ${newFiles.size}" }
+                    val bytes = Files.readAllBytes(newFiles.single().toPath())
+                    val snapshot = BiomeSnapshotV1.decode(bytes)
+                    check(snapshot.cells.map { it.cell }.toSet() == cells.toSet()) { "Biome snapshot cell coverage differs from mutation scope" }
+                    check(snapshot.cells.associate { it.cell to it.biomeKey } == originalKeys) { "Biome snapshot did not preserve original 3D registry keys" }
+                    val snapshotId = UUID.fromString(fields.getValue("snapshotId"))
+                    check(snapshotId.toString() == newFiles.single().nameWithoutExtension)
+                    val checksum = fields.getValue("snapshotSha256")
+                    check(java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } == checksum)
+                    val partial = cells.count { testWorld.getBiome(it.blockX(), it.blockY(), it.blockZ()).key == forest.key }
+                    check(partial in 1 until cells.size) { "Biome cancellation did not leave an observed partial world state: $partial/${cells.size}" }
+                    val recoveryDetails = job.details.orEmpty() + "\nrecoveryAction=RESTORE_BIOME_ORIGINAL\nrecoveryPhase=IN_PROGRESS"
+                    check(jobStore.beginRecovery(job.id, recoveryDetails)) { "Could not persist biome recovery intent" }
+                    val recovery = PaperBiomeMutationService(this, requireNotNull(services.worldAreaService), jobStore, cellsPerTick = 4)
+                    recovery.restoreOriginal(snapshotId, checksum, testWorld, homeWorld.id, listOf(region), testWorld.uid)
+                        .whenComplete { restored, restoreFailure ->
+                            recovery.shutdown()
+                            server.scheduler.runTask(this, Runnable {
+                                runCatching {
+                                    if (restoreFailure != null) throw restoreFailure
+                                    check(restored == cells.size) { "Biome restore count mismatch: $restored" }
+                                    cells.forEach { cell -> check(testWorld.getBiome(cell.blockX(), cell.blockY(), cell.blockZ()).key.toString() == originalKeys.getValue(cell)) {
+                                        "Biome pre-image restore mismatch at quart ${cell.quartX},${cell.quartY},${cell.quartZ}"
+                                    } }
+                                    check(jobStore.finishRecovery(job.id, PlotMutationJobStatus.RECOVERED,
+                                        recoveryDetails + "\nrecoveryPhase=BIOME_RESTORED_AND_VERIFIED")) { "Could not persist successful biome recovery" }
+                                    check(conflicts.checkAvailable(listOf(region.id)) == null) { "Successful biome recovery did not release its blocker" }
+                                    passedScenarios += "biome-partial-recovery"
+                                    done()
+                                }.onFailure(::fail)
+                            })
+                        }
+                }.onFailure(::fail)
+            })
         }
     }
 
@@ -1364,29 +1597,62 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         passedScenarios += "restore"
         passedScenarios += "container-roundtrip"
         currentScenario = "unsupported-tilestate-fail-closed"
-        val unsupported = createRegion(Bounds(6, 6, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
-        operationSafetyRegions += unsupported
-        val signY = testWorld.minHeight + 20
-        testWorld.getBlockAt(6, signY, 0).setType(Material.OAK_SIGN, false)
-        check(testWorld.getBlockAt(6, signY, 0).type == Material.OAK_SIGN)
-        val backup = backupService.createSnapshot(unsupported, testWorld, ActionActor.System("paper-world-e2e"),
-            CorrelationId.newId(), "e2e:unsupported-sign")
-        awaitFailure(backup) {
-            check(testWorld.getBlockAt(6, signY, 0).type == Material.OAK_SIGN) {
-                "Unsupported TileState was changed despite backup failure"
-            }
-            val bannerRegion = createRegion(Bounds(7, 7, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
-            operationSafetyRegions += bannerRegion
-            val bannerY = testWorld.minHeight + 24
-            testWorld.getBlockAt(7, bannerY, 0).setType(Material.WHITE_BANNER, false)
-            awaitFailure(backupService.createSnapshot(bannerRegion, testWorld, ActionActor.System("paper-world-e2e"),
-                CorrelationId.newId(), "e2e:unsupported-banner")) {
-                check(testWorld.getBlockAt(7, bannerY, 0).type == Material.WHITE_BANNER) {
-                    "Unsupported Banner TileState was changed despite backup failure"
-                }
+        val fixtures = listOf(
+            "sign" to Material.OAK_SIGN,
+            "banner" to Material.WHITE_BANNER,
+            "hanging-sign" to Material.OAK_HANGING_SIGN,
+            "player-head" to Material.PLAYER_HEAD,
+            "beacon" to Material.BEACON,
+            "jukebox" to Material.JUKEBOX,
+            "lectern" to Material.LECTERN
+        )
+        fun testFixture(index: Int) {
+            if (index >= fixtures.size) {
+                passedScenarios += "unsupported-tilestate-fail-closed"
                 runCopyRecovery(testWorld)
+                return
             }
+            val (name, material) = fixtures[index]
+            currentScenario = "unsupported-tilestate-$name"
+            val x = 6 + index
+            val y = testWorld.minHeight + 20 + index
+            val region = createRegion(Bounds(x, x, testWorld.minHeight, testWorld.maxHeight - 1, 0, 0))
+            operationSafetyRegions += region
+            val block = testWorld.getBlockAt(x, y, 0)
+            block.setType(material, false)
+            check(block.state is org.bukkit.block.TileState) { "$material fixture did not create a TileState" }
+            val backup = backupService.createSnapshot(region, testWorld, ActionActor.System("paper-world-e2e"),
+                CorrelationId.newId(), "e2e:unsupported-$name")
+            val failureDiagnostic = AtomicReference<String?>(null)
+            backup.whenComplete { _, failure ->
+                if (failure != null) {
+                    failureDiagnostic.set(generateSequence(failure) { it.cause }.joinToString(" ") { it.message.orEmpty() })
+                }
+            }
+            var waited = 0
+            lateinit var waitTask: BukkitTask
+            waitTask = server.scheduler.runTaskTimer(this, Runnable {
+                waited++
+                if (backup.isDone) {
+                    waitTask.cancel()
+                    val failure = runCatching { backup.join() }.exceptionOrNull()
+                    check(failure != null) { "$material unexpectedly passed fail-closed snapshot capture" }
+                    val diagnostic = failureDiagnostic.get().orEmpty()
+                    check(diagnostic.contains(material.key.toString()) && diagnostic.contains("$x,$y,0")) {
+                        "$material failure omitted type/position diagnostics: $diagnostic"
+                    }
+                    check(block.type == material) { "$material TileState changed despite pre-mutation snapshot rejection" }
+                    block.setType(Material.AIR, false)
+                    services.regionService.deleteRegion(region.id)
+                    passedScenarios += "unsupported-tilestate-$name"
+                    testFixture(index + 1)
+                } else if (waited > 20 * 60) {
+                    waitTask.cancel()
+                    fail(IllegalStateException("Timed out waiting for $material fail-closed capture"))
+                }
+            }, 1L, 1L)
         }
+        testFixture(0)
     }
 
     private fun runCopyRecovery(testWorld: World) {
@@ -2380,6 +2646,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
     private fun finish(result: String = "PASS copy move swap reset restore; copy/move/swap/restore partial-failure recovery; zstd containers; unsupported-tilestate-fail-closed") {
         val testWorld = requireNotNull(world)
+        runCatching { testWorld.removePluginChunkTickets(this) }
         services.regionService.deleteRegion(first.id)
         services.regionService.deleteRegion(second.id)
         databaseProbeRegion?.let { services.regionService.deleteRegion(it.id) }
@@ -2423,7 +2690,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             "copy", "move", "swap", "reset", "restore", "copy-recovery", "move-recovery",
             "swap-recovery", "restore-recovery", "merge", "unlink", "merge-recovery",
             "unlink-recovery", "bundle-corruption-rejected", "container-roundtrip",
-            "unsupported-tilestate-fail-closed", "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+            "unsupported-tilestate-fail-closed", "unsupported-tilestate-sign", "unsupported-tilestate-banner",
+            "unsupported-tilestate-hanging-sign", "unsupported-tilestate-player-head", "unsupported-tilestate-beacon",
+            "unsupported-tilestate-jukebox", "unsupported-tilestate-lectern", "biome-partial-recovery",
+            "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
         ) else emptyList()
         // The full scenario chain is sequential; reaching finish means each named assertion ran.
         val scenarios = if (fullRun) {

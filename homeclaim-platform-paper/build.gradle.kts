@@ -319,7 +319,10 @@ val requiredWorldE2EScenarios = setOf(
     "copy", "move", "swap", "reset", "restore", "copy-recovery", "move-recovery",
     "swap-recovery", "restore-recovery", "merge", "unlink", "merge-recovery",
     "unlink-recovery", "bundle-corruption-rejected", "container-roundtrip",
-    "unsupported-tilestate-fail-closed", "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+    "unsupported-tilestate-fail-closed", "unsupported-tilestate-sign", "unsupported-tilestate-banner",
+    "unsupported-tilestate-hanging-sign", "unsupported-tilestate-player-head", "unsupported-tilestate-beacon",
+    "unsupported-tilestate-jukebox", "unsupported-tilestate-lectern", "biome-partial-recovery",
+    "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
 )
 
 fun sha256(file: java.io.File): String = MessageDigest.getInstance("SHA-256")
@@ -522,6 +525,7 @@ tasks.register<Exec>("networkedPlayerE2E") {
 tasks.register("worldE2EParity") {
     group = "verification"
     description = "Compare the required Paper and Purpur world E2E scenario outcomes"
+    mustRunAfter("paperWorldE2E", "purpurWorldE2E")
     doLast {
         val paperResult = layout.buildDirectory.file("reports/paper-world-e2e/e2e-result.json").get().asFile
         val purpurResult = layout.buildDirectory.file("reports/purpur-world-e2e/e2e-result.json").get().asFile
@@ -550,6 +554,9 @@ tasks.register("worldE2EParity") {
         val purpurJson = JsonSlurper().parse(purpurResult) as Map<*, *>
         check(paperJson["pluginSha256"] == purpurJson["pluginSha256"]) {
             "Paper and Purpur reports identify different HomeClaim artifacts"
+        }
+        check(paperJson["pluginSha256"] == sha256(tasks.shadowJar.get().archiveFile.get().asFile)) {
+            "World E2E parity reports do not identify the current production artifact"
         }
         println("Paper/Purpur scenario parity: ${paperScenarios.size} scenarios PASSED")
     }
@@ -663,7 +670,7 @@ tasks.register<Exec>("paperSnapshotPerformance") {
 
 tasks.register("paperWorldRestartRecoveryE2E") {
     group = "verification"
-    description = "Verify transfer and merge world/domain recovery across real Paper process restarts"
+    description = "Verify transfer, merge/domain, and biome-cell recovery across real Paper process restarts"
     dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
     val serverDir = layout.buildDirectory.dir("paper-world-restart-e2e/server").get().asFile
     val reportDir = layout.buildDirectory.dir("reports/paper-world-restart-e2e").get().asFile
@@ -695,7 +702,7 @@ tasks.register("paperWorldRestartRecoveryE2E") {
             "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
-        val phases = listOf("merge-restart-prepare", "merge-restart-verify", "restart-prepare", "restart-verify")
+        val phases = listOf("merge-restart-prepare", "merge-restart-verify", "restart-prepare", "restart-verify", "biome-restart-prepare", "biome-restart-verify")
         phases.forEach { phase ->
             val process = ProcessBuilder(
                 javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
@@ -710,6 +717,8 @@ tasks.register("paperWorldRestartRecoveryE2E") {
             val expected = when (phase) {
                 "merge-restart-prepare" -> "PREPARED MERGE_RECOVERY_IN_PROGRESS"
                 "merge-restart-verify" -> "PASS merge world+domain recovery"
+                "biome-restart-prepare" -> "PREPARED BIOME_RECOVERY_REQUIRED"
+                "biome-restart-verify" -> "PASS biome partial mutation was blocked and restored"
                 "restart-prepare" -> "PREPARED"
                 else -> "PASS restart recovery"
             }

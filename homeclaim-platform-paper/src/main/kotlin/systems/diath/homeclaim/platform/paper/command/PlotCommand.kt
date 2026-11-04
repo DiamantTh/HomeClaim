@@ -59,6 +59,7 @@ import systems.diath.homeclaim.core.policy.ActionResourceRef
 import systems.diath.homeclaim.core.policy.CorrelationId
 import systems.diath.homeclaim.core.policy.HomeClaimOperationActions
 import systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeMutationService
+import systems.diath.homeclaim.platform.paper.plot.mutation.BiomeCellScope
 import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator
 import systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationOperation
 import systems.diath.homeclaim.platform.paper.plot.mutation.ReservationAttempt
@@ -775,6 +776,25 @@ class PlotCommand(
             player.showOperationFailure(prepared.detail)
             return
         }
+        val homeWorldId = worldAreaService?.getArea(region.areaId)?.worldId
+        val selectedIds = plan.regions.map { it.id }.toSet()
+        val cells = runCatching { BiomeCellScope.cells(plan.regions) }.getOrElse { failure ->
+            player.showOperationFailure(failure.message ?: "BIOME_SCOPE_INVALID")
+            return
+        }
+        val neighborConflict = if (homeWorldId == null) true else regionService.listAllRegions().asSequence()
+            .filter { it.id !in selectedIds && worldAreaService?.getArea(it.areaId)?.worldId == homeWorldId }
+            .firstOrNull { other -> plan.regions.any { selected -> selected.bounds.overlaps(other.bounds) } }
+        val areaConflict = homeWorldId?.let { worldId ->
+            worldAreaService?.listAreas(worldId).orEmpty().asSequence().filter { it.id != region.areaId }
+                .firstOrNull { other -> plan.regions.any { selected ->
+                    other.scope.overlaps(systems.diath.homeclaim.core.model.AreaScope.Finite(selected.bounds))
+                } }
+        }
+        if (neighborConflict != null || areaConflict != null || homeWorldId == null) {
+            player.showOperationFailure("BIOME_CELL_OVERLAPS_NEIGHBOR_REGION")
+            return
+        }
         val reservation = acquireMutationReservation(
             RegionMutationOperation.BIOME,
             plan.regions.map { it.id },
@@ -782,7 +802,7 @@ class PlotCommand(
             plan.request,
             player
         ) ?: return
-        player.sendMessage("§7Changing the biome for ${plan.regions.size} plot region(s)…")
+        player.sendMessage("§7Changing ${cells.size} complete 4×4×4 biome cells across ${plan.regions.size} plot region(s); split boundary cells stay unchanged…")
         mutation.apply(plan.regions, biome, plan.request.correlationId, plan.request.actor).whenComplete { _, failure ->
             onPaperThread(player, "plot-biome-completion") {
                 try {
@@ -1733,6 +1753,9 @@ class PlotCommand(
                 if (record.status == PlotMutationJobStatus.RECOVERY_REQUIRED) {
                     player.sendMessage("§eMutation side: §f${record.recoverySideDescription()}")
                     player.sendMessage("§eNo operation resumes automatically. Use /plot jobs recover only for a listed safe action, or resolve acknowledge after manual repair.")
+                    if (biomeSnapshotReference(record) != null) {
+                        player.sendMessage("§fSafe action: /plot jobs recover ${record.id} restore-biome-original")
+                    }
                 } else if (record.status == PlotMutationJobStatus.RECOVERY_IN_PROGRESS) {
                     player.sendMessage("§cAn operator recovery is in progress. Destructive mutations remain blocked.")
                 } else if (record.status == PlotMutationJobStatus.RECOVERED) {
@@ -1838,11 +1861,13 @@ class PlotCommand(
             return
         }
         val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
+        val biomeOriginal = action == PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL && job.operation == "BIOME" && biomeSnapshotReference(job) != null
         val validateFinalize = action == PlotMutationRecoveryAction.VALIDATE_AND_FINALIZE
         if (action != PlotMutationRecoveryAction.ACKNOWLEDGE &&
             (operationOriginal && (safetyBundleId(job) == null || safetyBundleManifestSha256(job) == null) ||
+                biomeOriginal.not() && action == PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL ||
                 validateFinalize && verifiedCopyTargets(job).isNullOrEmpty() ||
-                !operationOriginal && !validateFinalize && recoveryTargets(job, action).isNullOrEmpty())) {
+                !operationOriginal && !biomeOriginal && !validateFinalize && recoveryTargets(job, action).isNullOrEmpty())) {
             player.sendMessage("§cThis job has no safe recorded backup for that recovery action.")
             return
         }
@@ -1858,6 +1883,8 @@ class PlotCommand(
             player.sendMessage("§eThis will re-verify the recorded COPY snapshots and Region metadata. It will not write any world blocks.")
         } else if (operationOriginal) {
             player.sendMessage("§cThis will restore the recorded world pre-image and merge/home domain state from the validated safety bundle.")
+        } else if (biomeOriginal) {
+            player.sendMessage("§cThis will restore ${job.details.biomeSnapshotCellCount()} validated, complete biome cells from the job's pre-image.")
         } else {
             player.sendMessage("§cThis will restore ${recoveryTargets(job, action)!!.size} region(s) from the job's validated original backup(s).")
         }
@@ -1866,7 +1893,7 @@ class PlotCommand(
     }
 
     private fun confirmJobRecovery(player: Player, actor: ActionActor, pending: systems.diath.homeclaim.core.service.PendingConfirmation) {
-        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|RESTORE_OPERATION_ORIGINAL|VALIDATE_AND_FINALIZE|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
+        val match = Regex("^job:([0-9a-fA-F-]{36}):(RESTORE_TARGET|RESTORE_BOTH|RESTORE_OPERATION_ORIGINAL|RESTORE_BIOME_ORIGINAL|VALIDATE_AND_FINALIZE|ACKNOWLEDGE)$").matchEntire(pending.targetSignature)
         val jobId = match?.groupValues?.get(1)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         val action = match?.groupValues?.get(2)?.let { runCatching { PlotMutationRecoveryAction.valueOf(it) }.getOrNull() }
         val store = mutationJobStore ?: run { pendingConfirmations.invalidate(actor); player.sendMessage("§cPersistent mutation-job storage is unavailable."); return }
@@ -1879,6 +1906,7 @@ class PlotCommand(
         }
         val acknowledgement = action == PlotMutationRecoveryAction.ACKNOWLEDGE
         val operationOriginal = action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL && job.operation in setOf("MERGE", "UNLINK")
+        val biomeOriginal = action == PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL && job.operation == "BIOME" && biomeSnapshotReference(job) != null
         val validateFinalize = action == PlotMutationRecoveryAction.VALIDATE_AND_FINALIZE
         val expectedOperation = if (acknowledgement) HomeClaimOperationActions.REGION_RECOVERY_ACKNOWLEDGE
             else HomeClaimOperationActions.REGION_RECOVERY
@@ -1891,9 +1919,10 @@ class PlotCommand(
         val targets = when {
             acknowledgement -> emptyList()
             validateFinalize -> verifiedCopyTargets(job).orEmpty()
+            biomeOriginal -> emptyList()
             else -> recoveryTargets(job, action).orEmpty()
         }
-        if (!acknowledgement && !operationOriginal && targets.isEmpty()) {
+        if (!acknowledgement && !operationOriginal && !biomeOriginal && targets.isEmpty()) {
             pendingConfirmations.invalidate(actor)
             player.sendMessage("§cA safe backup mapping is no longer available for this action.")
             return
@@ -1905,7 +1934,7 @@ class PlotCommand(
                 is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
             }
         } else {
-            val regionIds = if (operationOriginal) job.regionIds else targets.map { it.region.id }
+            val regionIds = if (operationOriginal || biomeOriginal) job.regionIds else targets.map { it.region.id }
             when (val attempt = mutationConflicts.reserveRecovery(job.id, regionIds, actor, pending.correlationId)) {
                 is ReservationAttempt.Acquired -> attempt.lease
                 is ReservationAttempt.Conflict -> { player.sendMessage("§cRecovery conflicts with another active or unresolved mutation: ${attempt.conflict}"); return }
@@ -1950,6 +1979,10 @@ class PlotCommand(
         }
         if (validateFinalize) {
             finalizeVerifiedCopy(player, job, action, actor, pending.correlationId, request, lease, targets)
+            return
+        }
+        if (biomeOriginal) {
+            recoverBiomeOriginal(player, job, action, actor, pending.correlationId, request, lease)
             return
         }
         if (operationOriginal) {
@@ -2056,6 +2089,86 @@ class PlotCommand(
         val sourceDomainSha256: String,
         val targetDomainSha256: String
     )
+
+    private fun biomeSnapshotReference(job: PlotMutationJobRecord): Pair<UUID, String>? {
+        if (job.operation != "BIOME" || job.details.orEmpty().lineSequence().none { it == "format=biome-snapshot-v1" }) return null
+        val fields = job.details.orEmpty().lineSequence().mapNotNull { line ->
+            val split = line.indexOf('=')
+            if (split <= 0) null else line.substring(0, split) to line.substring(split + 1)
+        }.toMap()
+        val id = fields["snapshotId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: return null
+        val hash = fields["snapshotSha256"]?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null
+        return id to hash
+    }
+
+    private fun String?.biomeSnapshotCellCount(): Int = this.orEmpty().lineSequence()
+        .firstOrNull { it.startsWith("snapshotCellCount=") }?.substringAfter('=')?.toIntOrNull() ?: 0
+
+    private fun recoverBiomeOriginal(
+        player: Player,
+        job: PlotMutationJobRecord,
+        action: PlotMutationRecoveryAction,
+        actor: ActionActor,
+        correlationId: CorrelationId,
+        request: ActionRequest,
+        lease: RegionMutationConflictCoordinator.Lease
+    ) {
+        val store = mutationJobStore
+        val biomeMutation = biomeMutationService
+        val worldId = job.worldId
+        val paperWorldId = recoveryPaperWorldId(job)
+        val reference = biomeSnapshotReference(job)
+        val regions = job.regionIds.mapNotNull(regionService::getRegionById)
+        val world = paperWorldId?.let(org.bukkit.Bukkit::getWorld)
+        val fail = { phase: String, detail: String ->
+            val persist = Runnable {
+                runCatching {
+                    store?.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                        recoveryDetails(job, action, actor, correlationId, phase), detail)
+                }.onFailure { org.bukkit.Bukkit.getLogger().severe("Could not preserve biome recovery blocker ${job.id}: ${it.message}") }
+                runCatching { auditOperation(request, AuditStatus.FAILED, "biomeRecoveryPhase=$phase; $detail", job.regionIds.size.coerceAtLeast(1)) }
+                onPaper {
+                    if (player.isOnline) player.sendMessage("§cBiome recovery is still required ($phase): $detail. The plots remain blocked.")
+                    lease.close()
+                }
+            }
+            runCatching { org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), persist) }
+                .onFailure { lease.close(); org.bukkit.Bukkit.getLogger().severe("Could not schedule biome recovery failure persistence: ${it.message}") }
+        }
+        if (store == null || biomeMutation == null || worldId == null || paperWorldId == null || world == null || reference == null ||
+            regions.size != job.regionIds.size || regions.any { it.areaId != job.areaId }) {
+            fail("EVIDENCE_UNAVAILABLE", "biome snapshot, region, or original world binding is unavailable")
+            return
+        }
+        val future = biomeMutation.restoreOriginal(reference.first, reference.second, world, worldId, regions, paperWorldId)
+        future.whenComplete { count, failure ->
+            val detail = failure?.cause?.message ?: failure?.message
+            val persist = Runnable {
+                val persisted = runCatching {
+                    store.finishRecovery(job.id, if (failure == null) PlotMutationJobStatus.RECOVERED else PlotMutationJobStatus.RECOVERY_REQUIRED,
+                        recoveryDetails(job, action, actor, correlationId, if (failure == null) "BIOME_RESTORED_AND_VERIFIED" else "FAILED"), detail)
+                }.getOrDefault(false)
+                val success = failure == null && count != null && persisted
+                if (success) runCatching { auditOperation(request, AuditStatus.COMPLETED,
+                    "originalBiomeCellsRestored=$count; snapshotId=${reference.first}", job.regionIds.size) }
+                    .onFailure { org.bukkit.Bukkit.getLogger().warning("Biome recovery ${job.id} persisted but audit append failed: ${it.message}") }
+                else if (failure == null) runCatching {
+                    store.finishRecovery(job.id, PlotMutationJobStatus.RECOVERY_REQUIRED,
+                        recoveryDetails(job, action, actor, correlationId, "FINALIZATION_FAILED"),
+                        "Biome cells were restored, but the recovery journal could not be finalized")
+                }
+                if (!success && failure != null) runCatching { auditOperation(request, AuditStatus.FAILED, "Biome recovery failed: ${detail ?: "unknown failure"}", job.regionIds.size) }
+                onPaper {
+                    if (player.isOnline) player.sendMessage(if (success)
+                        "§aOriginal biome pre-image restored and verified for job ${job.id}. The recovery blocker is cleared."
+                    else "§cBiome restore did not complete safely. The recovery job remains blocked.")
+                    lease.close()
+                }
+            }
+            runCatching { org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(org.bukkit.plugin.java.JavaPlugin.getProvidingPlugin(PlotCommand::class.java), persist) }
+                .onFailure { lease.close(); org.bukkit.Bukkit.getLogger().severe("Could not schedule biome recovery terminal persistence: ${it.message}") }
+        }
+    }
 
     private fun verifiedCopyEvidence(job: PlotMutationJobRecord): VerifiedCopyEvidence? {
         if (job.status != PlotMutationJobStatus.RECOVERY_REQUIRED || job.operation != "COPY") return null

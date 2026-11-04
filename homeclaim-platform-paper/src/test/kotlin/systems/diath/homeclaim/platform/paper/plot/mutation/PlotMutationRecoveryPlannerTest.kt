@@ -73,4 +73,20 @@ class PlotMutationRecoveryPlannerTest {
                 PlotMutationRecoveryPlanner.plan(job(operation, "safetyBundleId=$bundleId"), PlotMutationRecoveryAction.RESTORE_TARGET))
         }
     }
+
+    @Test
+    fun `biome recovery is offered only with a versioned snapshot identity and checksum`() {
+        val snapshot = UUID.randomUUID()
+        val details = "format=biome-snapshot-v1\nsnapshotId=$snapshot\nsnapshotSha256=${"a".repeat(64)}"
+        val ready = assertInstanceOf(PlotMutationRecoveryPlanResult.Ready::class.java,
+            PlotMutationRecoveryPlanner.plan(job("BIOME", details), PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL))
+        assertEquals(emptyList<PlotMutationRecoveryTarget>(), ready.targets)
+        assertInstanceOf(PlotMutationRecoveryPlanResult.Rejected::class.java,
+            PlotMutationRecoveryPlanner.plan(job("BIOME", "snapshotId=$snapshot\nsnapshotSha256=bad"), PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL))
+        assertInstanceOf(PlotMutationRecoveryPlanResult.Rejected::class.java,
+            PlotMutationRecoveryPlanner.plan(job("BIOME", details.replace("biome-snapshot-v1", "biome-snapshot-v2")),
+                PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL))
+        assertInstanceOf(PlotMutationRecoveryPlanResult.Rejected::class.java,
+            PlotMutationRecoveryPlanner.plan(job("BIOME", details, PlotMutationJobStatus.COMPLETED), PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL))
+    }
 }

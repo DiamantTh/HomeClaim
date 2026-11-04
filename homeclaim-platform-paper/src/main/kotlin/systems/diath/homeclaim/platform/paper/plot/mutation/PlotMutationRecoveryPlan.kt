@@ -3,7 +3,7 @@ package systems.diath.homeclaim.platform.paper.plot.mutation
 import systems.diath.homeclaim.core.model.RegionId
 import java.util.UUID
 
-enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, RESTORE_OPERATION_ORIGINAL, VALIDATE_AND_FINALIZE, ACKNOWLEDGE }
+enum class PlotMutationRecoveryAction { RESTORE_TARGET, RESTORE_BOTH, RESTORE_OPERATION_ORIGINAL, RESTORE_BIOME_ORIGINAL, VALIDATE_AND_FINALIZE, ACKNOWLEDGE }
 
 data class PlotMutationRecoveryTarget(val regionId: RegionId, val backupId: UUID)
 
@@ -32,6 +32,8 @@ object PlotMutationRecoveryPlanner {
             return PlotMutationRecoveryTarget(region, backup)
         }
         val plan = when (job.operation) {
+            "BIOME" -> if (action == PlotMutationRecoveryAction.RESTORE_BIOME_ORIGINAL && fields["format"] == "biome-snapshot-v1" &&
+                id("snapshotId") != null && fields["snapshotSha256"]?.matches(Regex("[0-9a-f]{64}")) == true && job.regionIds.isNotEmpty()) emptyList() else null
             "MERGE", "UNLINK" -> if (action == PlotMutationRecoveryAction.RESTORE_OPERATION_ORIGINAL &&
                 id("safetyBundleId") != null && job.regionIds.isNotEmpty()) emptyList() else null
             "COPY" -> if (action == PlotMutationRecoveryAction.RESTORE_TARGET) {
