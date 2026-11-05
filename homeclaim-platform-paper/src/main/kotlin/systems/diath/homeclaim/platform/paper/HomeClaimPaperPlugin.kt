@@ -374,6 +374,19 @@ class HomeClaimPaperPlugin : JavaPlugin() {
         plotMutationJobStore = services.dataSource?.let { dataSource ->
             systems.diath.homeclaim.platform.paper.plot.mutation.JdbcPlotMutationJobStore(dataSource)
         }
+        plotMutationJobStore?.let { jobs ->
+            // Persistence retry only: failure blockers remain local until their journal write succeeds.
+            // No world operation is resumed, rolled back or newly classified here.
+            val flushing = java.util.concurrent.atomic.AtomicBoolean(false)
+            server.scheduler.runTaskTimerAsynchronously(this, Runnable {
+                if (flushing.compareAndSet(false, true)) {
+                    try {
+                        runCatching { jobs.flushPendingRecoveryWrites() }
+                            .onFailure { logger.fine("Mutation failure journal still unavailable: ${it.message}") }
+                    } finally { flushing.set(false) }
+                }
+            }, 20L, 100L)
+        }
         plotMutationConflicts = systems.diath.homeclaim.platform.paper.plot.mutation.RegionMutationConflictCoordinator(plotMutationJobStore)
         val backupCompression = systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCompression.parse(
             homeClaimConfig.getString("homeclaim.backup.compression", "zstd")

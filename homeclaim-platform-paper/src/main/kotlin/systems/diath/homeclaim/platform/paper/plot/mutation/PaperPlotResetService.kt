@@ -200,44 +200,58 @@ class PaperPlotResetService(
             activeResets.remove(jobKey)
             val resultPartial = mutationAttempted && (status != PlotResetCompletionStatus.COMPLETED || completedColumns < totalColumns)
             val persistedStatus = PlotResetCompletion(status, completedColumns, resultPartial, error).persistentJobStatus()
-            val journalError = if (jobPersisted) runCatching {
-                jobStore?.finish(
-                    persistentJobId,
-                    persistedStatus,
-                    completedColumns,
-                    totalColumns,
-                    error
-                )
-            }.exceptionOrNull() else null
-            if (journalError != null && jobPersisted) {
-                runCatching {
+            val persistOutcome = Runnable {
+                val journalError = if (jobPersisted) runCatching {
                     jobStore?.finish(
                         persistentJobId,
-                        if (mutationAttempted) PlotMutationJobStatus.RECOVERY_REQUIRED else PlotMutationJobStatus.FAILED,
+                        persistedStatus,
                         completedColumns,
                         totalColumns,
-                        "Terminal journal write failed: ${journalError.message ?: journalError.javaClass.simpleName}"
+                        error
                     )
-                }.onFailure { fallbackError ->
-                    plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist fallback reset recovery state for ${region.id.value}", fallbackError)
+                }.exceptionOrNull() else null
+                if (journalError != null && jobPersisted) {
+                    runCatching {
+                        jobStore?.finish(
+                            persistentJobId,
+                            if (mutationAttempted) PlotMutationJobStatus.RECOVERY_REQUIRED else PlotMutationJobStatus.FAILED,
+                            completedColumns,
+                            totalColumns,
+                            "Terminal journal write failed: ${journalError.message ?: journalError.javaClass.simpleName}"
+                        )
+                    }.onFailure { fallbackError ->
+                        plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist fallback reset recovery state for ${region.id.value}", fallbackError)
+                    }
                 }
+                val finalStatus = if (journalError != null && status == PlotResetCompletionStatus.COMPLETED) {
+                    PlotResetCompletionStatus.FAILED
+                } else status
+                if (journalError != null) {
+                    plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist terminal reset state for ${region.id.value}", journalError)
+                }
+                val deliver = Runnable {
+                    runtimeReservation?.close()
+                    val result = PlotResetCompletion(
+                        status = finalStatus,
+                        completedColumns = completedColumns,
+                        partialMutation = resultPartial,
+                        error = listOfNotNull(error, journalError?.let { "reset journal could not be finalized: ${it.message}" }).joinToString("; ").ifBlank { null }
+                    )
+                    runCatching { onComplete(result) }.onFailure { callbackError ->
+                        plugin.logger.log(java.util.logging.Level.SEVERE, "Reset completion callback failed for ${region.id.value}", callbackError)
+                    }
+                }
+                if (plugin.isEnabled && !Bukkit.isPrimaryThread()) {
+                    runCatching { Bukkit.getScheduler().runTask(plugin, deliver) }.onFailure { deliver.run() }
+                } else deliver.run()
             }
-            val finalStatus = if (journalError != null && status == PlotResetCompletionStatus.COMPLETED) {
-                PlotResetCompletionStatus.FAILED
-            } else status
-            if (journalError != null) {
-                plugin.logger.log(java.util.logging.Level.SEVERE, "Could not persist terminal reset state for ${region.id.value}", journalError)
-            }
-            runtimeReservation?.close()
-            val result = PlotResetCompletion(
-                status = finalStatus,
-                completedColumns = completedColumns,
-                partialMutation = resultPartial,
-                error = listOfNotNull(error, journalError?.let { "reset journal could not be finalized: ${it.message}" }).joinToString("; ").ifBlank { null }
-            )
-            runCatching { onComplete(result) }.onFailure { callbackError ->
-                plugin.logger.log(java.util.logging.Level.SEVERE, "Reset completion callback failed for ${region.id.value}", callbackError)
-            }
+            if (Bukkit.isPrimaryThread() && plugin.isEnabled) {
+                runCatching { Bukkit.getScheduler().runTaskAsynchronously(plugin, persistOutcome) }
+                    .onFailure { failure ->
+                        runtimeReservation?.close()
+                        onComplete(PlotResetCompletion(PlotResetCompletionStatus.FAILED, completedColumns, mutationAttempted, "Could not schedule reset journal: ${failure.message}"))
+                    }
+            } else persistOutcome.run()
         }
 
         val generator = PlotWorldChunkGenerator(config)

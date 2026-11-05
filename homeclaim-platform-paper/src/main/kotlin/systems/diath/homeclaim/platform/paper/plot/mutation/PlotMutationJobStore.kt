@@ -50,6 +50,8 @@ interface PlotMutationJobStore {
     fun updateProgress(id: UUID, completedUnits: Int, totalUnits: Int)
     fun updateDetails(id: UUID, details: String) = Unit
     fun finish(id: UUID, status: PlotMutationJobStatus, completedUnits: Int, totalUnits: Int, error: String? = null)
+    /** Retry only observed terminal failure journal writes; never executes or classifies active world work. */
+    fun flushPendingRecoveryWrites(): Int = 0
     fun markInterruptedAsRecoveryRequired(): Int
     /**
      * Looks up one persisted job for operational diagnostics. This is deliberately
@@ -80,6 +82,7 @@ interface PlotMutationJobStore {
 class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutationJobStore {
     /** Recovery blockers are loaded once during startup and then maintained with local journal writes. */
     private val knownJobs = ConcurrentHashMap<UUID, PlotMutationJobRecord>()
+    private val pendingRecoveryWrites = ConcurrentHashMap<UUID, PlotMutationJobRecord>()
     private val recoveryIndex = ConcurrentHashMap<UUID, PlotMutationJobRecord>()
     @Volatile private var recoveryIndexLoaded = false
 
@@ -164,6 +167,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             val terminal = current.copy(status = status, completedUnits = completedUnits, totalUnits = totalUnits,
                 error = error, updatedAt = Instant.now(), completedAt = Instant.now())
             knownJobs[id] = terminal
+            pendingRecoveryWrites[id] = terminal
             updateRecoveryIndex(terminal)
         }
         update("""
@@ -173,6 +177,7 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
             WHERE id = ? AND status IN (?, ?)
         """.trimIndent(), status.name, completedUnits, totalUnits, error, id,
             PlotMutationJobStatus.QUEUED.name, PlotMutationJobStatus.RUNNING.name)
+        if (status == PlotMutationJobStatus.RECOVERY_REQUIRED) pendingRecoveryWrites.remove(id)
         if (current != null && status != PlotMutationJobStatus.RECOVERY_REQUIRED) {
             val terminal = current.copy(status = status, completedUnits = completedUnits, totalUnits = totalUnits,
                 error = error, updatedAt = Instant.now(), completedAt = Instant.now())
@@ -321,7 +326,28 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
         return changed
     }
 
-    override fun findById(id: UUID): PlotMutationJobRecord? = dataSource.connection.use { connection ->
+    override fun flushPendingRecoveryWrites(): Int {
+        var flushed = 0
+        pendingRecoveryWrites.values.toList().forEach { observed ->
+            // Retry the durable write without republishing stale local state over a
+            // concurrently started/completed explicit recovery.
+            update("""
+                UPDATE plot_mutation_jobs
+                SET status = ?, completed_units = ?, total_units = ?, error = ?,
+                    updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN (?, ?)
+            """.trimIndent(), PlotMutationJobStatus.RECOVERY_REQUIRED.name, observed.completedUnits,
+                observed.totalUnits, observed.error, observed.id, PlotMutationJobStatus.QUEUED.name,
+                PlotMutationJobStatus.RUNNING.name)
+            pendingRecoveryWrites.remove(observed.id, observed)
+            flushed++
+        }
+        return flushed
+    }
+
+    override fun findById(id: UUID): PlotMutationJobRecord? {
+        pendingRecoveryWrites[id]?.let { return it }
+        return dataSource.connection.use { connection ->
         connection.prepareStatement("""
             SELECT id, correlation_id, operation, area_id, world_name, region_ids, backend,
                    world_id, status, completed_units, total_units, error, created_at, started_at,
@@ -331,9 +357,14 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
         """.trimIndent()).use { statement ->
             statement.setObject(1, id)
             statement.executeQuery().use { result ->
-                if (result.next()) result.toRecordOrNull()?.also { knownJobs[id] = it; updateRecoveryIndex(it) } else null
+                if (result.next()) result.toRecordOrNull()?.let { loaded ->
+                    val observed = knownJobs[id]?.takeIf { it.status == PlotMutationJobStatus.RECOVERY_REQUIRED && loaded.status in setOf(PlotMutationJobStatus.QUEUED, PlotMutationJobStatus.RUNNING) }
+                    (pendingRecoveryWrites[id] ?: observed ?: loaded).also { knownJobs[id] = it; updateRecoveryIndex(it) }
+                } else null
             }
         }
+    }
+
     }
 
     override fun findRecoveryRequired(limit: Int): List<PlotMutationJobRecord> {
@@ -369,13 +400,15 @@ class JdbcPlotMutationJobStore(private val dataSource: DataSource) : PlotMutatio
                 }
             }
         }
-        loaded.forEach { knownJobs[it.id] = it }
+        loaded.forEach { if (!pendingRecoveryWrites.containsKey(it.id)) knownJobs[it.id] = it }
         if (completeIndex) {
-            recoveryIndex.clear()
+            // A lagging DB snapshot must not erase locally observed unsafe work.
+            // Explicit terminal writes/reads remove individual blockers.
             loaded.forEach(::updateRecoveryIndex)
+            pendingRecoveryWrites.values.forEach(::updateRecoveryIndex)
             recoveryIndexLoaded = true
         }
-        return loaded
+        return (pendingRecoveryWrites.values + loaded).distinctBy { it.id }.let { if (limit == null) it else it.take(limit) }
     }
 
     override fun findRecoveryRequiredForRegions(regionIds: Collection<RegionId>): List<PlotMutationJobRecord> {
