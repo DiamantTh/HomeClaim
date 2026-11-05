@@ -340,6 +340,7 @@ class PaperPlotBackupService(
             val remaining = record.blockCount - task.applied
             if (remaining == 0L) {
                 task.input?.close()
+                task.onPhase?.invoke(PlotBackupApplyPhase.VERIFY_COMPLETED)
                 if (task.completed.compareAndSet(false, true)) task.result.complete(task.applied)
                 return
             }
