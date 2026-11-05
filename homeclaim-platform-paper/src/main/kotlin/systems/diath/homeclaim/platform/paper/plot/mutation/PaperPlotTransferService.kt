@@ -216,6 +216,7 @@ class PaperPlotTransferService(
                         task.sourceChanged = true
                         cursor++
                         changed++
+                        faultInjector.afterSourceCleanupWrite(cursor)
                     }
                     if (cursor >= total) {
                         taskHandle?.cancel()
@@ -504,6 +505,7 @@ enum class PlotTransferPhase { SOURCE_CLEANUP, SECONDARY_APPLY, AFTER_VERIFIED_B
 
 fun interface PlotTransferFaultInjector {
     fun beforePhase(phase: PlotTransferPhase)
+    fun afterSourceCleanupWrite(applied: Long) {}
 
     companion object {
         val NONE = PlotTransferFaultInjector { }

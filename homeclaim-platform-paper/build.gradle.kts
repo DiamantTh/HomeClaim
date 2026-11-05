@@ -599,10 +599,24 @@ tasks.register<Exec>("paperDatabaseInterruptionE2E") {
     )
 }
 
-tasks.register("destructiveDbOutageE2E") {
+tasks.register<Exec>("destructiveDbOutageE2E") {
     group = "verification"
-    description = "Verify partial transfer writes and explicit recovery across PostgreSQL and MariaDB outages in Paper"
-    dependsOn("paperDatabaseInterruptionE2E")
+    description = "Run the complete deterministic destructive database outage matrix in real Paper"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine("bash", rootProject.file("scripts/destructive-database-matrix-e2e.sh").absolutePath,
+        paperJar.absolutePath, tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath)
+}
+
+tasks.register<Exec>("destructiveDbRestartE2E") {
+    group = "verification"
+    description = "Verify explicit recovery after deterministic hard Paper crashes and database outages"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine("bash", rootProject.file("scripts/destructive-database-restart-e2e.sh").absolutePath,
+        paperJar.absolutePath, tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath)
 }
 
 tasks.register<Exec>("paperSnapshotPerformance") {

@@ -24,7 +24,8 @@ class PaperBiomeMutationService(
     private val worldAreaService: WorldAreaService,
     private val jobStore: PlotMutationJobStore? = null,
     private val cellsPerTick: Int = 256,
-    private val snapshotStore: PaperBiomeSnapshotStore = PaperBiomeSnapshotStore(plugin)
+    private val snapshotStore: PaperBiomeSnapshotStore = PaperBiomeSnapshotStore(plugin),
+    private val observer: BiomeMutationObserver = BiomeMutationObserver.NONE
 ) : AutoCloseable {
     private val activeJobs = java.util.concurrent.ConcurrentHashMap<UUID, () -> Unit>()
 
@@ -137,8 +138,10 @@ class PaperBiomeMutationService(
                             check(world.isChunkLoaded(Math.floorDiv(cell.blockX(), 16), Math.floorDiv(cell.blockZ(), 16))) {
                                 "Biome chunk unloaded during mutation at quart ${cell.quartX},${cell.quartY},${cell.quartZ}"
                             }
+                            observer.beforeCellApplied(applied)
                             world.setBiome(cell.blockX(), cell.blockY(), cell.blockZ(), biome)
                             applied++
+                            observer.afterCellApplied(applied)
                         }
                         if (applied % PROGRESS_INTERVAL < cellsPerTick) runAsync {
                             jobStore?.updateProgress(id, applied.coerceAtMost(cells.size), cells.size)
@@ -306,4 +309,11 @@ class PaperBiomeMutationService(
     private fun unwrap(failure: Throwable): Throwable = failure.cause ?: failure
 
     private companion object { const val PROGRESS_INTERVAL = 1024 }
+}
+
+/** No production activation path; implementations can observe bounded mutation progress. */
+fun interface BiomeMutationObserver {
+    fun afterCellApplied(applied: Int)
+    fun beforeCellApplied(applied: Int) {}
+    companion object { val NONE = BiomeMutationObserver { } }
 }

@@ -8,10 +8,13 @@ import systems.diath.homeclaim.core.mutation.MutationReason
 import systems.diath.homeclaim.core.mutation.MutationTicket
 import systems.diath.homeclaim.core.mutation.WorldMutationBackend
 
-internal class PaperSynchronousWorldMutationBackend(
+class PaperSynchronousWorldMutationBackend internal constructor(
     private val jobRegistry: PlotJobRegistry = PlotJobRegistry(),
-    private val maxConcurrentMutationsForWorld: (worldName: String) -> Int = { Int.MAX_VALUE }
+    private val maxConcurrentMutationsForWorld: (worldName: String) -> Int = { Int.MAX_VALUE },
+    private val afterWrite: (Int) -> Unit = {},
+    private val beforeBatch: () -> Unit = {}
 ) : WorldMutationBackend {
+    constructor(afterWrite: (Int) -> Unit, beforeBatch: () -> Unit = {}) : this(PlotJobRegistry(), { Int.MAX_VALUE }, afterWrite, beforeBatch)
     override val backendId: String = "paper-sync"
     
     // Expose registry for persistence operations
@@ -45,7 +48,8 @@ internal class PaperSynchronousWorldMutationBackend(
 
         return try {
             if (!handle.isCancellationRequested(DEFAULT_TIMEOUT_MILLIS)) {
-                PlotMutationExecutor.apply(world, batch)
+                beforeBatch()
+                PlotMutationExecutor.apply(world, batch, afterWrite)
             }
             MutationTicket(id = batch.id, backend = backendId)
         } catch (failure: Throwable) {

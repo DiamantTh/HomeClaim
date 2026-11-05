@@ -56,6 +56,7 @@ data class PlotBackupCaptureMetadata(
 /** No-op in production. Tests may inject deterministic failures without a config or command backdoor. */
 fun interface PlotBackupFaultInjector {
     fun afterBlockWrite(kind: PlotBackupApplyKind, appliedBlocks: Int)
+    fun beforeBlockWrite(kind: PlotBackupApplyKind, appliedBlocks: Int) {}
 
     companion object {
         val NONE = PlotBackupFaultInjector { _, _ -> }

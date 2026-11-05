@@ -9,16 +9,17 @@ internal object PlotMutationExecutor {
      * Apply all block mutations from a batch.
      * Optimize by pre-caching material lookups to avoid repeated parsing for large batches.
      */
-    fun apply(world: World, batch: MutationBatch) {
+    fun apply(world: World, batch: MutationBatch, afterWrite: (Int) -> Unit = {}) {
         // Pre-cache all unique materials to avoid repeated lookups
         val materialCache = mutableMapOf<String, Material>()
         
-        for (operation in batch.operations) {
+        for ((index, operation) in batch.operations.withIndex()) {
             val material = materialCache.getOrPut(operation.blockStateId) {
                 resolveMaterial(operation.blockStateId, batch.id, operation.x, operation.y, operation.z)
             }
             
             world.getBlockAt(operation.x, operation.y, operation.z).setType(material, false)
+            afterWrite(index + 1)
         }
     }
 

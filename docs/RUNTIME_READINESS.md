@@ -449,3 +449,80 @@ HCBK v1/v2/v3 and transfer contents remain unchanged. Biomes are not an HCBK
 capability. Both snapshot contracts remain tickwise and non-atomic. Entities
 and scheduled ticks remain deliberately excluded; general auto-resume and
 automatic rollback remain outside the operator-confirmed recovery design.
+
+## Step 23A — destructive database outage matrix
+
+The isolated full-Paper matrix now covers each of these windows on **both
+PostgreSQL 17.11 and MariaDB 11.4.13**:
+
+| Operation | Durable intent | Executed outage window | Explicit recovery verified |
+| --- | --- | --- | --- |
+| RESET | RESETTING | 100 actual backend block writes | Original READY backup |
+| MOVE | CLEANING_SOURCE | Target applied/verified; 100 source cleanup writes | Both original snapshots |
+| SWAP | APPLYING_SECONDARY | 100 writes on the second side | Both original snapshots |
+| RESTORE | RESTORING | 100 apply writes after pre-restore safety READY | Pre-restore safety snapshot |
+| MERGE | WORLD_MUTATION | First world batch, and separately all world batches before first domain write | Bundle world scope + original MergeGroup/home state |
+| UNLINK | WORLD_MUTATION | First world batch, and separately all world batches before first domain write | Bundle world scope + original merged domain state |
+| BIOME | APPLYING_BIOME | Four cells changed in a 16-cell negative-X/Z, four-Y-layer fixture | Original BiomeSnapshotV1 cell keys |
+
+Each external dialect passed nine scenarios. A separate JDBC connection checks
+the committed intent before the relevant destructive section starts. The later
+barrier checks the same job ID/intent and absence of final completion proof.
+Relational safety backups are checked READY; biome file integrity and bundle
+manifest references are checked. After DB return the production async failure
+journal retry persists RECOVERY_REQUIRED, without restarting Paper or invoking
+the startup classifier. Explicit recovery restores canonical BlockData/container,
+world-scope/domain or biome-cell state. A new ordinary COPY then completes.
+
+Additional real hard-Paper-crash tests passed: PostgreSQL SWAP, MariaDB BIOME,
+SQLite RESET and SQLite BIOME. The partial world is explicitly saved before
+halt; the next process uses the same world and persistent DB, reconstructs the
+blocker and requires explicit recovery. This is not a power-loss/fsync guarantee.
+The domain-boundary cases stop before the first domain write; no claim is made
+about killing an SQL transaction after a partial commit.
+
+Two runtime corrections accompany the evidence:
+
+- RESET terminal/fallback journal writes run on a worker during normal server
+  operation, retaining the reservation until outcome delivery.
+- Observed recovery-required outcomes whose DB write failed remain locally
+  blocked and inspectable. A guarded async task retries only those failure
+  journal writes after DB return. It does not classify unrelated active jobs,
+  resume world work, or roll anything back. Retrying persistence cannot
+  republish stale local state over a concurrent explicit recovery.
+
+Local heartbeat maxima during the final matrix were 164.01 ms (PostgreSQL,
+1,058 samples) and 291.86 ms (MariaDB, 1,433 samples), including test barriers.
+These are diagnostic local measurements, not TPS guarantees.
+
+See [runner contracts and exact assertions](testing/DESTRUCTIVE_DB_OUTAGES.md).
+Reports are machine-readable and production-SHA-bound. Missing results and
+failed server exits are failures. Fault implementations, DB process control
+and hard halts remain test-only; production observation seams have inert
+defaults. No schema migration or snapshot format change was needed.
+
+Audit cannot guarantee new durable records during DB downtime. Outage fixtures
+use System actors through service-level paths; the separate ProtoBot regression
+checks live command actors and recovery/finalization/acknowledgement behavior.
+The matrix does not claim live player-visible BIOME outage feedback or a
+BIOME command recovery audit fixture. TICKWISE capture, deliberate entity/tick
+exclusions and explicit operator recovery remain unchanged.
+
+Final regression evidence for Step 23A: Paper 26.3 build 241 and Purpur 26.3
+build 2647 each passed all 26 required machine-readable world scenarios with
+matching production SHA; worldE2EParity passed. ProtoBot protocol 777 passed
+its 16 client protocol tests and the full live command/confirmation/permission/
+recovery/COPY-finalization/acknowledgement/pairing/WebSocket/disconnect suite.
+Existing Paper transfer/merge/biome restart recovery and Purpur transfer restart
+recovery passed. The ordinary suite ran 253 tests (zero failures, six opt-in
+skips); the dedicated SQLite/PostgreSQL/MariaDB runtime task ran 3/3 without
+skips, and real DB process restart prepare/verify each ran 2/2 without skips.
+The final local MEDIUM Paper sanity measured 49,152 blocks, capture 12,888 ms,
+apply 25,718 ms, max heartbeat interval 51.46 ms. No schema or frontend changes
+were required. Verification used the existing temporary Gradle cache under
+`/tmp/homeclaim-gradle` for the sandbox-compatible build environment.
+The pre-existing full-Paper pre-write outage plus partial COPY runner was also
+rerun successfully: PostgreSQL recovered after a real Paper restart; MariaDB
+reconnected in the same process and performed explicit restore-target. Its
+same-process watcher now waits for the production failure-journal retry rather
+than invoking startup classification itself.

@@ -204,6 +204,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         }
 
         when (System.getProperty("homeclaim.worlde2e.phase", "full")) {
+            "outage-crash-verify" -> { verifyOutageCrash(testWorld); return }
             "merge-restart-verify" -> {
                 verifyMergeRecoveryRestart(testWorld, areas)
                 return
@@ -251,6 +252,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
         if (System.getProperty("homeclaim.worlde2e.phase") == "db-interruption") {
             runDatabaseInterruption(testWorld)
+            return
+        }
+
+        if (System.getProperty("homeclaim.worlde2e.phase") in setOf("outage-matrix", "outage-crash-prepare")) {
+            DestructiveOutageMatrix(testWorld).run()
             return
         }
 
@@ -1071,8 +1077,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
     /** Runs inside the full HomeClaim Paper process against the configured disposable SQL server. */
     private fun runDatabaseInterruption(testWorld: World) {
-        val engine = requireNotNull(System.getenv("HOMECLAIM_TEST_DB_CONTAINER_ENGINE"))
-        val container = requireNotNull(System.getenv("HOMECLAIM_TEST_DB_CONTAINER"))
+        val engine = System.getenv("HOMECLAIM_TEST_DB_CONTAINER_ENGINE").orEmpty()
+        val container = System.getenv("HOMECLAIM_TEST_DB_CONTAINER").orEmpty()
         // Mirror normal startup's warmed platform bindings and Area scope caches before the
         // deliberate outage; plot reset resolution must not issue a cold DB lookup on the tick.
         services.worldAreaService?.listWorlds()
@@ -1356,15 +1362,16 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             attempts++
             runCatching {
                 requireNotNull(services.dataSource).connection.use { connection ->
-                    connection.createStatement().use { it.executeQuery("SELECT 1").use { result -> check(result.next()) } }
+                    connection.prepareStatement("SELECT status FROM plot_mutation_jobs WHERE id = ?").use { statement ->
+                        statement.setObject(1, jobId)
+                        statement.executeQuery().use { result -> check(result.next() && result.getString(1) == "RECOVERY_REQUIRED") }
+                    }
                 }
             }.onSuccess {
                 if (!accepted.compareAndSet(false, true)) return@onSuccess
                 watcher?.cancel()
                 server.scheduler.runTask(this, Runnable {
                     runCatching {
-                        val classified = jobStore.markInterruptedAsRecoveryRequired()
-                        check(classified >= 1) { "DB-return phase did not classify the durable interrupted write intent" }
                         val job = requireNotNull(jobStore.findById(jobId))
                         check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
                         check(job.details.orEmpty().contains("phase=APPLYING_TARGET")) {
@@ -1458,6 +1465,392 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             statement.setString(1, "homeclaim:region_restore")
             statement.setString(2, "COMPLETED")
             statement.executeQuery().use { result -> check(result.next()); result.getInt(1) }
+        }
+    }
+
+    private fun verifyOutageCrash(w: World) {
+        val lines = Files.readAllLines(dataFolder.toPath().resolve("outage-crash-state.txt"))
+        fun field(name: String) = lines.first { it.startsWith("$name=") }.substringAfter('=')
+        area = requireNotNull(services.worldAreaService?.getArea(systems.diath.homeclaim.core.model.AreaId(UUID.fromString(field("area")))))
+        first = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(field("first")))))
+        second = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(field("second")))))
+        val operation = field("operation")
+        val job = requireNotNull(jobStore.findById(UUID.fromString(field("job"))))
+        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+        check("completion=TRANSFER_WORLD_VERIFIED_V1" !in job.details.orEmpty())
+        check(conflicts.checkAvailable(job.regionIds) != null)
+        fun complete() {
+            check(jobStore.findById(job.id)?.status == PlotMutationJobStatus.RECOVERED)
+            check(conflicts.checkAvailable(job.regionIds) == null)
+            Files.writeString(dataFolder.toPath().resolve("crash-result.json"), "{\"operation\":\"$operation\",\"pluginSha256\":\"$pluginSha256\",\"overallStatus\":\"PASSED\"}")
+            writeResult("PASS $operation explicit recovery after hard Paper process crash")
+            Bukkit.shutdown()
+        }
+        if (operation == "BIOME") {
+            val region = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(field("biomeRegion")))))
+            val cells = BiomeCellScope.cells(listOf(region))
+            cells.map { Math.floorDiv(it.blockX(), 16) to Math.floorDiv(it.blockZ(), 16) }.distinct().forEach { (x,z) ->
+                w.getChunkAt(x,z); w.addPluginChunkTicket(x,z,this)
+            }
+            val fields = job.details.orEmpty().lineSequence().filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
+            val id = UUID.fromString(fields.getValue("snapshotId")); val hash = fields.getValue("snapshotSha256")
+            val store = systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeSnapshotStore(homeClaimPlugin)
+            await(store.read(id, hash)) { snapshot ->
+                check(snapshot.cells.any { w.getBiome(it.cell.blockX(),it.cell.blockY(),it.cell.blockZ()).key.toString() != it.biomeKey })
+                val lease = (conflicts.reserveRecovery(job.id,job.regionIds,ActionActor.System("outage-crash-recovery"),CorrelationId.newId()) as ReservationAttempt.Acquired).lease
+                check(jobStore.beginRecovery(job.id,job.details.orEmpty()))
+                val service = PaperBiomeMutationService(homeClaimPlugin,requireNotNull(services.worldAreaService),jobStore)
+                await(service.restoreOriginal(id,hash,w,homeWorld.id,listOf(region),w.uid)) {
+                    snapshot.cells.forEach { check(w.getBiome(it.cell.blockX(),it.cell.blockY(),it.cell.blockZ()).key.toString() == it.biomeKey) }
+                    check(jobStore.finishRecovery(job.id,PlotMutationJobStatus.RECOVERED,job.details.orEmpty()))
+                    lease.close();service.shutdown();store.close();complete()
+                }
+            }
+        } else {
+            val source = decodeSnapshot(lines.filter { it.startsWith("source=") }.map { it.substringAfter('=') })
+            val target = decodeSnapshot(lines.filter { it.startsWith("target=") }.map { it.substringAfter('=') })
+            check(capture(w,first.bounds.minX) != source || capture(w,second.bounds.minX) != target)
+            recover(job.id, if (operation == "SWAP") PlotMutationRecoveryAction.RESTORE_BOTH else PlotMutationRecoveryAction.RESTORE_TARGET) {
+                check(capture(w,first.bounds.minX) == source);check(capture(w,second.bounds.minX) == target);complete()
+            }
+        }
+    }
+
+    /** Real DB process outages; every destructive barrier implementation is test-only. */
+    private inner class DestructiveOutageMatrix(private val w: World) {
+        private val cases = System.getProperty("homeclaim.worlde2e.crashOperation")?.let { listOf(it) } ?: listOf("RESET", "MOVE", "SWAP", "RESTORE", "MERGE_PARTIAL", "MERGE_DOMAIN", "UNLINK_PARTIAL", "UNLINK_DOMAIN", "BIOME")
+        private val crash = System.getProperty("homeclaim.worlde2e.phase") == "outage-crash-prepare"
+        private val crashState = dataFolder.toPath().resolve("outage-crash-state.txt")
+        private var lastHeartbeat = System.nanoTime()
+        private var maxHeartbeatGap = 0L
+        private var heartbeatSamples = 0
+        private val heartbeat = server.scheduler.runTaskTimer(this@PaperWorldE2EHarnessPlugin, Runnable {
+            val now = System.nanoTime()
+            maxHeartbeatGap = maxOf(maxHeartbeatGap, now - lastHeartbeat)
+            lastHeartbeat = now; heartbeatSamples++
+        }, 1L, 1L)
+        private val results = mutableListOf<String>()
+        private var hitJob: UUID? = null
+        private var durableDetails = ""
+        private val actor = ActionActor.System("destructive-outage-matrix")
+        private val engine = System.getenv("HOMECLAIM_TEST_DB_CONTAINER_ENGINE").orEmpty()
+        private val container = System.getenv("HOMECLAIM_TEST_DB_CONTAINER").orEmpty()
+
+        private fun containerCommand(command: String) {
+            val process = ProcessBuilder(engine, command, container).redirectErrorStream(true).start()
+            check(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) { "Container $command timed out" }
+            check(process.exitValue() == 0) { "Container $command failed" }
+        }
+
+        private val matrixRunId = UUID.randomUUID()
+        private val matrixStarted = java.time.Instant.now()
+        private fun sha256Bytes(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        private var provenJob: UUID? = null
+        private fun assertIntentBeforeWrite(operation: String, phase: String) {
+            requireNotNull(services.dataSource).connection.use { connection ->
+                connection.prepareStatement("SELECT id, details FROM plot_mutation_jobs WHERE operation = ? AND status = ? ORDER BY created_at DESC").use { statement ->
+                    statement.setString(1, operation); statement.setString(2, "RUNNING")
+                    statement.executeQuery().use { rows ->
+                        check(rows.next()) { "$operation has no committed intent before first write" }
+                        provenJob = UUID.fromString(rows.getString(1))
+                        val details = rows.getString(2)
+                        check("phase=$phase" in details)
+                        check("completion=TRANSFER_WORLD_VERIFIED_V1" !in details)
+                        val fields = details.lineSequence().filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
+                        if (operation in setOf("MERGE", "UNLINK")) {
+                            val manifest = homeClaimPlugin.dataFolder.toPath().resolve("mutation-safety").resolve(provenJob.toString())
+                                .resolve(fields.getValue("safetyBundleId")).resolve("manifest.json")
+                            check(sha256Bytes(Files.readAllBytes(manifest)) == fields.getValue("safetyBundleManifestSha256"))
+                        }
+                        val backupKeys = when (operation) {
+                            "RESET_MANUAL" -> listOf("backupId")
+                            "MOVE", "SWAP" -> listOf("sourceBackup", "targetSafetyBackup")
+                            "RESTORE" -> listOf("backupId", "restoreSafetyBackupId")
+                            else -> emptyList()
+                        }
+                        backupKeys.forEach { key ->
+                            val id = UUID.fromString(fields.getValue(key))
+                            connection.prepareStatement("SELECT status FROM plot_backups WHERE id = ?").use { ready ->
+                                ready.setObject(1, id)
+                                ready.executeQuery().use { row -> check(row.next() && row.getString(1) == "READY") { "$operation $key is not durably READY" } }
+                            }
+                        }
+                        if (operation == "BIOME") {
+                            val bytes = Files.readAllBytes(homeClaimPlugin.dataFolder.toPath().resolve("biome-snapshots").resolve("${fields.getValue("snapshotId")}.hcbs"))
+                            check(sha256Bytes(bytes) == fields.getValue("snapshotSha256"))
+                            check(BiomeSnapshotV1.decode(bytes).regionIds.isNotEmpty())
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun barrier(operation: String, phase: String): Nothing {
+            check(hitJob == null) { "Duplicate outage barrier" }
+            // A distinct JDBC connection proves the phase is committed, not just cached.
+            requireNotNull(services.dataSource).connection.use { connection ->
+                connection.prepareStatement("SELECT id, details FROM plot_mutation_jobs WHERE operation = ? AND status = ? ORDER BY created_at DESC").use { statement ->
+                    statement.setString(1, operation); statement.setString(2, "RUNNING")
+                    statement.executeQuery().use { rows ->
+                        check(rows.next()) { "$operation has no durable RUNNING job before writes" }
+                        hitJob = UUID.fromString(rows.getString(1)); durableDetails = rows.getString(2)
+                    }
+                }
+            }
+            check(provenJob == hitJob) { "Outage job differs from the durable pre-write intent" }
+            check("phase=$phase" in durableDetails) { "$operation missing durable $phase: $durableDetails" }
+            check("completion=TRANSFER_WORLD_VERIFIED_V1" !in durableDetails)
+            if (crash) {
+                Files.writeString(crashState, "job=$hitJob\n", java.nio.file.StandardOpenOption.APPEND)
+                w.save()
+                if (engine.isNotEmpty()) containerCommand("kill")
+                Runtime.getRuntime().halt(23)
+            }
+            containerCommand("kill")
+            error("test-only deterministic $operation outage at $phase")
+        }
+
+        private fun afterFailure(future: CompletableFuture<*>, targets: List<RegionId>, ready: (PlotMutationJobRecord) -> Unit) {
+            await(future.handle { _, _ -> Unit }, 20 * 120) {
+                val id = requireNotNull(hitJob) { "No destructive outage barrier was reached" }
+                // The process remains alive while the same persistent DB volume returns.
+                server.scheduler.runTaskAsynchronously(this@PaperWorldE2EHarnessPlugin, Runnable {
+                    runCatching {
+                        containerCommand("start")
+                        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(90)
+                        var online = false
+                        while (!online && System.nanoTime() < deadline) {
+                            online = runCatching { requireNotNull(services.dataSource).connection.use { c ->
+                                c.createStatement().use { it.executeQuery("SELECT 1").close() }
+                            }; true }.getOrDefault(false)
+                            if (!online) Thread.sleep(250)
+                        }
+                        check(online) { "Same Hikari pool did not reconnect" }
+                        // Production's async journal reconciliation must make explicit recovery usable;
+                        // do not invoke the startup classifier while the server is running.
+                        val reconciliationDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(40)
+                        var durableRecovery = false
+                        while (!durableRecovery && System.nanoTime() < reconciliationDeadline) {
+                            durableRecovery = requireNotNull(services.dataSource).connection.use { c ->
+                                c.prepareStatement("SELECT status FROM plot_mutation_jobs WHERE id = ?").use { q ->
+                                    q.setObject(1, id); q.executeQuery().use { row -> row.next() && row.getString(1) == "RECOVERY_REQUIRED" }
+                                }
+                            }
+                            if (!durableRecovery) Thread.sleep(100)
+                        }
+                        check(durableRecovery) { "Production async failure-journal reconciliation did not persist the blocker" }
+                        val job = requireNotNull(jobStore.findById(id))
+                        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+                        check("completion=TRANSFER_WORLD_VERIFIED_V1" !in job.details.orEmpty())
+                        server.scheduler.runTask(this@PaperWorldE2EHarnessPlugin, checkedRunnable {
+                            check(conflicts.checkAvailable(targets) != null) { "Unsafe scope was not blocked" }
+                            check(conflicts.reserve(RegionMutationOperation.RESET, targets, actor = actor) is ReservationAttempt.Conflict) {
+                                "A destructive reservation was admitted on an unsafe scope"
+                            }
+                            ready(job)
+                        })
+                    }.onFailure(::fail)
+                })
+            }
+        }
+
+        fun run(index: Int = 0) {
+            if (index == cases.size) {
+                heartbeat.cancel()
+                check(heartbeatSamples > 0)
+                logger.info("Outage matrix heartbeat: samples=$heartbeatSamples maxGapMs=${maxHeartbeatGap / 1_000_000.0}")
+                val scenarios = results.joinToString(",") { "{\"name\":\"$it\",\"status\":\"PASSED\",\"durableIntentBeforeWrite\":true,\"verifiedMarkerAbsent\":true,\"exactRecovery\":true}" }
+                Files.writeString(dataFolder.toPath().resolve("outage-result.json"),
+                    "{\"runId\":\"$matrixRunId\",\"startedAt\":\"$matrixStarted\",\"completedAt\":\"${java.time.Instant.now()}\",\"maxHeartbeatGapMs\":${maxHeartbeatGap / 1_000_000.0},\"heartbeatSamples\":$heartbeatSamples,\"pluginSha256\":\"$pluginSha256\",\"overallStatus\":\"PASSED\",\"scenarios\":[$scenarios]}")
+                writeResult("PASS complete destructive outage matrix: ${results.joinToString()}")
+                Bukkit.shutdown(); return
+            }
+            val name = cases[index]
+            currentScenario = "outage-$name"; hitJob = null; provenJob = null
+            val done = {
+                check(conflicts.checkAvailable(listOf(first.id, second.id)) == null)
+                await(transferService.execute(readyPlan(PlotTransferOperation.COPY, first, second), w, actor, CorrelationId.newId())) { probe ->
+                    check(probe is PlotTransferResult.Completed) { "A new ordinary COPY failed after $name recovery: $probe" }
+                    check(jobStore.findById((probe as PlotTransferResult.Completed).jobId)?.status == PlotMutationJobStatus.COMPLETED)
+                    logger.info("Destructive DB outage $name: exact recovery and new ordinary operation PASSED")
+                    results += name
+                    run(index + 1)
+                }
+            }
+            when {
+                name.startsWith("MERGE") || name.startsWith("UNLINK") -> multiLayer(name, done)
+                name == "BIOME" -> biome(done)
+                else -> blocks(name, done)
+            }
+        }
+
+        private fun blocks(name: String, done: () -> Unit) {
+            fun markColumns() {
+                for (y in w.minHeight until w.maxHeight step 16) {
+                    listOf(first to Material.GOLD_BLOCK, second to Material.DIAMOND_BLOCK).forEach { (region, material) ->
+                        val block = w.getBlockAt(region.bounds.minX, y, 0)
+                        if (block.state !is Container) block.setType(material, false)
+                    }
+                }
+            }
+            seed(first, "outage-source"); seed(second, "outage-target")
+            markColumns()
+            w.getBlockAt(first.bounds.minX, w.minHeight + 250, 0).setType(Material.GOLD_BLOCK, false)
+            w.getBlockAt(first.bounds.minX, w.minHeight + 350, 0).setType(Material.EMERALD_BLOCK, false)
+            w.getBlockAt(second.bounds.minX, w.minHeight + 250, 0).setType(Material.DIAMOND_BLOCK, false)
+            val a = capture(w, first.bounds.minX); val b = capture(w, second.bounds.minX)
+            if (crash) Files.writeString(crashState, buildList {
+                add("operation=$name"); add("area=${area.id.value}"); add("first=${first.id.value}"); add("second=${second.id.value}")
+                addAll(encodeSnapshot(a).map { "source=$it" }); addAll(encodeSnapshot(b).map { "target=$it" })
+            }.joinToString("\n") + "\n")
+            var secondary = false
+            val snapshots = PaperPlotBackupService(homeClaimPlugin, JdbcPlotBackupIndex(requireNotNull(services.dataSource)),
+                requireNotNull(services.worldAreaService), jobStore, services.auditService, conflicts, PlotBackupCompression.ZSTD,
+                object : PlotBackupFaultInjector {
+                  override fun beforeBlockWrite(kind: PlotBackupApplyKind, appliedBlocks: Int) {
+                    if (name == "RESTORE" && kind == PlotBackupApplyKind.RESTORE && appliedBlocks == 0) assertIntentBeforeWrite("RESTORE", "RESTORING")
+                  }
+                  override fun afterBlockWrite(kind: PlotBackupApplyKind, count: Int) {
+                    if (count == 100 && name == "RESTORE" && kind == PlotBackupApplyKind.RESTORE) barrier("RESTORE", "RESTORING")
+                    if (count == 100 && name == "SWAP" && secondary && kind == PlotBackupApplyKind.TRANSFER) barrier("SWAP", "APPLYING_SECONDARY")
+                  }
+                })
+            fun failed(future: CompletableFuture<*>, action: PlotMutationRecoveryAction) {
+                afterFailure(future, listOf(first.id, second.id)) { job ->
+                    check(capture(w, first.bounds.minX) != a || capture(w, second.bounds.minX) != b) { "Outage did not change world" }
+                    if (name == "MOVE") check(capture(w, second.bounds.minX) == a) { "MOVE target not complete before cleanup" }
+                    recover(job.id, action) {
+                        check(capture(w, first.bounds.minX) == a) { "$name recovery source differs" }
+                        check(capture(w, second.bounds.minX) == b) { "$name recovery target differs" }
+                        snapshots.shutdown(); done()
+                    }
+                }
+            }
+            when (name) {
+                "MOVE", "SWAP" -> {
+                    val injector = object : PlotTransferFaultInjector {
+                        override fun beforePhase(phase: PlotTransferPhase) {
+                            if (phase == PlotTransferPhase.SECONDARY_APPLY) { secondary = true; assertIntentBeforeWrite("SWAP", "APPLYING_SECONDARY") }
+                            if (phase == PlotTransferPhase.SOURCE_CLEANUP) assertIntentBeforeWrite("MOVE", "CLEANING_SOURCE")
+                        }
+                        override fun afterSourceCleanupWrite(applied: Long) { if (applied == 100L) barrier("MOVE", "CLEANING_SOURCE") }
+                    }
+                    val service = PaperPlotTransferService(homeClaimPlugin, snapshots, conflicts, jobStore, services.auditService, injector)
+                    failed(service.execute(readyPlan(PlotTransferOperation.valueOf(name), first, second), w, actor, CorrelationId.newId()), PlotMutationRecoveryAction.RESTORE_BOTH)
+                }
+                "RESET" -> {
+                    val result = CompletableFuture<Unit>()
+                    val service = PaperPlotResetService(homeClaimPlugin, jobStore = jobStore, worldAreaService = services.worldAreaService,
+                        backupService = snapshots, conflicts = conflicts,
+                        mutationBackend = systems.diath.homeclaim.platform.paper.plot.mutation.PaperSynchronousWorldMutationBackend(afterWrite = { if (it == 100) barrier("RESET_MANUAL", "RESETTING") }, beforeBatch = { assertIntentBeforeWrite("RESET_MANUAL", "RESETTING") }))
+                    check(service.queueReset(first, systems.diath.homeclaim.platform.paper.plot.mutation.PlotResetReason.MANUAL,
+                        CorrelationId.newId(), actor) { result.complete(Unit) })
+                    failed(result, PlotMutationRecoveryAction.RESTORE_TARGET)
+                }
+                "RESTORE" -> {
+                    seed(first, "restore-X")
+                    await(snapshots.createSnapshot(first, w, actor, CorrelationId.newId(), "outage-restore-source")) { backup ->
+                        seed(first, "outage-source")
+                        w.getBlockAt(first.bounds.minX, w.minHeight + 250, 0).setType(Material.GOLD_BLOCK, false)
+            w.getBlockAt(first.bounds.minX, w.minHeight + 350, 0).setType(Material.EMERALD_BLOCK, false)
+                        markColumns()
+                        failed(snapshots.restore(backup.id, first, w, actor, CorrelationId.newId()), PlotMutationRecoveryAction.RESTORE_TARGET)
+                    }
+                }
+            }
+        }
+
+        private fun biome(done: () -> Unit) {
+            val y = Math.floorDiv(w.minHeight + 20, 4) * 4
+            val region = createRegion(Bounds(-8, -1, y, y + 15, -8, -1))
+            w.getChunkAt(-1, -1); w.addPluginChunkTicket(-1, -1, this@PaperWorldE2EHarnessPlugin)
+            val cells = BiomeCellScope.cells(listOf(region))
+            val registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
+            val plains = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("plains")))
+            val ocean = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("ocean")))
+            val forest = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("forest")))
+            val original = cells.mapIndexed { i, cell ->
+                val value = if (i % 2 == 0) plains else ocean
+                w.setBiome(cell.blockX(), cell.blockY(), cell.blockZ(), value); cell to value.key.toString()
+            }.toMap()
+            if (crash) Files.writeString(crashState, "operation=BIOME\narea=${area.id.value}\nfirst=${first.id.value}\nsecond=${second.id.value}\nbiomeRegion=${region.id.value}\n")
+            val lease = (conflicts.reserve(RegionMutationOperation.BIOME, listOf(region.id), actor = actor) as ReservationAttempt.Acquired).lease
+            val service = PaperBiomeMutationService(homeClaimPlugin, requireNotNull(services.worldAreaService), jobStore, cellsPerTick = 2,
+                observer = object : systems.diath.homeclaim.platform.paper.plot.mutation.BiomeMutationObserver {
+                    override fun beforeCellApplied(applied: Int) { if (applied == 0) assertIntentBeforeWrite("BIOME", "APPLYING_BIOME") }
+                    override fun afterCellApplied(applied: Int) { if (applied == 4) barrier("BIOME", "APPLYING_BIOME") }
+                })
+            val future = service.apply(listOf(region), forest, CorrelationId.newId(), actor)
+            afterFailure(future, listOf(region.id)) { job ->
+                lease.close()
+                val changed = cells.count { w.getBiome(it.blockX(), it.blockY(), it.blockZ()).key == forest.key }
+                check(changed in 1 until cells.size)
+                val fields = job.details.orEmpty().lineSequence().mapNotNull { l -> if ('=' in l) l.substringBefore('=') to l.substringAfter('=') else null }.toMap()
+                val recoveryLease = (conflicts.reserveRecovery(job.id, job.regionIds, actor, CorrelationId.newId()) as ReservationAttempt.Acquired).lease
+                check(jobStore.beginRecovery(job.id, job.details.orEmpty()))
+                await(service.restoreOriginal(UUID.fromString(fields.getValue("snapshotId")), fields.getValue("snapshotSha256"),
+                    w, homeWorld.id, listOf(region), w.uid)) {
+                    original.forEach { (cell, key) -> check(w.getBiome(cell.blockX(), cell.blockY(), cell.blockZ()).key.toString() == key) }
+                    check(jobStore.finishRecovery(job.id, PlotMutationJobStatus.RECOVERED, job.details.orEmpty()))
+                    recoveryLease.close(); check(conflicts.checkAvailable(job.regionIds) == null)
+                    service.shutdown(); done()
+                }
+            }
+        }
+
+        private fun multiLayer(name: String, done: () -> Unit) {
+            val operation = if (name.startsWith("MERGE")) MutationSafetyOperation.MERGE else MutationSafetyOperation.UNLINK
+            val x = 8 + (cases.indexOf(name) - 4) * 12
+            val left = createRegion(Bounds(x, x + 2, w.minHeight, w.maxHeight - 1, 8, 10)).copy(home = RegionHome(x + 1.0, w.minHeight + 12.0, 9.0, 0f, 0f))
+            val right = createRegion(Bounds(x + 4, x + 6, w.minHeight, w.maxHeight - 1, 8, 10))
+            var original = listOf(left, right)
+            if (operation == MutationSafetyOperation.UNLINK) {
+                val group = services.regionService.mergeRegions(original.map { it.id })
+                original = original.map { it.copy(mergeGroupId = group) }
+            }
+            original.forEach(services.regionService::updateRegion)
+            server.scheduler.runTaskLater(this@PaperWorldE2EHarnessPlugin, checkedRunnable {
+                val plannedGroup = MergeGroupId(UUID.randomUUID())
+                val prospective = original.map { it.copy(mergeGroupId = if (operation == MutationSafetyOperation.MERGE) plannedGroup else null) }
+                val plan = if (operation == MutationSafetyOperation.MERGE) plotWorldMutation.prepareMergeMutation(prospective)
+                    else plotWorldMutation.prepareUnlinkMutation(original, true, MutationReason.UNCLAIM)
+                seedMutationScope(w, plan, Material.BARREL)
+                val before = captureMutationScope(w, plan)
+                val domain = systems.diath.homeclaim.platform.paper.plot.mutation.MergeDomainSnapshotV1.capture(original)
+                val jobId = createSafetyJob(operation.name, original)
+                val lease = (conflicts.reserve(RegionMutationOperation.valueOf(operation.name), original.map { it.id }, actor = actor) as ReservationAttempt.Acquired).lease
+                await(safetyBundleStore.create(jobId, operation, homeWorld.id, area.id, original, plan, w, actor, CorrelationId.newId(), UUID.randomUUID())) { bundle ->
+                    recordSafetyReady(jobId, bundle)
+                    assertIntentBeforeWrite(operation.name, "WORLD_MUTATION")
+                    val writer = PaperPlotMutationService(homeClaimPlugin, worldAreaService = services.worldAreaService,
+                        faultInjector = PlotMutationFaultInjector { _, count -> if (name.endsWith("PARTIAL") && count == 1) barrier(operation.name, "WORLD_MUTATION") })
+                    val failed = CompletableFuture<Unit>()
+                    writer.applyPreparedMutation(plan, operation.name.lowercase()).whenComplete { _, failure ->
+                        server.scheduler.runTask(this@PaperWorldE2EHarnessPlugin, checkedRunnable {
+                            val observed = failure ?: runCatching { barrier(operation.name, "WORLD_MUTATION") }.exceptionOrNull()
+                            check(observed != null)
+                            server.scheduler.runTaskAsynchronously(this@PaperWorldE2EHarnessPlugin, Runnable {
+                                runCatching { jobStore.finish(jobId, PlotMutationJobStatus.RECOVERY_REQUIRED, 0, plan.batches.size, observed.message) }
+                                lease.close(); failed.complete(Unit)
+                            })
+                        })
+                    }
+                    afterFailure(failed, original.map { it.id }) { job ->
+                        check(captureMutationScope(w, plan) != before)
+                        val recoveryLease = (conflicts.reserveRecovery(job.id, job.regionIds, actor, CorrelationId.newId()) as ReservationAttempt.Acquired).lease
+                        check(jobStore.beginRecovery(job.id, job.details.orEmpty()))
+                        await(safetyBundleStore.validate(job.id, bundle.bundleId, operation, area.id, homeWorld.id, w.uid, job.regionIds, bundle.manifestSha256)) { validated ->
+                            await(safetyBundleStore.restoreWorld(validated, w)) {
+                                restoreDomainSnapshot(validated.domainSnapshot, area.id)
+                                assertWorldMapsEqual("$name recovered world", before, captureMutationScope(w, plan))
+                                check(systems.diath.homeclaim.platform.paper.plot.mutation.MergeDomainSnapshotV1.capture(job.regionIds.map { requireNotNull(services.regionService.getRegionById(it)) }) == domain)
+                                check(jobStore.finishRecovery(job.id, PlotMutationJobStatus.RECOVERED, job.details.orEmpty()))
+                                recoveryLease.close(); check(conflicts.checkAvailable(job.regionIds) == null); done()
+                            }
+                        }
+                    }
+                }
+            }, 2L)
         }
     }
 

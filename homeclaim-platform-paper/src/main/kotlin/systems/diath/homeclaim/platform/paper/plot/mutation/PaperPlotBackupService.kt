@@ -306,6 +306,7 @@ class PaperPlotBackupService(
                                 val x = Math.addExact(snapshot.x, dx)
                                 val z = Math.addExact(snapshot.z, dz)
                                 val block = task.world.getBlockAt(x, snapshot.y, z)
+                                faultInjector.beforeBlockWrite(PlotBackupApplyKind.TRANSFER, task.applied)
                                 block.setBlockData(Bukkit.createBlockData(snapshot.blockData), false)
                                 task.applied++
                                 task.onProgress?.invoke(task.applied)
@@ -668,6 +669,7 @@ class PaperPlotBackupService(
         try {
             for (snapshot in batch) {
                 val block = task.world.getBlockAt(snapshot.x, snapshot.y, snapshot.z)
+                faultInjector.beforeBlockWrite(PlotBackupApplyKind.RESTORE, task.applied)
                 block.setBlockData(Bukkit.createBlockData(snapshot.blockData), false)
                 task.applied++
                 faultInjector.afterBlockWrite(PlotBackupApplyKind.RESTORE, task.applied)
