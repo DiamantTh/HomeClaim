@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import hashlib
+import uuid
 import os
 import re
 import shutil
@@ -115,12 +117,14 @@ def lines_of_log(log_path: Path, count: int = 120) -> str:
     return log_path.read_bytes()[-24_000:].decode("utf-8", errors="replace")
 
 
-def start_server(paper_jar: Path, plugin_jar: Path, companion_jar: Path, java: str, log_path: Path) -> tuple[subprocess.Popen, int, int]:
+def start_server(paper_jar: Path, plugin_jar: Path, companion_jar: Path, java: str, log_path: Path, run_id: str, plugin_sha: str) -> tuple[subprocess.Popen, int, int]:
     port, web_port = free_port(), free_port()
     configure_server(paper_jar, plugin_jar, companion_jar, port, web_port)
     log = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
-        [java, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=network-player", "-jar", paper_jar.name, "nogui"],
+        [java, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=network-player",
+         f"-Dhomeclaim.worlde2e.runId={run_id}", f"-Dhomeclaim.worlde2e.pluginSha256={plugin_sha}",
+         "-jar", paper_jar.name, "nogui"],
         cwd=SERVER_DIR,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -212,6 +216,18 @@ async def connect_player(username: str, host: str, port: int) -> NetworkClient:
     client = NetworkClient(bot, plain_text)
     await asyncio.wait_for(bot.start(), timeout=20)
     await asyncio.wait_for(bot.wait_loaded(timeout=40), timeout=45)
+    # Protocol 777: resend Client Information in PLAY (0x0e), ordered before
+    # commands. The pinned client only emits it in CONFIGURATION (0x00), and
+    # Purpur can otherwise still report chat.disabled.options after join.
+    # Field layout matches the pinned client's configuration packet; the
+    # protocol-777 GameProtocols registry confirms the PLAY packet ID.
+    from protobot.protocol.codec import PacketWriter
+    if bot.version.protocol != 777:
+        raise AssertionError("The test-only PLAY client-information adapter requires protocol 777")
+    settings = (PacketWriter().write_string("en_us", max_chars=16).write_byte(10)
+                .write_varint(0).write_bool(True).write_unsigned_byte(0x7F)
+                .write_varint(1).write_bool(False).write_bool(True).write_varint(0).to_bytes())
+    await bot.send_raw(0x0E, settings)
     return client
 
 
@@ -571,9 +587,27 @@ async def run_scenarios(host: str, port: int, web_port: int, process: subprocess
     else:
         raise AssertionError("Logout left the browser session valid")
 
+    await control(38, "prepare-biome-player")
+    await first.command("/plot biome minecraft:forest")
+    await first.next_message(lambda message: "permission" in message.lower(), 10)
+    await control(39, "grant-biome-player")
+    await first.command("/plot biome minecraft:forest")
+    await first.next_message(lambda message: "Plot biome changed to minecraft:forest" in message, 45)
+    await control(40, "assert-biome-player")
+    biome_job = (await control(41, "prepare-biome-recovery")).split("biome-job=", 1)[1]
+    await first.command(f"/plot jobs recover {biome_job} restore-biome-original")
+    await first.next_message(lambda message: "permission" in message.lower(), 10)
+    await second.command(f"/plot jobs inspect {biome_job}")
+    await second.next_message(lambda message: biome_job in message, 10)
+    await asyncio.sleep(1.0)  # Existing command rate limit, not a mutation barrier.
+    await second.command(f"/plot jobs recover {biome_job} restore-biome-original")
+    await second.next_message(lambda message: "within 30 seconds" in message, 10)
+    await second.command("/plot confirm")
+    await second.next_message(lambda message: "Original biome pre-image restored and verified" in message, 45)
+    await control(42, "assert-biome-recovered")
     await first.close()
     await second.close()
-    result = await control(38, "finish")
+    result = await control(43, "finish")
     if not result.startswith("PASS"):
         raise AssertionError(result)
 
@@ -630,12 +664,16 @@ def main() -> int:
     if RUN_DIR.exists():
         shutil.rmtree(RUN_DIR)
     RUN_DIR.mkdir(parents=True)
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    if REPORT_DIR.exists():
+        shutil.rmtree(REPORT_DIR)
+    REPORT_DIR.mkdir(parents=True)
     log_path = REPORT_DIR / "paper.log"
     process: subprocess.Popen | None = None
     try:
         checkout_client()
-        process, port, web_port = start_server(server_jar, plugin_jar, companion_jar, java, log_path)
+        run_id = str(uuid.uuid4())
+        plugin_sha = hashlib.sha256(plugin_jar.read_bytes()).hexdigest()
+        process, port, web_port = start_server(server_jar, plugin_jar, companion_jar, java, log_path, run_id, plugin_sha)
         if SCENARIO_MODE == "full":
             asyncio.run(run_scenarios("127.0.0.1", port, web_port, process))
         elif SERVER_KIND == "purpur" and SCENARIO_MODE == "smoke":
@@ -651,6 +689,17 @@ def main() -> int:
         final = READY_FILE.read_text(encoding="utf-8", errors="replace") if READY_FILE.exists() else ""
         if exit_code != 0 or not final.startswith("PASS"):
             raise RuntimeError(f"Networked Player E2E failed: exit={exit_code}, report={final}\n{lines_of_log(log_path)}")
+        result_file = READY_FILE.with_name("e2e-result.json")
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        expected_scenarios = ({"network-player-suite", "network-biome-command", "network-biome-recovery"}
+                              if SCENARIO_MODE == "full" else {"network-player-smoke"})
+        outcomes = {item["name"]: item["status"] for item in result["scenarios"]}
+        if (result["runId"] != run_id or result["pluginSha256"] != plugin_sha
+                or result["overallStatus"] != "PASSED" or result["serverType"].lower() != SERVER_KIND
+                or not expected_scenarios.issubset(outcomes)
+                or any(status != "PASSED" for status in outcomes.values())
+                or hashlib.sha256(plugin_jar.read_bytes()).hexdigest() != plugin_sha):
+            raise AssertionError(f"Network player result contract failed: {result}")
         if (SERVER_DIR / "ops.json").read_text(encoding="utf-8").strip() != "[]":
             raise AssertionError("The test granted operator status; explicit Paper permission attachment was expected")
         database = SERVER_DIR / "plugins" / "HomeClaim" / "homeclaim.db"
@@ -662,6 +711,7 @@ def main() -> int:
                     "homeclaim:region_move",
                     "homeclaim:region_swap",
                     "homeclaim:region_restore",
+                    "homeclaim:region_biome_change",
                 },
                 PLAYER_B: {"homeclaim:region_recovery"},
             } if SCENARIO_MODE == "full" else {PLAYER_A: {"homeclaim:region_reset"}})
@@ -679,6 +729,7 @@ def main() -> int:
                         f"Completed player audit for {player_name} ({player_id}) missed actions {sorted(missing)}; "
                         f"observed={sorted(completed_actions)}"
                     )
+        shutil.copy2(result_file, REPORT_DIR / "e2e-result.json")
         report = REPORT_DIR / "result.txt"
         report.write_text(final + f"auditActors={PLAYER_A}:{uuid_for_offline_name(PLAYER_A)},"
                           f"{PLAYER_B}:{uuid_for_offline_name(PLAYER_B)}\n", encoding="utf-8")
@@ -689,6 +740,8 @@ def main() -> int:
         print(f"Client: ProtoBot at pinned commit {CLIENT_COMMIT} (MIT), protocol 777; server={SERVER_KIND}")
         return 0
     except Exception as error:
+        (REPORT_DIR / "e2e-result.json").unlink(missing_ok=True)
+        (REPORT_DIR / "result.txt").write_text(f"FAILED {error}\n", encoding="utf-8")
         print(f"NETWORKED PLAYER E2E FAILED: {error}", file=sys.stderr)
         if log_path.exists():
             print(lines_of_log(log_path), file=sys.stderr)

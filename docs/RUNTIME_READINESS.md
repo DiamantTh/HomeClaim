@@ -526,3 +526,127 @@ rerun successfully: PostgreSQL recovered after a real Paper restart; MariaDB
 reconnected in the same process and performed explicit restore-target. Its
 same-process watcher now waits for the production failure-journal retry rather
 than invoking startup classification itself.
+
+
+## Step 23B — biome runtime hardening (current contract)
+
+The historical entries above describe their respective step artifacts. The
+current biome loader replaces the old unloaded-chunk rejection: it derives only
+the chunks touched by complete interior quart cells, deduplicates them, rejects
+more than 256 chunks, and submits at most two Paper async chunk loads at once.
+The deadline is 1,200 server ticks. No biome capture or explicit biome write begins until every
+required chunk is available and ticketed. The same loader is used by recovery,
+after checksum/binding/scope and **all** registry keys have been validated.
+
+Temporary plugin chunk tickets span capture/apply/verify or recovery and are
+reference-counted across operations. Success, failure, timeout, cancellation and
+service shutdown release owned tickets. A pre-existing ticket belonging to
+another caller of the same plugin is preserved. Late async load completions
+start no mutation or ticket acquisition after cancellation. Snapshot IO shutdown
+allows already queued file work to finish instead of dropping its futures.
+No synchronous tick-thread JDBC work was introduced.
+
+The full Paper/Purpur suites now require 29 scenario results, adding an actual
+Datapack custom-key roundtrip, missing-key rejection before any write, and
+initially-unloaded-chunk loading/ticket/release/error/timeout evidence. The
+Datapack exists only under the E2E source fixture directory and is copied into
+disposable test worlds; it is absent from the production artifact. A separate
+`biomeRegistryRestartE2E` runs three Paper processes: custom registry present,
+registry absent with recovery rejected and blocker retained, registry returned
+with exact original-key recovery. Before removing the Datapack the fixture
+replaces live custom values with Vanilla keys, avoiding claims about orphaned
+Minecraft chunk palettes.
+
+The network suite adds the existing `/plot biome minecraft:forest` command
+without inventing a confirmation step, plus normal-player recovery denial and
+confirmed admin `restore-biome-original`. Assertions inspect actual cells,
+persistent job status, actor UUID/correlated audit, and blocker release. The
+ProtoBot pin and production dependencies remain unchanged. The Purpur restart
+runner now also executes the same biome pre-image recovery across two processes
+and validates a runId/artifact-SHA-bound JSON result.
+
+The independent `BiomeSnapshotV1` framing and codec NONE are unchanged. The
+16-cell custom-key fixture is 787 bytes, including framing and integrity data;
+adding a compression/decompression contract for this small fixture is not
+justified. Phase measurements are diagnostic local observations, not TPS
+promises. HCBK v1/v2/v3, transfer block/container semantics, split-cell exclusion,
+negative-coordinate floor mapping, and the narrow COPY finalization contract
+remain unchanged.
+
+Retention is explicit: **retain biome safety files indefinitely**, including
+terminal-job evidence and orphan files left by failed job creation. There is no
+age/count deletion or automatic cleanup. Future cleanup must inspect the full
+persistent reference set and fail closed if it is unavailable; RECOVERY_REQUIRED
+or RECOVERY_IN_PROGRESS references must never be deleted. HCBK retention is not
+changed. Disk growth remains an operational limitation.
+
+Executed evidence against SHA-256
+`ddc63ca77f497165978ea06f3220d1bfb51519c3812df5cdffc0f36f32e33e5c`:
+
+- Paper 26.3 build 242 and Purpur build 2647: 29/29 world scenarios each;
+  `worldE2EParity` passed with identical required resultsets and artifact SHA.
+- Real custom Datapack roundtrip on both; Paper three-process key
+  present/missing/returned recovery passed (3/3 phases, two validated JSON
+  verification reports).
+- Live Paper ProtoBot suite passed, including permission-denied biome command,
+  explicit `homeclaim.plot.biome` attachment, owner mutation, normal-player
+  recovery denial, confirmed admin biome recovery, exact cells/jobs/audit UUIDs.
+  Admin test players remain non-OP. Existing COPY finalization negatives,
+  ACKNOWLEDGE, pairing/WebSocket and disconnect scenarios passed. Purpur Player
+  lifecycle/info/reset-confirmation/recovery smoke passed.
+- Purpur transfer and biome process-restart recovery passed; the biome result
+  JSON is runId/SHA-bound. External DB outage matrix: PostgreSQL 17.11 9/9,
+  MariaDB 11.4.13 9/9 (including partial BIOME). All assert durable intent before
+  writes, absent final verified marker, exact pre-image recovery and blocker
+  release. Actual hard-crash restart regression passed PostgreSQL SWAP,
+  MariaDB BIOME, SQLite RESET and SQLite BIOME.
+- Unit suite: 255 tests, zero failures/errors, six deliberately opt-in skips.
+  Dedicated DB runtime matrix: 3/3, zero skips; process restart prepare/verify:
+  2/2 each, zero skips. Python syntax and relevant shell `bash -n` passed.
+- Production artifact: 70,935,640 bytes; no test client/companion/fixture,
+  Testcontainers package, active fault implementation, test identity/config or
+  `.gz`; HCBK readers, BiomeSnapshotV1/chunk runtime, Zstd/Brotli, migrations,
+  DB drivers and 42 `.br` plus 42 `.zst` assets present.
+
+Local biome phase milliseconds, with 16 cells and two cells/tick (elapsed wall
+phases include tick scheduling, not CPU service time):
+
+| Server | Scope | Capture | Write/checksum | Apply | Verify | Recovery apply | Recovery verify |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Paper | 2.036 | 432.094 | 1.086 | 450.056 | 450.092 | 446.555 | 450.167 |
+| Purpur | 1.478 | 433.266 | 1.033 | 450.829 | 449.364 | 445.625 | 449.273 |
+
+Initially unloaded, previously generated chunk acquisition measured 1.399 ms on
+Paper and 1.194 ms on Purpur in these local fixtures. Snapshot raw/stored size
+was 787/787 bytes, ratio 1.0, codec NONE. Results are not general performance or
+TPS guarantees. Detailed reports and reproduction commands:
+[Biome runtime tests](testing/BIOME_RUNTIME.md). Entities, scheduled ticks, general auto-resume/rollback, and additional
+validate-and-finalize operations remain deliberately outside this step.
+
+
+The standalone MEDIUM phase assertion exposed a missing `VERIFY_COMPLETED`
+observer callback in the portioned transfer verifier. Verification itself was
+already executed before the result completed. The focused fix emits the
+callback after the last verified block/container and before future completion;
+it adds no world writes, job phases or synchronous DB work.
+
+Player reports now also require fresh parseable JSON, matching run ID, actual
+loaded artifact SHA, server type and required passing scenario names. No prior
+PASS file survives a failed invocation. The pinned ProtoBot source only sends
+Client Information during CONFIGURATION. The isolated test driver additionally
+sends its identical standard payload in PLAY at protocol-777 packet ID `0x0e`,
+before commands, avoiding the observed Purpur `chat.disabled.options` startup
+failure. This adapter is protocol-guarded, test-only, shared by Paper/Purpur,
+and does not change the client commit or introduce a production fork workaround.
+
+
+Final isolated MEDIUM sanity passed after the other test servers stopped:
+55,296 blocks, mixed oak-stair BlockData; capture 14,195 ms (14,408 ms wall),
+encode/write 126 ms, decode/validate 99 ms, apply read/validate 102 ms,
+apply 14,448 ms, verify 14,450 ms; raw 1,796,400 bytes, Zstd 30,848 bytes,
+ratio 0.0172, 288 batches at the existing 192-block cap. There were 874 heartbeat
+samples: median 50.00 ms, p95 50.17 ms, max 363.20 ms. A prior run with parallel
+test servers measured max 479.48 ms. The isolated outlier remains an important
+performance investigation; these fixtures do not isolate its cause and are not
+directly comparable to the 49,152-block interleaving fixture. No adaptive
+batching or broad block-chunk-loading change was introduced.

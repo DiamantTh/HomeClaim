@@ -204,6 +204,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         }
 
         when (System.getProperty("homeclaim.worlde2e.phase", "full")) {
+            "custom-biome-prepare" -> { createFixtures(homeClaim, areas, testWorld); prepareBiomeRecoveryRestart(testWorld); return }
+            "custom-biome-missing" -> { verifyMissingCustomBiomeRestart(testWorld); return }
+            "custom-biome-restore" -> { verifyBiomeRecoveryRestart(testWorld, areas); return }
             "outage-crash-verify" -> { verifyOutageCrash(testWorld); return }
             "merge-restart-verify" -> {
                 verifyMergeRecoveryRestart(testWorld, areas)
@@ -424,6 +427,30 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         })
     }
 
+    private var networkBiomeRegion: Region? = null
+    private var networkBiomeJob: UUID? = null
+    private var networkBiomeOriginal: Map<BiomeCell, String> = emptyMap()
+
+    private fun completedNetworkAudit(region: RegionId, actor: UUID, correlation: CorrelationId?): Boolean =
+        requireNotNull(services.dataSource).connection.use { c ->
+            c.prepareStatement("SELECT COUNT(*) FROM audit_log WHERE target_id = ? AND actor_id = ? AND status = ?" +
+                if(correlation==null) "" else " AND correlation_id = ?").use { q ->
+                q.setObject(1,region.value);q.setObject(2,actor);q.setString(3,"COMPLETED")
+                if(correlation!=null) q.setObject(4,correlation.value)
+                q.executeQuery().use { r -> r.next();r.getInt(1)>0 }
+            }
+        }
+
+    private fun latestNetworkBiomeJob(region: Region): PlotMutationJobRecord {
+        val id = requireNotNull(services.dataSource).connection.use { c ->
+            c.prepareStatement("SELECT id FROM plot_mutation_jobs WHERE operation = ? AND region_ids = ? ORDER BY created_at DESC").use { q ->
+                q.setString(1,"BIOME"); q.setString(2,region.id.value.toString())
+                q.executeQuery().use { r -> check(r.next()); UUID.fromString(r.getString(1)) }
+            }
+        }
+        return requireNotNull(jobStore.findById(id))
+    }
+
     private fun startNetworkControlWatcher(testWorld: World) {
         val controlDir = dataFolder.toPath().resolve("network-control")
         Files.createDirectories(controlDir)
@@ -441,6 +468,55 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             waiting = true
             val operation = split[1]
             runCatching {
+                if (operation == "prepare-biome-player") {
+                    val y = testWorld.minHeight + 20
+                    val created = createRegion(Bounds(-16,-9,y,y+15,8,15))
+                    services.regionService.updateRegion(created.copy(owner=networkPlayerAId))
+                    val region = requireNotNull(services.regionService.getRegionById(created.id))
+                    networkBiomeRegion = region
+                    val plains = requireNotNull(RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME).get(org.bukkit.NamespacedKey.minecraft("plains")))
+                    testWorld.getChunkAt(-1,0)
+                    BiomeCellScope.cells(listOf(region)).forEach { testWorld.setBiome(it.blockX(),it.blockY(),it.blockZ(),plains) }
+                    val player = requireNotNull(server.getPlayer(networkPlayerAId))
+                    check(player.teleport(Location(testWorld,-15.5,y+1.0,8.5)))
+                    check(player.location.blockX in -16..-9)
+                    Files.writeString(response,"$sequence|PASS|biome-player-ready\n"); waiting=false
+                    return@runCatching
+                }
+                if (operation == "assert-biome-player") {
+                    val region = requireNotNull(networkBiomeRegion)
+                    val job = latestNetworkBiomeJob(region)
+                    check(job.status == PlotMutationJobStatus.COMPLETED)
+                    check(jobFields(job)["actorRef"] == networkPlayerAId.toString())
+                    BiomeCellScope.cells(listOf(region)).forEach { check(testWorld.getBiome(it.blockX(),it.blockY(),it.blockZ()).key.toString()=="minecraft:forest") }
+                    check(completedNetworkAudit(region.id,networkPlayerAId,job.correlationId))
+                    passedScenarios += "network-biome-command"
+                    Files.writeString(response,"$sequence|PASS|live-biome-command-world-job-player-audit\n"); waiting=false
+                    return@runCatching
+                }
+                if (operation == "prepare-biome-recovery") {
+                    val region = requireNotNull(networkBiomeRegion)
+                    networkBiomeOriginal = BiomeCellScope.cells(listOf(region)).associateWith { testWorld.getBiome(it.blockX(),it.blockY(),it.blockZ()).key.toString() }
+                    val desert = requireNotNull(RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME).get(org.bukkit.NamespacedKey.minecraft("desert")))
+                    val mutation = PaperBiomeMutationService(homeClaimPlugin, requireNotNull(services.worldAreaService),jobStore,cellsPerTick=2,
+                        observer=systems.diath.homeclaim.platform.paper.plot.mutation.BiomeMutationObserver { count -> if(count==4) error("test-only live biome partial failure") })
+                    awaitFailure(mutation.apply(listOf(region),desert,CorrelationId.newId(),ActionActor.System("network-biome-fault"))) {
+                        val job = latestNetworkBiomeJob(region); check(job.status==PlotMutationJobStatus.RECOVERY_REQUIRED)
+                        networkBiomeJob=job.id; mutation.shutdown()
+                        Files.writeString(response,"$sequence|PASS|biome-job=${job.id}\n"); waiting=false
+                    }
+                    return@runCatching
+                }
+                if (operation == "assert-biome-recovered") {
+                    val job = requireNotNull(jobStore.findById(requireNotNull(networkBiomeJob)))
+                    check(job.status==PlotMutationJobStatus.RECOVERED)
+                    networkBiomeOriginal.forEach { (cell,key)-> check(testWorld.getBiome(cell.blockX(),cell.blockY(),cell.blockZ()).key.toString()==key) }
+                    check(conflicts.checkAvailable(job.regionIds)==null)
+                    check(completedNetworkAudit(requireNotNull(networkBiomeRegion).id,networkPlayerBId,null))
+                    passedScenarios += "network-biome-recovery"
+                    Files.writeString(response,"$sequence|PASS|live-biome-recovered-world-player-audit-unblocked\n"); waiting=false
+                    return@runCatching
+                }
                 if (operation == "prepare-verified-copy") {
                     val sourceX = networkFixtureX
                     networkFixtureX += 4
@@ -555,6 +631,12 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                     return@runCatching
                 }
                 val message = when (operation) {
+                    "grant-biome-player" -> {
+                        val player = requireNotNull(server.getPlayer(networkPlayerAId))
+                        player.addAttachment(this,"homeclaim.plot.biome",true)
+                        check(player.hasPermission("homeclaim.plot.biome"))
+                        "native-paper-biome-node-granted"
+                    }
                     "seed-copy" -> seedForNetwork("copy", "network-copy-source", "network-copy-target", testWorld)
                     "seed-move" -> seedForNetwork("move", "network-move-source", "network-move-target", testWorld)
                     "seed-swap" -> seedForNetwork("swap", "network-swap-source", "network-swap-target", testWorld)
@@ -624,12 +706,16 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                         "recovery-remains-pending-before-confirmation"
                     }
                     "finish" -> {
+                        passedScenarios += "network-player-suite"
                         "networked-command-confirmation-permission-pairing-pass"
                     }
-                    "finish-smoke" -> "purpur-network-player-smoke-pass"
+                    "finish-smoke" -> {
+                        passedScenarios += "network-player-smoke"
+                        "purpur-network-player-smoke-pass"
+                    }
                     else -> error("Unknown network E2E control operation: $operation")
                 }
-                if (operation == "finish") finish("PASS network-player protocol 777; plot info/reset/copy/move/swap/restore/recovery commands; verified COPY finalization + intent/world/container/domain/integrity rejection; ACKNOWLEDGE is separate from RECOVERED; actor binding; permissions; web pairing/websocket; disconnect")
+                if (operation == "finish") finish("PASS network-player protocol 777; plot info/reset/copy/move/swap/restore/recovery commands; verified COPY finalization + intent/world/container/domain/integrity rejection; ACKNOWLEDGE is separate from RECOVERED; actor binding; permissions; web pairing/websocket; disconnect; live biome command/recovery/player audit")
                 else if (operation == "finish-smoke") finish("PASS purpur-network-player-smoke protocol 777; plot info/recovery/reset confirmation")
                 else {
                     Files.writeString(response, "$sequence|PASS|$message\n")
@@ -755,7 +841,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         val ocean = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("ocean")))
         val forest = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("forest")))
         val original = cells.mapIndexed { index, cell ->
-            val biome = if (index % 2 == 0) plains else ocean
+            val biome = if (System.getProperty("homeclaim.worlde2e.phase") == "custom-biome-prepare")
+                requireNotNull(registry.get(requireNotNull(org.bukkit.NamespacedKey.fromString("homeclaim_e2e:safety_test"))))
+            else if (index % 2 == 0) plains else ocean
             testWorld.setBiome(cell.blockX(), cell.blockY(), cell.blockZ(), biome)
             "${cell.quartX},${cell.quartY},${cell.quartZ},${biome.key}"
         }
@@ -786,10 +874,47 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                         addAll(original)
                     }.joinToString("\n") + "\n"
                     Files.writeString(dataFolder.toPath().resolve("biome-restart-state.txt"), state)
+                    if (System.getProperty("homeclaim.worlde2e.phase") == "custom-biome-prepare") {
+                        // Remove custom values from live chunk palettes before removing the datapack.
+                        // The original custom registry keys remain only in the safety snapshot.
+                        cells.forEach { testWorld.setBiome(it.blockX(),it.blockY(),it.blockZ(),forest) }
+                        testWorld.save()
+                    }
                     writeResult("PREPARED BIOME_RECOVERY_REQUIRED ${job.id}")
                     Bukkit.shutdown()
                 }.onFailure(::fail)
             })
+        }
+    }
+
+    private fun verifyMissingCustomBiomeRestart(testWorld: World) {
+        currentScenario = "custom-biome-missing-after-restart"
+        check(RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
+            .get(requireNotNull(org.bukkit.NamespacedKey.fromString("homeclaim_e2e:safety_test"))) == null)
+        val state = Files.readAllLines(dataFolder.toPath().resolve("biome-restart-state.txt"))
+        val region = requireNotNull(services.regionService.getRegionById(RegionId(UUID.fromString(state[1]))))
+        val job = requireNotNull(jobStore.findById(UUID.fromString(state[2])))
+        check(job.status == PlotMutationJobStatus.RECOVERY_REQUIRED)
+        check(conflicts.checkAvailable(job.regionIds) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired)
+        val cells = BiomeCellScope.cells(listOf(region))
+        cells.forEach { testWorld.getChunkAt(Math.floorDiv(it.blockX(),16),Math.floorDiv(it.blockZ(),16)) }
+        val before = cells.associateWith { testWorld.getBiome(it.blockX(),it.blockY(),it.blockZ()).key.toString() }
+        val fields = jobFields(job)
+        val mutation = PaperBiomeMutationService(this,requireNotNull(services.worldAreaService),jobStore,cellsPerTick=2)
+        val lease = when(val attempt=conflicts.reserveRecovery(job.id,job.regionIds,ActionActor.System("missing-registry-test"),CorrelationId.newId())) {
+            is ReservationAttempt.Acquired -> attempt.lease
+            is ReservationAttempt.Conflict -> error("Missing-key recovery reservation failed")
+        }
+        check(jobStore.beginRecovery(job.id,job.details.orEmpty()+"\nrecoveryPhase=REGISTRY_VALIDATION"))
+        awaitFailure(mutation.restoreOriginal(UUID.fromString(fields.getValue("snapshotId")),fields.getValue("snapshotSha256"),
+            testWorld,homeWorld.id,listOf(region),testWorld.uid)) {
+            cells.forEach { check(testWorld.getBiome(it.blockX(),it.blockY(),it.blockZ()).key.toString()==before.getValue(it)) }
+            check(jobStore.finishRecovery(job.id,PlotMutationJobStatus.RECOVERY_REQUIRED,job.details.orEmpty(),"Custom biome key is unavailable"))
+            lease.close();mutation.shutdown()
+            check(conflicts.checkAvailable(job.regionIds) is systems.diath.homeclaim.platform.paper.plot.mutation.MutationConflict.RecoveryRequired)
+            passedScenarios += "custom-biome-missing-after-restart";currentScenario=null
+            val message="PASS missing custom biome registry rejected before first write; blocker retained"
+            writeResult(message);writeJsonResult(true,message);Bukkit.shutdown()
         }
     }
 
@@ -847,8 +972,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                     // The runner deletes this disposable database/world. Deleting a Region here
                     // would enqueue an unrelated border repaint during server shutdown.
                     runCatching { testWorld.save() }
-                    val result = "PASS biome partial mutation was blocked and restored from its checksummed snapshot after a real Paper process restart"
+                    val result = "PASS biome partial mutation was blocked and restored from its checksummed snapshot after a real server process restart"
                     writeResult(result)
+                    passedScenarios += "biome-restart-recovery"
+                    currentScenario = null
+                    writeJsonResult(true, result)
                     Bukkit.shutdown()
                 }.onFailure { lease.close(); fail(it) }
             })
@@ -1977,12 +2105,143 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                                         recoveryDetails + "\nrecoveryPhase=BIOME_RESTORED_AND_VERIFIED")) { "Could not persist successful biome recovery" }
                                     check(conflicts.checkAvailable(listOf(region.id)) == null) { "Successful biome recovery did not release its blocker" }
                                     passedScenarios += "biome-partial-recovery"
-                                    done()
+                                    runBiomeHardening(testWorld, done)
                                 }.onFailure(::fail)
                             })
                         }
                 }.onFailure(::fail)
             })
+        }
+    }
+
+    private fun runBiomeHardening(w: World, done: () -> Unit) {
+        currentScenario = "biome-custom-roundtrip"
+        val registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
+        val custom = requireNotNull(registry.get(requireNotNull(org.bukkit.NamespacedKey.fromString("homeclaim_e2e:safety_test")))) { "Test datapack custom biome was not loaded" }
+        val forest = requireNotNull(registry.get(org.bukkit.NamespacedKey.minecraft("forest")))
+        val y = Math.floorDiv(w.minHeight + 20, 4) * 4
+        val region = createRegion(Bounds(48,55,y,y+15,-8,-1))
+        val cells = BiomeCellScope.cells(listOf(region))
+        w.getChunkAt(3,-1)
+        cells.forEach { w.setBiome(it.blockX(),it.blockY(),it.blockZ(),custom) }
+        val timings = java.util.concurrent.ConcurrentHashMap<String, Double>()
+        val metricsObserver = object: systems.diath.homeclaim.platform.paper.plot.mutation.BiomeMutationObserver {
+            override fun afterCellApplied(applied: Int) {}
+            override fun afterPhase(phase: systems.diath.homeclaim.platform.paper.plot.mutation.BiomePhase, elapsedNanos: Long) {
+                timings[phase.name] = elapsedNanos / 1_000_000.0
+            }
+        }
+        val service = PaperBiomeMutationService(this,requireNotNull(services.worldAreaService),jobStore,cellsPerTick=2,observer=metricsObserver)
+        await(service.apply(listOf(region),forest,CorrelationId.newId(),ActionActor.System("custom-biome-e2e"))) {
+            val jobId = requireNotNull(services.dataSource).connection.use { c ->
+                c.prepareStatement("SELECT id FROM plot_mutation_jobs WHERE operation = ? AND region_ids = ? ORDER BY created_at DESC").use { q ->
+                    q.setString(1,"BIOME");q.setString(2,region.id.value.toString());q.executeQuery().use { r -> check(r.next());UUID.fromString(r.getString(1)) }
+                }
+            }
+            val job = requireNotNull(jobStore.findById(jobId))
+            check(job.status == PlotMutationJobStatus.COMPLETED)
+            val fields = job.details.orEmpty().lineSequence().filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
+            await(service.restoreOriginal(UUID.fromString(fields.getValue("snapshotId")),fields.getValue("snapshotSha256"),w,homeWorld.id,listOf(region),w.uid)) {
+                cells.forEach { check(w.getBiome(it.blockX(),it.blockY(),it.blockZ()).key == custom.key) }
+                passedScenarios += "biome-custom-roundtrip"
+                val metrics = mapOf("cells" to cells.size, "codec" to "NONE", "rawBytes" to fields.getValue("snapshotBytes").toLong(),
+                    "storedBytes" to fields.getValue("snapshotBytes").toLong(), "cellsPerTick" to 2, "milliseconds" to timings.toSortedMap())
+                Files.writeString(dataFolder.toPath().resolve("biome-metrics.json"), com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(metrics))
+                logger.info("Biome phase metrics: $metrics")
+                val snapshot = BiomeSnapshotV1(UUID.randomUUID(),homeWorld.id,w.uid,area.id,listOf(region.id),java.time.Instant.now(),
+                    cells.map { systems.diath.homeclaim.platform.paper.plot.mutation.BiomeSnapshotCell(it,"homeclaim_e2e:missing") })
+                val store = systems.diath.homeclaim.platform.paper.plot.mutation.PaperBiomeSnapshotStore(this)
+                await(store.write(snapshot)) { reference ->
+                    awaitFailure(service.restoreOriginal(reference.id,reference.sha256,w,homeWorld.id,listOf(region),w.uid)) {
+                        cells.forEach { check(w.getBiome(it.blockX(),it.blockY(),it.blockZ()).key == custom.key) }
+                        passedScenarios += "biome-missing-key"
+                        store.close();service.shutdown()
+                        check(w.getPluginChunkTickets(3,-1).none { it == this }) { "Biome chunk ticket leaked after restore" }
+                        check(w.unloadChunk(3,-1,true)) { "Fixture chunk could not unload after lease release" }
+                        check(!w.isChunkLoaded(3,-1))
+                        var observedTicket = false
+                        val unloadedTimings = java.util.concurrent.ConcurrentHashMap<String, Double>()
+                        val loadingService = PaperBiomeMutationService(this,requireNotNull(services.worldAreaService),jobStore,cellsPerTick=2,
+                            observer=object: systems.diath.homeclaim.platform.paper.plot.mutation.BiomeMutationObserver {
+                                override fun afterCellApplied(applied:Int) {}
+                                override fun afterPhase(phase: systems.diath.homeclaim.platform.paper.plot.mutation.BiomePhase, elapsedNanos: Long) {
+                                    unloadedTimings[phase.name] = elapsedNanos / 1_000_000.0
+                                }
+                                override fun beforeCellApplied(applied:Int) {
+                                    if (applied == 0) {
+                                        check(w.getPluginChunkTickets(3,-1).contains(this@PaperWorldE2EHarnessPlugin))
+                                        w.unloadChunkRequest(3,-1)
+                                        check(w.isChunkLoaded(3,-1));observedTicket=true
+                                    }
+                                }
+                            })
+                        await(loadingService.apply(listOf(region),forest,CorrelationId.newId(),ActionActor.System("chunk-loading-e2e"))) {
+                            check(observedTicket)
+                            Files.writeString(dataFolder.toPath().resolve("biome-chunk-metrics.json"),com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(unloadedTimings.toSortedMap()))
+                            logger.info("Initially unloaded biome chunk phase milliseconds: $unloadedTimings")
+                            cells.forEach { check(w.getBiome(it.blockX(),it.blockY(),it.blockZ()).key == forest.key) }
+                            check(w.getPluginChunkTickets(3,-1).none { it == this })
+                            loadingService.shutdown()
+                            check(w.unloadChunk(3,-1,true))
+                            val failedLoader = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this,request={ _,_ -> CompletableFuture.failedFuture(IllegalStateException("test-only load failure")) })
+                            awaitFailure(failedLoader.acquire(w,cells)) {
+                                val timeoutLoader = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this,timeoutTicks=2,request={ _,_ -> CompletableFuture<org.bukkit.Chunk>() })
+                                awaitFailure(timeoutLoader.acquire(w,cells)) {
+                                    check(w.getPluginChunkTickets(3,-1).none { it == this })
+                                    verifyBiomeChunkLeaseSharing(w,cells) {
+                                        passedScenarios += "biome-chunk-loading"
+                                        done()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun verifyBiomeChunkLeaseSharing(w: World, cells: List<BiomeCell>, done: () -> Unit) {
+        val loader = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this)
+        await(loader.acquire(w,cells)) { firstLease ->
+            await(loader.acquire(w,cells)) { secondLease ->
+                firstLease.close()
+                check(w.getPluginChunkTickets(3,-1).contains(this)) { "Closing one overlapping lease removed the other's ticket" }
+                secondLease.close()
+                check(w.getPluginChunkTickets(3,-1).none { it==this })
+                val promises = mutableListOf<CompletableFuture<org.bukkit.Chunk>>()
+                val pending = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this,request={ _,_ ->
+                    CompletableFuture<org.bukkit.Chunk>().also { promises+=it }
+                })
+                val cancelled = pending.acquire(w,cells)
+                check(promises.size==1)
+                check(cancelled.cancel(false))
+                promises.single().complete(w.getChunkAt(3,-1))
+                check(w.getPluginChunkTickets(3,-1).none { it==this }) { "Late callback after cancellation acquired a ticket" }
+                val requests = mutableListOf<Pair<systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader.Coordinate,CompletableFuture<org.bukkit.Chunk>>>()
+                val bounded = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this,request={ _,coordinate ->
+                    CompletableFuture<org.bukkit.Chunk>().also { requests += coordinate to it }
+                })
+                val threeChunks = listOf(BiomeCell(12,0,-4),BiomeCell(16,0,-4),BiomeCell(20,0,-4))
+                val acquired = bounded.acquire(w,threeChunks)
+                check(requests.size==2) { "Chunk loader exceeded its two-request concurrency bound" }
+                requests[0].let { (c,f) -> f.complete(w.getChunkAt(c.x,c.z)) }
+                check(requests.size==3) { "Bounded chunk loader did not advance after progress" }
+                requests[1].let { (c,f) -> f.complete(w.getChunkAt(c.x,c.z)) }
+                requests[2].let { (c,f) -> f.complete(w.getChunkAt(c.x,c.z)) }
+                await(acquired) { lease ->
+                    lease.close()
+                    requests.forEach { (c,_) -> check(w.getPluginChunkTickets(c.x,c.z).none { it==this }) }
+                    var requested = 0
+                    val partlyLoaded = systems.diath.homeclaim.platform.paper.plot.mutation.BiomeChunkLoader(this,request={ _,c ->
+                        if(++requested==1) CompletableFuture.completedFuture(w.getChunkAt(c.x,c.z)) else CompletableFuture<org.bukkit.Chunk>()
+                    }).acquire(w,threeChunks)
+                    check(w.getPluginChunkTickets(3,-1).contains(this))
+                    check(partlyLoaded.cancel(false))
+                    check(w.getPluginChunkTickets(3,-1).none { it==this }) { "Cancellation leaked an already acquired ticket" }
+                    done()
+                }
+            }
         }
     }
 
@@ -3086,7 +3345,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
             "unsupported-tilestate-fail-closed", "unsupported-tilestate-sign", "unsupported-tilestate-banner",
             "unsupported-tilestate-hanging-sign", "unsupported-tilestate-player-head", "unsupported-tilestate-beacon",
             "unsupported-tilestate-jukebox", "unsupported-tilestate-lectern", "biome-partial-recovery",
-            "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+            "snapshot-interleaving", "hcbk-v1-v2-v3-regression", "biome-custom-roundtrip", "biome-missing-key", "biome-chunk-loading"
         ) else emptyList()
         // The full scenario chain is sequential; reaching finish means each named assertion ran.
         val scenarios = if (fullRun) {

@@ -27,6 +27,11 @@ class PaperBiomeMutationService(
     private val snapshotStore: PaperBiomeSnapshotStore = PaperBiomeSnapshotStore(plugin),
     private val observer: BiomeMutationObserver = BiomeMutationObserver.NONE
 ) : AutoCloseable {
+    private val chunkLoader = BiomeChunkLoader(plugin)
+    private val closed = AtomicBoolean()
+    private val activeLoads = java.util.concurrent.ConcurrentHashMap.newKeySet<CompletableFuture<AutoCloseable>>()
+    private val activeLeases = java.util.concurrent.ConcurrentHashMap.newKeySet<AutoCloseable>()
+    private val activeChecks = java.util.concurrent.ConcurrentHashMap<CompletableFuture<Unit>, BukkitTask>()
     private val activeJobs = java.util.concurrent.ConcurrentHashMap<UUID, () -> Unit>()
 
     init { require(cellsPerTick > 0) }
@@ -38,6 +43,8 @@ class PaperBiomeMutationService(
         apply(regions, biome, correlationId, null)
 
     fun apply(regions: Collection<Region>, biome: Biome, correlationId: CorrelationId, actor: ActionActor?): CompletableFuture<Unit> {
+        if (closed.get()) return CompletableFuture.failedFuture(CancellationException("Biome service is closed"))
+        val scopeStarted = System.nanoTime()
         if (regions.isEmpty()) return CompletableFuture.completedFuture(Unit)
         if (jobStore == null) return CompletableFuture.failedFuture(IllegalStateException("Persistent mutation-job storage is required for recoverable biome changes"))
         val regionList = regions.distinctBy { it.id }
@@ -52,25 +59,27 @@ class PaperBiomeMutationService(
         val outOfWorld = firstOutOfWorldHeight(cells, world)
         if (outOfWorld != null) return CompletableFuture.failedFuture(IllegalArgumentException(
             "Biome cell quart ${outOfWorld.quartX},${outOfWorld.quartY},${outOfWorld.quartZ} is outside Paper world height ${world.minHeight}..${world.maxHeight - 1}"))
-        val unloadedBeforeCapture = firstUnloadedChunk(cells, world)
-        if (unloadedBeforeCapture != null) {
-            return CompletableFuture.failedFuture(IllegalStateException(
-                "Biome mutation requires affected chunk ${unloadedBeforeCapture.first},${unloadedBeforeCapture.second} to be loaded; no snapshot or world write was started"))
-        }
         val homeWorldId = worldAreaService.getArea(first.areaId)?.worldId
             ?: return CompletableFuture.failedFuture(IllegalStateException("Biome mutation Area has no HomeClaim World binding"))
+        observer.afterPhase(BiomePhase.SCOPE, System.nanoTime() - scopeStarted)
         val snapshotId = UUID.randomUUID()
         val captured = ArrayList<BiomeSnapshotCell>(cells.size)
         val result = CompletableFuture<Unit>()
         val captureIndex = intArrayOf(0)
         var task: BukkitTask? = null
         var jobId: UUID? = null
+        var chunkLease: AutoCloseable? = null
+        var loading: CompletableFuture<AutoCloseable>? = null
         var applied = 0
+        var captureStarted = 0L
         val finished = AtomicBoolean()
 
         fun completeMutation(failure: Throwable?) {
             if (!finished.compareAndSet(false, true)) return
             task?.cancel()
+            loading?.cancel(false)
+            chunkLease?.close()
+            activeJobs.remove(snapshotId)
             val id = jobId
             id?.let(activeJobs::remove)
             if (id == null) {
@@ -93,6 +102,7 @@ class PaperBiomeMutationService(
         }
 
         fun beginApply(reference: BiomeSnapshotReference) {
+            if (finished.get()) return
             val id = UUID.randomUUID()
             val record = PlotMutationJobRecord(
                 id = id,
@@ -122,13 +132,16 @@ class PaperBiomeMutationService(
                     completeMutation(IllegalStateException("Could not persist biome job before mutation", persistenceFailure))
                     return@onMain
                 }
+                if (finished.get()) return@onMain
                 var index = 0
+                val applyStarted = System.nanoTime()
                 task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
                     try {
                         repeat(cellsPerTick) {
                             if (index >= cells.size) {
                                 task?.cancel()
                                 task = null
+                                observer.afterPhase(BiomePhase.APPLY, System.nanoTime() - applyStarted)
                                 verify(cells, biome.key.toString(), world).whenComplete { _, verifyFailure -> onMain {
                                     completeMutation(verifyFailure?.let { unwrap(it) })
                                 } }
@@ -158,10 +171,13 @@ class PaperBiomeMutationService(
                 repeat(cellsPerTick) {
                     if (captureIndex[0] >= cells.size) {
                         task?.cancel(); task = null
+                        observer.afterPhase(BiomePhase.CAPTURE, System.nanoTime() - captureStarted)
                         val snapshot = BiomeSnapshotV1(snapshotId, homeWorldId, world.uid, first.areaId,
                             regionList.map { it.id }, Instant.now(), captured.toList())
+                        val writeStarted = System.nanoTime()
                         snapshotStore.write(snapshot).whenComplete { reference, writeFailure ->
-                            if (writeFailure != null) completeMutation(unwrap(writeFailure)) else beginApply(reference)
+                            observer.afterPhase(BiomePhase.SNAPSHOT_WRITE, System.nanoTime() - writeStarted)
+                            onMain { if (writeFailure != null) completeMutation(unwrap(writeFailure)) else beginApply(reference) }
                         }
                         return
                     }
@@ -175,7 +191,20 @@ class PaperBiomeMutationService(
             } catch (failure: Throwable) { completeMutation(failure) }
         }
 
-        task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::captureNext), 1L, 1L)
+        result.whenComplete { _, _ -> if (result.isCancelled) onMain { completeMutation(CancellationException("Biome operation cancelled")) } }
+        activeJobs[snapshotId] = { completeMutation(CancellationException("Biome operation cancelled")) }
+        val loadStarted = System.nanoTime()
+        loading = acquireLease(world, cells)
+        loading!!.whenComplete { lease, failure -> onMain {
+            if (finished.get()) { lease?.close(); return@onMain }
+            if (failure != null) completeMutation(unwrap(failure))
+            else {
+                observer.afterPhase(BiomePhase.CHUNK_LOADING, System.nanoTime() - loadStarted)
+                chunkLease = lease
+                captureStarted = System.nanoTime()
+                task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable(::captureNext), 1L, 1L)
+            }
+        } }
         return result
     }
 
@@ -191,6 +220,7 @@ class PaperBiomeMutationService(
         val prepared = CompletableFuture<List<Pair<BiomeCell, Biome>>>()
         onMain {
             runCatching {
+                check(!closed.get()) { "Biome service is closed" }
                 require(expectedRegions.isNotEmpty())
                 require(snapshot.homeClaimWorldId == expectedWorldId && snapshot.areaId == expectedRegions.first().areaId &&
                     snapshot.paperWorldId == expectedPaperWorldId && world.uid == expectedPaperWorldId) {
@@ -202,10 +232,6 @@ class PaperBiomeMutationService(
                     "Biome snapshot cell scope no longer matches the affected plot bounds"
                 }
                 require(firstOutOfWorldHeight(expectedCells, world) == null) { "Biome snapshot contains a cell outside Paper world height" }
-                val unloaded = firstUnloadedChunk(snapshot.cells.map { it.cell }, world)
-                require(unloaded == null) {
-                    "Biome recovery requires affected chunk ${unloaded!!.first},${unloaded.second} to be loaded; no restore write was started"
-                }
                 val registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BIOME)
                 snapshot.cells.map { entry ->
                     val key = org.bukkit.NamespacedKey.fromString(entry.biomeKey)
@@ -215,10 +241,15 @@ class PaperBiomeMutationService(
                 }.also(prepared::complete)
             }.onFailure(prepared::completeExceptionally)
         }
-        prepared.thenCompose { resolved -> applyAndVerifyCells(world, resolved).thenApply { resolved.size } }
+        prepared.thenCompose { resolved ->
+            acquireLease(world, resolved.map { it.first }).thenCompose { lease ->
+                applyAndVerifyCells(world, resolved).thenApply { resolved.size }.whenComplete { _, _ -> lease.close() }
+            }
+        }
     }
 
     private fun verify(cells: List<BiomeCell>, expectedKey: String, world: World): CompletableFuture<Unit> {
+        val started = System.nanoTime()
         val result = CompletableFuture<Unit>()
         var index = 0
         lateinit var task: BukkitTask
@@ -235,10 +266,12 @@ class PaperBiomeMutationService(
                 }
             } catch (failure: Throwable) { task.cancel(); result.completeExceptionally(failure) }
         }, 1L, 1L)
-        return result
+        trackCheck(result, task)
+        return result.whenComplete { _, _ -> observer.afterPhase(BiomePhase.VERIFY, System.nanoTime() - started) }
     }
 
     private fun applyAndVerifyCells(world: World, cells: List<Pair<BiomeCell, Biome>>): CompletableFuture<Unit> {
+        val applyStarted = System.nanoTime()
         val applied = CompletableFuture<Unit>()
         var index = 0
         lateinit var task: BukkitTask
@@ -254,7 +287,9 @@ class PaperBiomeMutationService(
                 }
             } catch (failure: Throwable) { task.cancel(); applied.completeExceptionally(failure) }
         }, 1L, 1L)
-        return applied.thenCompose {
+        trackCheck(applied, task)
+        return applied.whenComplete { _, _ -> observer.afterPhase(BiomePhase.RECOVERY_APPLY, System.nanoTime() - applyStarted) }.thenCompose {
+            val verifyStarted = System.nanoTime()
             val verified = CompletableFuture<Unit>()
             var verifyIndex = 0
             lateinit var verifyTask: BukkitTask
@@ -269,12 +304,39 @@ class PaperBiomeMutationService(
                     }
                 } catch (failure: Throwable) { verifyTask.cancel(); verified.completeExceptionally(failure) }
             }, 1L, 1L)
-            verified
+            trackCheck(verified, verifyTask)
+            verified.whenComplete { _, _ -> observer.afterPhase(BiomePhase.RECOVERY_VERIFY, System.nanoTime() - verifyStarted) }
         }
     }
 
+    private fun trackCheck(future: CompletableFuture<Unit>, task: BukkitTask) {
+        activeChecks[future] = task
+        future.whenComplete { _, _ -> activeChecks.remove(future)?.cancel() }
+        if (closed.get()) future.completeExceptionally(CancellationException("Biome service is closed"))
+    }
+
+    private fun acquireLease(world: World, cells: Collection<BiomeCell>): CompletableFuture<AutoCloseable> {
+        if (closed.get()) return CompletableFuture.failedFuture(CancellationException("Biome service is closed"))
+        val load = chunkLoader.acquire(world, cells)
+        activeLoads += load
+        val result = load.thenApply { lease ->
+            if (closed.get()) { lease.close(); throw CancellationException("Biome service is closed") }
+            lateinit var tracked: AutoCloseable
+            tracked = AutoCloseable { if (activeLeases.remove(tracked)) lease.close() }
+            activeLeases += tracked
+            tracked
+        }
+        load.whenComplete { _, _ -> activeLoads.remove(load) }
+        result.whenComplete { lease, _ -> if (result.isCancelled) { load.cancel(false); lease?.close() } }
+        return result
+    }
+
     fun shutdown() {
+        closed.set(true)
+        activeLoads.toList().forEach { it.cancel(false) }
         activeJobs.values.toList().forEach { cancel -> runCatching(cancel) }
+        activeChecks.keys.toList().forEach { it.completeExceptionally(CancellationException("Biome service is closed")) }
+        activeLeases.toList().forEach { runCatching { it.close() } }
         snapshotStore.close()
     }
 
@@ -285,10 +347,6 @@ class PaperBiomeMutationService(
         val homeWorld = worldAreaService.getWorld(area.worldId) ?: return null
         return homeWorld.platformWorldId?.let(Bukkit::getWorld) ?: Bukkit.getWorld(homeWorld.name)
     }
-
-    private fun firstUnloadedChunk(cells: Collection<BiomeCell>, world: World): Pair<Int, Int>? = cells.asSequence()
-        .map { Math.floorDiv(it.blockX(), 16) to Math.floorDiv(it.blockZ(), 16) }.distinct()
-        .firstOrNull { (x, z) -> !world.isChunkLoaded(x, z) }
 
     private fun firstOutOfWorldHeight(cells: Collection<BiomeCell>, world: World): BiomeCell? = cells.firstOrNull { cell ->
         cell.blockY() < world.minHeight || cell.blockY().toLong() + 3L >= world.maxHeight.toLong()
@@ -315,5 +373,8 @@ class PaperBiomeMutationService(
 fun interface BiomeMutationObserver {
     fun afterCellApplied(applied: Int)
     fun beforeCellApplied(applied: Int) {}
+    fun afterPhase(phase: BiomePhase, elapsedNanos: Long) {}
     companion object { val NONE = BiomeMutationObserver { } }
 }
+
+enum class BiomePhase { SCOPE, CHUNK_LOADING, CAPTURE, SNAPSHOT_WRITE, APPLY, VERIFY, RECOVERY_APPLY, RECOVERY_VERIFY }

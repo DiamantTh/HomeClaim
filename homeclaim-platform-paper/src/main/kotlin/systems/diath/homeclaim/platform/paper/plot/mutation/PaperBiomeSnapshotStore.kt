@@ -43,7 +43,7 @@ class PaperBiomeSnapshotStore(plugin: JavaPlugin) : AutoCloseable {
 
     private fun path(id: UUID): Path = directory.resolve("$id.hcbs")
 
-    override fun close() { (executor as? java.util.concurrent.ExecutorService)?.shutdownNow() }
+    override fun close() { (executor as? java.util.concurrent.ExecutorService)?.shutdown() }
 
     private fun sha256Hex(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }

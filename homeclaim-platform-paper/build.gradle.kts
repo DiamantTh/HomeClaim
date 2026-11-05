@@ -322,7 +322,7 @@ val requiredWorldE2EScenarios = setOf(
     "unsupported-tilestate-fail-closed", "unsupported-tilestate-sign", "unsupported-tilestate-banner",
     "unsupported-tilestate-hanging-sign", "unsupported-tilestate-player-head", "unsupported-tilestate-beacon",
     "unsupported-tilestate-jukebox", "unsupported-tilestate-lectern", "biome-partial-recovery",
-    "snapshot-interleaving", "hcbk-v1-v2-v3-regression"
+    "snapshot-interleaving", "hcbk-v1-v2-v3-regression", "biome-custom-roundtrip", "biome-missing-key", "biome-chunk-loading"
 )
 
 fun sha256(file: java.io.File): String = MessageDigest.getInstance("SHA-256")
@@ -405,6 +405,10 @@ tasks.register<Exec>("paperWorldE2E") {
             from(companionJar.get().asFile)
             into(serverDir.resolve("plugins"))
         }
+        copy {
+            from("src/paperWorldE2E/fixtures/biome-datapack")
+            into(serverDir.resolve("world/datapacks/homeclaim-e2e"))
+        }
         serverDir.resolve("eula.txt").writeText("eula=true\n")
         val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         serverDir.resolve("server.properties").writeText(
@@ -432,6 +436,8 @@ tasks.register<Exec>("paperWorldE2E") {
         validateWorldE2EResult(jsonResult, runId, expectedPluginSha, "Paper")
         reportDir.resolve("result.txt").writeText(result)
         copy { from(jsonResult); into(reportDir) }
+        copy { from(serverDir.resolve("plugins/HomeClaimWorldE2E/biome-metrics.json")); into(reportDir) }
+        copy { from(serverDir.resolve("plugins/HomeClaimWorldE2E/biome-chunk-metrics.json")); into(reportDir) }
         delete(serverDir)
         println(result.trim())
     }
@@ -469,6 +475,10 @@ tasks.register<Exec>("purpurWorldE2E") {
             rename { "HomeClaim.jar" }
         }
         copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        copy {
+            from("src/paperWorldE2E/fixtures/biome-datapack")
+            into(serverDir.resolve("world/datapacks/homeclaim-e2e"))
+        }
         serverDir.resolve("eula.txt").writeText("eula=true\n")
         val serverPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         serverDir.resolve("server.properties").writeText(
@@ -496,8 +506,26 @@ tasks.register<Exec>("purpurWorldE2E") {
         validateWorldE2EResult(jsonResult, runId, expectedPluginSha, "Purpur")
         reportDir.resolve("result.txt").writeText(result)
         copy { from(jsonResult); into(reportDir) }
+        copy { from(serverDir.resolve("plugins/HomeClaimWorldE2E/biome-metrics.json")); into(reportDir) }
+        copy { from(serverDir.resolve("plugins/HomeClaimWorldE2E/biome-chunk-metrics.json")); into(reportDir) }
         delete(serverDir)
         println(result.trim())
+    }
+}
+
+tasks.register<Exec>("biomeRegistryRestartE2E") {
+    group = "verification"
+    description = "Verify a custom biome key disappears and returns across three real Paper processes"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    workingDir(rootProject.projectDir)
+    commandLine("python3", rootProject.file("scripts/biome-registry-restart-e2e.py").absolutePath,
+        paperJar.absolutePath, tasks.shadowJar.get().archiveFile.get().asFile.absolutePath,
+        paperWorldE2EJar.get().archiveFile.get().asFile.absolutePath,
+        file("src/paperWorldE2E/fixtures/biome-datapack").absolutePath)
+    doFirst {
+        environment("HOMECLAIM_E2E_JAVA", javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        }.get().executablePath.asFile.absolutePath)
     }
 }
 
@@ -693,6 +721,8 @@ tasks.register("paperWorldRestartRecoveryE2E") {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().executablePath.asFile.absolutePath
     doLast {
+        val restartRunId = UUID.randomUUID().toString()
+        val restartSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
         delete(serverDir)
         delete(reportDir)
         serverDir.mkdirs()
@@ -720,6 +750,7 @@ tasks.register("paperWorldRestartRecoveryE2E") {
         phases.forEach { phase ->
             val process = ProcessBuilder(
                 javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
+                "-Dhomeclaim.worlde2e.runId=$restartRunId", "-Dhomeclaim.worlde2e.pluginSha256=$restartSha",
                 "-jar", paperJar.name, "nogui"
             ).directory(serverDir).inheritIO().start()
             val exitCode = process.waitFor()
@@ -737,6 +768,11 @@ tasks.register("paperWorldRestartRecoveryE2E") {
                 else -> "PASS restart recovery"
             }
             check(result.startsWith(expected)) { "Paper $phase failed: $result" }
+            if (phase == "biome-restart-verify") {
+                val json = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
+                validateWorldE2EResult(json, restartRunId, restartSha, "Paper", setOf("biome-restart-recovery"))
+                copy { from(json); into(reportDir); rename { "biome-restart-result.json" } }
+            }
             reportDir.resolve("$phase-result.txt").writeText(result)
         }
         println(phases.filter { it.endsWith("verify") }.joinToString("; ") { phase ->
@@ -757,6 +793,8 @@ tasks.register("purpurRestartRecoveryE2E") {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().executablePath.asFile.absolutePath
     doLast {
+        val restartRunId = UUID.randomUUID().toString()
+        val restartSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
         delete(serverDir)
         delete(reportDir)
         serverDir.mkdirs()
@@ -774,9 +812,10 @@ tasks.register("purpurRestartRecoveryE2E") {
             "level-name=world\nserver-ip=127.0.0.1\nserver-port=$serverPort\nonline-mode=false\nmax-players=1\n" +
                 "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
         )
-        listOf("restart-prepare", "restart-verify").forEach { phase ->
+        listOf("restart-prepare", "restart-verify", "biome-restart-prepare", "biome-restart-verify").forEach { phase ->
             val process = ProcessBuilder(
                 javaExecutable, "-Dcom.mojang.eula.agree=true", "-Dhomeclaim.worlde2e.phase=$phase",
+                "-Dhomeclaim.worlde2e.runId=$restartRunId", "-Dhomeclaim.worlde2e.pluginSha256=$restartSha",
                 "-jar", purpurJar.get().asFile.name, "nogui"
             ).directory(serverDir).inheritIO().start()
             val exitCode = process.waitFor()
@@ -785,8 +824,13 @@ tasks.register("purpurRestartRecoveryE2E") {
             val logsDir = serverDir.resolve("logs")
             if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("$phase-logs")) }
             check(exitCode == 0) { "Purpur $phase process exited with code $exitCode: $result" }
-            val expected = if (phase == "restart-prepare") "PREPARED" else "PASS restart recovery"
+            val expected = if (phase.endsWith("prepare")) "PREPARED" else if (phase.startsWith("biome")) "PASS biome partial mutation was blocked and restored" else "PASS restart recovery"
             check(result.startsWith(expected)) { "Purpur $phase failed: $result" }
+            if (phase == "biome-restart-verify") {
+                val json = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
+                validateWorldE2EResult(json, restartRunId, restartSha, "Purpur", setOf("biome-restart-recovery"))
+                copy { from(json); into(reportDir); rename { "biome-restart-result.json" } }
+            }
             reportDir.resolve("$phase-result.txt").writeText(result)
         }
         println(reportDir.resolve("restart-verify-result.txt").readText().trim())
