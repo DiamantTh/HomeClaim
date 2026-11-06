@@ -118,9 +118,11 @@ can also remain if file creation succeeds but job creation fails. This favors
 recoverability and audit evidence over disk reclamation; operators must account
 for disk growth. Files are not removed by normal service shutdown.
 
-Automatic cleanup requires a separate reference-aware policy covering in-flight captures/pre-job snapshots, all
-persisted jobs (including RECOVERY_IN_PROGRESS), recovery/audit retention and
-DB-unavailable behavior. A missing/unavailable reference store must fail closed;
-age alone is never sufficient. No generic HCBK or operation-bundle retention
-behavior was changed. Format V1 and codec NONE remain unchanged: the measured
-16-cell custom-key fixture occupies only 787 bytes including framing/checksums.
+Automatic cleanup requires the atomic artifact-reference/lease contract defined
+in [Safety-artifact retention](SAFETY_RETENTION.md), covering in-flight
+captures/pre-job snapshots, all persisted jobs (including
+`RECOVERY_IN_PROGRESS`), recovery/audit retention and DB-unavailable behavior.
+A missing/unavailable reference store must fail closed; age alone is never
+sufficient. No generic HCBK or operation-bundle retention behavior was changed.
+Format V1 and codec NONE remain unchanged: the measured 16-cell custom-key
+fixture occupies only 787 bytes including framing/checksums.

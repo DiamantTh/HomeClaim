@@ -710,6 +710,69 @@ tasks.register<Exec>("paperSnapshotPerformance") {
     }
 }
 
+tasks.register<Exec>("paperSnapshotPerformanceMatrix") {
+    group = "verification"
+    description = "Run isolated real-Paper SMALL/MEDIUM/LARGE snapshot capture/apply/verify measurements"
+    dependsOn(downloadPaper, tasks.shadowJar, paperWorldE2EJar)
+    val serverDir = layout.buildDirectory.dir("paper-snapshot-performance-matrix/server").get().asFile
+    val reportDir = layout.buildDirectory.dir("reports/paper-snapshot-performance-matrix").get().asFile
+    val companionJar = paperWorldE2EJar.flatMap { it.archiveFile }
+    val javaExecutable = javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().executablePath.asFile.absolutePath
+    var runId = ""
+    var expectedPluginSha = ""
+    var consoleOut: java.io.OutputStream? = null
+    var consoleErr: java.io.OutputStream? = null
+    doFirst {
+        delete(serverDir)
+        delete(reportDir)
+        serverDir.mkdirs()
+        reportDir.mkdirs()
+        runId = UUID.randomUUID().toString()
+        expectedPluginSha = sha256(tasks.shadowJar.get().archiveFile.get().asFile)
+        consoleOut = reportDir.resolve("server-console.out.log").outputStream()
+        consoleErr = reportDir.resolve("server-console.err.log").outputStream()
+        standardOutput = consoleOut
+        errorOutput = consoleErr
+        copy { from(paperJar); into(serverDir) }
+        copy {
+            from(tasks.shadowJar.get().archiveFile)
+            into(serverDir.resolve("plugins"))
+            rename { "HomeClaim.jar" }
+        }
+        copy { from(companionJar.get().asFile); into(serverDir.resolve("plugins")) }
+        serverDir.resolve("eula.txt").writeText("eula=true\n")
+        val port = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        serverDir.resolve("server.properties").writeText(
+            "level-name=world\nserver-ip=127.0.0.1\nserver-port=$port\nonline-mode=false\nmax-players=1\n" +
+                "spawn-protection=0\nview-distance=4\nsimulation-distance=4\nenable-rcon=false\n"
+        )
+        commandLine("timeout", "--signal=TERM", "--kill-after=30s", "30m", javaExecutable,
+            "-Xms256m", "-Xmx2g", "-Dcom.mojang.eula.agree=true",
+            "-Dhomeclaim.worlde2e.phase=performance-matrix", "-Dhomeclaim.worlde2e.runId=$runId",
+            "-Dhomeclaim.worlde2e.pluginSha256=$expectedPluginSha", "-jar", paperJar.name, "nogui")
+    }
+    workingDir(serverDir)
+    isIgnoreExitValue = true
+    doLast {
+        consoleOut?.close()
+        consoleErr?.close()
+        val logsDir = serverDir.resolve("logs")
+        if (logsDir.exists()) copy { from(logsDir); into(reportDir.resolve("logs")) }
+        val exitCode = executionResult.get().exitValue
+        val resultFile = serverDir.resolve("plugins/HomeClaimWorldE2E/result.txt")
+        val jsonFile = serverDir.resolve("plugins/HomeClaimWorldE2E/e2e-result.json")
+        val summary = if (resultFile.isFile) resultFile.readText() else "missing E2E result file"
+        check(exitCode == 0 && summary.startsWith("PASS")) { "Paper performance matrix task failed ($exitCode): $summary" }
+        validateWorldE2EResult(jsonFile, runId, expectedPluginSha, "Paper", setOf("snapshot-performance-matrix"))
+        copy { from(jsonFile); into(reportDir) }
+        reportDir.resolve("result.txt").writeText(summary)
+        delete(serverDir)
+        println(summary.trim())
+    }
+}
+
 tasks.register("paperWorldRestartRecoveryE2E") {
     group = "verification"
     description = "Verify transfer, merge/domain, and biome-cell recovery across real Paper process restarts"

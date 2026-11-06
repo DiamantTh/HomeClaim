@@ -580,6 +580,15 @@ persistent reference set and fail closed if it is unavailable; RECOVERY_REQUIRED
 or RECOVERY_IN_PROGRESS references must never be deleted. HCBK retention is not
 changed. Disk growth remains an operational limitation.
 
+The same fail-closed retention rule now applies explicitly to all operation
+safety artifacts: HCBK reset/restore/transfer pre-images, merge/unlink safety
+bundles and `BiomeSnapshotV1`. There is no automatic cleanup or dry-run that
+calls an artifact eligible while references are split between pre-job capture,
+the backup index, mutable job details and manifests. A safe implementation needs
+an atomic reference/lease contract first; details and required race tests are in
+[Safety-artifact retention](backups/SAFETY_RETENTION.md). This deliberately
+protects active and `RECOVERY_REQUIRED` recovery evidence over disk reclamation.
+
 Executed evidence against SHA-256
 `ddc63ca77f497165978ea06f3220d1bfb51519c3812df5cdffc0f36f32e33e5c`:
 
@@ -650,3 +659,24 @@ test servers measured max 479.48 ms. The isolated outlier remains an important
 performance investigation; these fixtures do not isolate its cause and are not
 directly comparable to the 49,152-block interleaving fixture. No adaptive
 batching or broad block-chunk-loading change was introduced.
+
+### Step 24A — performance diagnostics and safety-artifact retention
+
+`paperSnapshotPerformanceMatrix` is now a separate serial Paper task with an
+isolated temporary workspace and a run-ID/production-SHA-bound result file. It
+reports capture/encode/decode/apply/verify phases, bounded per-batch timings,
+phase-tagged heartbeat gaps, and GC deltas for SMALL, MEDIUM and LARGE fixtures.
+The 192-record capture/apply/verify cap remains: a 64-record experiment tripled
+duration without eliminating the outlier, while fresh 192-record runs moved the
+largest pause between capture and apply. The local data is diagnostic only; see
+[Snapshot performance](testing/SNAPSHOT_PERFORMANCE.md) for exact values and
+limits.
+
+Safety-artifact cleanup remains deliberately fail-closed. There is no automatic
+delete, startup sweep, or misleading eligibility dry-run because current
+references span pre-job capture, the backup index, mutable job details and
+bundle manifests without an atomic reference/lease protocol. This preserves
+active, interrupted and `RECOVERY_REQUIRED` evidence, including biome safety
+files, at the cost of disk growth. The complete contract and prerequisites for
+a future safe cleanup implementation are in
+[Safety-artifact retention](backups/SAFETY_RETENTION.md).

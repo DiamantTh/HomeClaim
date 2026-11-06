@@ -47,6 +47,8 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCompressio
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupFaultInjector
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupApplyKind
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupApplyPhase
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupBatchObserver
+import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupBatchPhase
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupRecord
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupStatus
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotMutationJobStatus
@@ -72,6 +74,8 @@ import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferPlanner
 import systems.diath.homeclaim.platform.paper.plot.mutation.PlotTransferResult
 import java.nio.file.Files
 import java.util.Base64
+import java.util.Collections
+import java.lang.management.ManagementFactory
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
@@ -97,6 +101,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     private lateinit var jobStore: PlotMutationJobStore
     private lateinit var conflicts: RegionMutationConflictCoordinator
     private val backupFailure = AtomicReference<Pair<PlotBackupApplyKind, Int>?>(null)
+    private val performanceBatchTimings = java.util.concurrent.ConcurrentHashMap<PlotBackupBatchPhase, MutableList<Long>>()
     private val databaseWorldWriteBarrier = AtomicReference<DatabaseWorldWriteBarrier?>(null)
     private lateinit var homeWorld: HomeClaimWorld
     private lateinit var area: Area
@@ -190,6 +195,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                     }
                     throw IllegalStateException("test-only injected $kind apply failure after $applied blocks")
                 }
+            },
+            PlotBackupBatchObserver { phase, _, elapsedNanos ->
+                performanceBatchTimings.computeIfAbsent(phase) { Collections.synchronizedList(mutableListOf()) }.add(elapsedNanos)
             }
         )
         val registeredWorld = areas.getWorldByPlatformId(testWorld.uid)
@@ -243,7 +251,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
         createFixtures(homeClaim, areas, testWorld)
 
-        if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+        if (System.getProperty("homeclaim.worlde2e.phase") in setOf("performance-only", "performance-matrix")) {
             runPerformanceMatrix(testWorld, "PASS standalone snapshot performance")
             return
         }
@@ -2539,6 +2547,11 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
     }
 
     private fun runPerformanceMatrix(testWorld: World, priorReport: String) {
+        fun gcTotals(): Pair<Long, Long> = ManagementFactory.getGarbageCollectorMXBeans()
+            .fold(0L to 0L) { totals, bean ->
+                (totals.first + bean.collectionCount.coerceAtLeast(0L)) to
+                    (totals.second + bean.collectionTime.coerceAtLeast(0L))
+            }
         val perfWorldName = "hc_snapshot_perf"
         val perfConfig = PlotWorldConfig(
             worldName = perfWorldName,
@@ -2564,7 +2577,8 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         )) ?: error("Could not create the performance Area")
         performanceArea = perfArea
         data class SizeCase(val label: String, val width: Int, val height: Int, val depth: Int)
-        val cases = if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+        val phase = System.getProperty("homeclaim.worlde2e.phase")
+        val cases = if (phase == "performance-only") {
             listOf(SizeCase("MEDIUM", 12, 384, 12))
         } else listOf(
             SizeCase("SMALL", 4, 384, 4),
@@ -2574,8 +2588,10 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
         val summaries = mutableListOf<String>()
         fun next(index: Int) {
             if (index == cases.size) {
-                if (System.getProperty("homeclaim.worlde2e.phase") == "performance-only") {
+                if (phase == "performance-only") {
                     passedScenarios += "medium-performance-matrix"
+                } else if (phase == "performance-matrix") {
+                    passedScenarios += "snapshot-performance-matrix"
                 }
                 finish("$priorReport; performanceMatrix=${summaries.joinToString(";")}")
                 return
@@ -2625,21 +2641,25 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
 
             var heartbeatCount = 0
             var maxHeartbeatNanos = 0L
-            val heartbeatGapsNanos = mutableListOf<Long>()
+            val heartbeatGapsNanos = mutableListOf<Pair<String, Long>>()
+            val activePhase = AtomicReference("CAPTURE")
+            performanceBatchTimings.clear()
             var lastHeartbeat = System.nanoTime()
             val heartbeat = server.scheduler.runTaskTimer(this, Runnable {
                 val now = System.nanoTime()
                 val gap = now - lastHeartbeat
-                heartbeatGapsNanos += gap
+                heartbeatGapsNanos += activePhase.get() to gap
                 maxHeartbeatNanos = maxOf(maxHeartbeatNanos, gap)
                 lastHeartbeat = now
                 heartbeatCount++
             }, 1L, 1L)
 
             val captureWallStart = System.nanoTime()
+            val gcBefore = gcTotals()
             val backup = testBackupService.createSnapshot(source, perfWorld, ActionActor.System("paper-snapshot-matrix"),
                 CorrelationId.newId(), "e2e:performance-${size.label.lowercase()}")
             await(backup, timeoutTicks = 20 * 360) { record ->
+                activePhase.set("ENCODE_WRITE")
                 val captureMetadata = requireNotNull(record.captureMetadata) { "HCBK v3 capture metadata missing" }
                 check(captureMetadata.mode == systems.diath.homeclaim.platform.paper.plot.mutation.PlotBackupCaptureMode.TICKWISE)
                 check(captureMetadata.capturedBlockCount == count)
@@ -2648,6 +2668,7 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                 val captureWallMillis = (System.nanoTime() - captureWallStart) / 1_000_000
                 val decodeStart = System.nanoTime()
                 await(testBackupService.validateReadyBackup(record.id), timeoutTicks = 20 * 360) { validated ->
+                    activePhase.set("APPLY_READ_VALIDATE")
                     val decodeMillis = (System.nanoTime() - decodeStart) / 1_000_000
                     val applyRequestStartedAt = System.nanoTime()
                     var applyStartedAt = 0L
@@ -2658,9 +2679,9 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                         onProgress = null,
                         onPhase = { phase ->
                             when (phase) {
-                                PlotBackupApplyPhase.APPLY_STARTED -> applyStartedAt = System.nanoTime()
-                                PlotBackupApplyPhase.APPLY_COMPLETED -> applyFinishedAt = System.nanoTime()
-                                PlotBackupApplyPhase.VERIFY_COMPLETED -> verifyFinishedAt = System.nanoTime()
+                                PlotBackupApplyPhase.APPLY_STARTED -> { activePhase.set("APPLY"); applyStartedAt = System.nanoTime() }
+                                PlotBackupApplyPhase.APPLY_COMPLETED -> { activePhase.set("VERIFY"); applyFinishedAt = System.nanoTime() }
+                                PlotBackupApplyPhase.VERIFY_COMPLETED -> { activePhase.set("IDLE"); verifyFinishedAt = System.nanoTime() }
                             }
                         }
                     ).whenComplete { applied, applyFailure -> server.scheduler.runTask(this, checkedRunnable {
@@ -2679,11 +2700,20 @@ class PaperWorldE2EHarnessPlugin : JavaPlugin(), Listener {
                         heartbeat.cancel()
                         check(heartbeatCount > 0) { "${size.label} heartbeat instrumentation did not advance" }
                         val raw = requireNotNull(record.uncompressedPayloadBytes)
+                        val gcAfter = gcTotals()
                         val ratio = record.payloadBytes.toDouble() / raw
-                        val sortedGaps = heartbeatGapsNanos.sorted()
+                        val sortedGaps = heartbeatGapsNanos.map { it.second }.sorted()
                         fun percentile(fraction: Double): Double =
                             sortedGaps[((sortedGaps.size - 1) * fraction).toInt()].toDouble() / 1_000_000.0
-                        summaries += "${size.label}{blocks=$count,captureMs=$captureMillis,captureWallMs=$captureWallMillis,encodeWriteMs=$encodeWriteMillis,decodeValidateMs=$decodeMillis,applyReadValidateMs=$applyReadValidateMillis,applyMs=$applyMillis,verifyMs=$verifyMillis,rawBytes=$raw,zstdBytes=${record.payloadBytes},ratio=${"%.4f".format(java.util.Locale.ROOT, ratio)},batches=${(count + 191) / 192},heartbeatSamples=$heartbeatCount,medianHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.50))},p95HeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.95))},maxHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, maxHeartbeatNanos / 1_000_000.0)},workload=$workload}"
+                        fun timing(phase: PlotBackupBatchPhase): String {
+                            val samples = performanceBatchTimings[phase].orEmpty().sorted()
+                            if (samples.isEmpty()) return "0/0.00/0.00"
+                            fun sample(fraction: Double): Double = samples[((samples.size - 1) * fraction).toInt()] / 1_000_000.0
+                            return "${samples.size}/${"%.2f".format(java.util.Locale.ROOT, sample(0.95))}/${"%.2f".format(java.util.Locale.ROOT, samples.last() / 1_000_000.0)}"
+                        }
+                        val maxGapPhase = heartbeatGapsNanos.maxByOrNull { it.second }?.first ?: "NONE"
+                        val observedBatches = performanceBatchTimings[PlotBackupBatchPhase.APPLY]?.size ?: 0
+                        summaries += "${size.label}{blocks=$count,captureMs=$captureMillis,captureWallMs=$captureWallMillis,encodeWriteMs=$encodeWriteMillis,decodeValidateMs=$decodeMillis,applyReadValidateMs=$applyReadValidateMillis,applyMs=$applyMillis,verifyMs=$verifyMillis,rawBytes=$raw,zstdBytes=${record.payloadBytes},ratio=${"%.4f".format(java.util.Locale.ROOT, ratio)},applyBatches=$observedBatches,captureBatches=${timing(PlotBackupBatchPhase.CAPTURE)},applyBatchTimings=${timing(PlotBackupBatchPhase.APPLY)},verifyBatches=${timing(PlotBackupBatchPhase.VERIFY)},gcCollections=${gcAfter.first - gcBefore.first},gcMillis=${gcAfter.second - gcBefore.second},heartbeatSamples=$heartbeatCount,medianHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.50))},p95HeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, percentile(0.95))},maxHeartbeatMs=${"%.2f".format(java.util.Locale.ROOT, maxHeartbeatNanos / 1_000_000.0)},maxHeartbeatPhase=$maxGapPhase,workload=$workload}"
                         next(index + 1)
                     }) }
                 }

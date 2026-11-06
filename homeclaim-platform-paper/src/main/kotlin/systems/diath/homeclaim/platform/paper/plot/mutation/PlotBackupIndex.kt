@@ -27,6 +27,23 @@ enum class PlotBackupCompression {
 enum class PlotBackupApplyKind { TRANSFER, RESTORE }
 enum class PlotBackupApplyPhase { APPLY_STARTED, APPLY_COMPLETED, VERIFY_COMPLETED }
 
+/**
+ * Diagnostic-only observation point for bounded Paper-thread snapshot work.
+ *
+ * The default is deliberately a no-op. Production code neither persists nor
+ * exports these timings; an E2E or profiling harness may opt in to attribute a
+ * heartbeat gap to capture, apply, or verify work without changing scheduling.
+ */
+enum class PlotBackupBatchPhase { CAPTURE, APPLY, VERIFY }
+
+fun interface PlotBackupBatchObserver {
+    fun completed(phase: PlotBackupBatchPhase, records: Int, elapsedNanos: Long)
+
+    companion object {
+        val NONE = PlotBackupBatchObserver { _, _, _ -> }
+    }
+}
+
 enum class PlotBackupCaptureMode(val wireId: Int) {
     TICKWISE(1);
 

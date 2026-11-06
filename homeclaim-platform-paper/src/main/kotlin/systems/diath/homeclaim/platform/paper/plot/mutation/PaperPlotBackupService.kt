@@ -46,7 +46,8 @@ class PaperPlotBackupService(
     private val auditService: AuditService?,
     private val conflicts: RegionMutationConflictCoordinator? = null,
     private val compression: PlotBackupCompression = PlotBackupCompression.ZSTD,
-    private val faultInjector: PlotBackupFaultInjector = PlotBackupFaultInjector.NONE
+    private val faultInjector: PlotBackupFaultInjector = PlotBackupFaultInjector.NONE,
+    private val batchObserver: PlotBackupBatchObserver = PlotBackupBatchObserver.NONE
 ) {
     private val dataRoot = plugin.dataFolder.toPath().resolve("backups").toAbsolutePath().normalize()
     private val io: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -300,6 +301,7 @@ class PaperPlotBackupService(
                     runOnServer {
                         if (task.completed.get()) return@runOnServer
                         try {
+                            val batchStartedAt = System.nanoTime()
                             val dx = targetBounds.minX - record.bounds.minX
                             val dz = targetBounds.minZ - record.bounds.minZ
                             for (snapshot in batch) {
@@ -319,6 +321,7 @@ class PaperPlotBackupService(
                                 inventory.contents = items.map { bytes -> bytes?.let(ItemStack::deserializeBytes) }.toTypedArray()
                                 check(state.update(true, false)) { "Could not apply transferred container at $x,${snapshot.y},$z" }
                             }
+                            batchObserver.completed(PlotBackupBatchPhase.APPLY, batch.size, System.nanoTime() - batchStartedAt)
                             applyTransferBatch(task, targetBounds)
                         } catch (failure: Throwable) {
                             failApply(task, failure)
@@ -351,6 +354,7 @@ class PaperPlotBackupService(
                     runOnServer {
                         if (task.completed.get()) return@runOnServer
                         try {
+                            val batchStartedAt = System.nanoTime()
                             val dx = targetBounds.minX - record.bounds.minX
                             val dz = targetBounds.minZ - record.bounds.minZ
                             expected.forEach { snapshot ->
@@ -370,6 +374,7 @@ class PaperPlotBackupService(
                                 }
                             }
                             task.applied += expected.size
+                            batchObserver.completed(PlotBackupBatchPhase.VERIFY, expected.size, System.nanoTime() - batchStartedAt)
                             verifyTransferBatch(task, targetBounds)
                         } catch (failure: Throwable) {
                             failApply(task, failure)
@@ -516,6 +521,7 @@ class PaperPlotBackupService(
         fun captureBatch() {
             if (task.completed.get()) return
             try {
+                val batchStartedAt = System.nanoTime()
                 val snapshots = ArrayList<PlotBackupFormat.BlockSnapshot>(CAPTURE_BATCH_BLOCKS)
                 val end = minOf(blockCount, cursor + CAPTURE_BATCH_BLOCKS)
                 var estimatedBytes = 0L
@@ -566,6 +572,7 @@ class PaperPlotBackupService(
                     }
                     return
                 }
+                batchObserver.completed(PlotBackupBatchPhase.CAPTURE, snapshots.size, System.nanoTime() - batchStartedAt)
                 io.execute {
                     try {
                         PlotBackupFormat.appendPayload(task.payload, snapshots)
@@ -881,6 +888,9 @@ class PaperPlotBackupService(
     }
 
     companion object {
+        // Keep the established deterministic boundary. Isolated diagnostics compare
+        // batch timings separately so a server/JVM pause is not misdiagnosed as
+        // per-record world work and "fixed" by an unnecessarily tiny batch.
         private const val CAPTURE_BATCH_BLOCKS = 192
         private const val MAX_CAPTURE_BATCH_BYTES = 8 * 1_048_576L
         private const val RESTORE_BATCH_BLOCKS = 192
